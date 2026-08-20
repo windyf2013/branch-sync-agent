@@ -1,16 +1,23 @@
 [project]
-name = "bsa-venv"
+name = "bsa"
 version = "0.1.0"
-description = "Add your description here"
+description = "Branch Sync Agent — 自动分支同步与编译验证"
 readme = "README.md"
 authors = [
     { name = "yangfu", email = "yangfu@raisecom.com" }
 ]
 requires-python = ">=3.13"
-dependencies = []
+dependencies = [
+    "pydantic>=2.7",
+]
 
 [project.scripts]
-bsa-venv = "bsa_venv:main"
+bsa = "bsa.cli:main"
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0",
+]
 
 [build-system]
 requires = ["uv_build>=0.12.3,<0.13.0"]
