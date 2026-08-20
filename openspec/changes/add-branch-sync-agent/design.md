@@ -212,6 +212,12 @@ def load_settings() -> Settings  # 读环境变量 + 校验必填
 ### 批次 0：executor
 
 ```python
+# executor/exceptions.py（公共异常基类，Ruling：所有异常在此定义，供 git/build/agents 引用）
+class BsaError(Exception): ...
+class DomainError(BsaError): ...           # 业务状态走状态转移，不抛（用于显式标记）
+class InfrastructureError(BsaError): ...   # 网络/IO/超时 → 节点边界捕获写 state.errors
+class SafetyViolation(BsaError): ...       # 命中安全红线 → 强制拒绝转人工
+
 # executor/base.py
 class CompletedProcess(BaseModel):
     returncode: int
