@@ -18,7 +18,19 @@ bsa = "bsa.cli:main"
 [dependency-groups]
 dev = [
     "pytest>=8.0",
+    "ruff>=0.6",
 ]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+# examples/ 是参考实现，其测试依赖参考环境，不纳入本项目测试套件
+
+[tool.ruff]
+line-length = 100
+target-version = "py313"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
 
 [build-system]
 requires = ["uv_build>=0.12.3,<0.13.0"]

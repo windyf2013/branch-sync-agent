@@ -1,4 +1,4 @@
-import os
+import os  # noqa: F401 — os.environ is the env source for pydantic-settings; tests monkeypatch bsa.config.settings.os.environ
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
