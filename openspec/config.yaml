@@ -1,0 +1,68 @@
+schema: spec-driven
+
+language:
+  artifacts: zh-CN
+  detection: inferred
+  appliesTo:
+    - proposal
+    - tasks
+    - plan-ready
+    - workflow-status
+    - human-facing summaries
+
+context: |
+  Purpose:
+    Branch Sync Agent —— 定期检测 RCIOS 代码库各分支的合入 commit，判断是否需要同步到其他
+    分支；需要时在独立 Git worktree 中完成 cherry-pick、冲突处理、多型号编译验证、diff-patch
+    生成，并输出 HTML 维护报告 + 邮件。Agent 只做复杂判断，不直接控制 Git/Build 确定性操作。
+
+  Tech Stack:
+    Python 3.13 + uv；LangGraph 作为任务执行引擎（单周期 = 单 thread_id = 单 checkpoint）；
+    SQLite checkpoint；OpenAI 兼容 LLM 接口（可配置，DeepSeek 亦可）；pydantic 数据模型；
+    PyYAML 配置。
+
+  Target Repository:
+    嵌入式 C（RCIOS），GitLab SSH 认证；branch.md 同源矩阵清单放在业务仓内（路径 rcios，
+    spec/branch.md 临时放在当前库，后续替换）；单 repo 起步，配置预留多 repo 扩展。
+
+  Build Environment:
+    编译在 Docker 容器内执行：`sudo docker run -it --name rcios-sync-{cycle-id}
+    -v <宿主机worktree>:/workspace/rcios -v /usr/local:/usr/local rcios-build-env:ubuntu24.04 bash`。
+    产品架构：RTL9617C（默认）/ RTL9607F / X86 / EN7529；当前验证仅支持 RTL9617C。
+    型号：5200（默认）/ 2600；运营商脚本：RTL9617C_build.sh（通用）/ _ct / _cmcc / _cu / _gj。
+    脚本路径 build/platform/RTL9617C/，用法 RTL9617C_build.sh [product-type] [function-name]。
+    编译前需 code_update.sh -d 拉插件、clean 清理；支持按模块编译（如 datapath/plat dhcp/plugin）。
+
+  Architecture:
+    主图（LangGraph）只控制流程与状态；3 个 Agent 子图只在复杂判断点介入
+    （Sync Decision 判 is_bug_fix / Conflict 解决冲突 / Build 归因修复）；
+    GitService 与 BuildRunner 是确定性执行层；规则层（classify + conclude 四态）先于 LLM。
+    决策模型：NeedSync / AlreadyIncluded / ManualReview / OutOfScope。
+    同步执行：按目标分支批次，按合入顺序逐 commit cherry-pick + 每 commit 编译 + format-patch。
+    容错四层：节点级隔离（异常入 state 不崩溃）、LLM 级（timeout/重试/降级安全默认）、
+    Tool 级（timeout/幂等/git 真实状态为准）、周期级（单分支失败不拖垮整周期，失败必出报告）。
+
+  Testing:
+    pytest + ruff；规则层带 golden-set 测试；git 操作可 mock。
+
+  Constraints:
+    只生成 patch 不推送远程；不在主工作区直接操作，只用独立 worktree；空检也发邮件；
+    邮件先支持 --mail-dry-run（验真不发送），真实 SMTP 后续补。
+
+rules:
+  specs:
+    - 引用现有 spec 再描述新行为，不得凭空发明。
+    - 每条需求必须有具体场景和验收条件。
+  design:
+    - 保持既有架构模式（Workflow 管流程、Agent 管判断、Tool 管执行）。
+    - 移植外部参考逻辑（classify/conclude/branch_md）时不得因外部引入而迁就整体方案实现。
+  tasks:
+    - 给出精确文件、测试、验证命令和回滚说明。
+    - 每个实现任务必须以测试通过为完成条件。
+  implementation:
+    - 任何 node 出错不得让整个 workflow 崩溃，异常写入 state 并走报告。
+    - LLM 调用必须有 timeout + 重试 + 降级安全默认，LLM 不可用时确定性流程仍可运行。
+    - 不把真实仓库路径/密钥硬编码进文档或代码，用占位符 + 环境变量/独立配置注入。
+  artifacts:
+    - 面向人类可读的 OpenFlow 产物使用 zh-CN。
+    - Parser 要求的 OpenSpec 标题、CLI 命令、代码标识符、协议关键词必须保持其要求的原始形式。

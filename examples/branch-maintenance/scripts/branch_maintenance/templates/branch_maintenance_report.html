@@ -1,0 +1,1111 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="generator" content="RCIOS Branch Maintenance Agent">
+    <title>分支维护同步建议报告 — {{REPO_ID}}</title>
+    <style>
+        :root {
+            --ink: #0f172a;
+            --ink-2: #1e293b;
+            --muted: #64748b;
+            --line: #e2e8f0;
+            --line-strong: #cbd5e1;
+            --surface: #ffffff;
+            --canvas: #f1f5f9;
+            --canvas-2: #e8eef5;
+            --brand: #0b3d5c;
+            --brand-2: #125a82;
+            --brand-soft: #e8f1f7;
+            --accent: #0e7490;
+            --need: #b91c1c;
+            --need-bg: #fef2f2;
+            --need-bd: #fecaca;
+            --review: #a16207;
+            --review-bg: #fffbeb;
+            --review-bd: #fde68a;
+            --ok: #166534;
+            --ok-bg: #f0fdf4;
+            --ok-bd: #bbf7d0;
+            --scope: #475569;
+            --scope-bg: #f8fafc;
+            --pending: #0369a1;
+            --pending-bg: #f0f9ff;
+            --pending-bd: #bae6fd;
+            --shadow: 0 1px 2px rgba(15, 23, 42, 0.06), 0 8px 24px rgba(15, 23, 42, 0.04);
+            --radius: 10px;
+            --sans: "Segoe UI", "PingFang SC", "Microsoft YaHei", "Noto Sans SC", sans-serif;
+            --mono: "Cascadia Code", "Sarasa Mono SC", Consolas, "Courier New", monospace;
+            --max: 1180px;
+        }
+
+        * { box-sizing: border-box; }
+
+        html { scroll-behavior: smooth; }
+
+        body {
+            margin: 0;
+            color: var(--ink);
+            background:
+                radial-gradient(1200px 420px at 12% -10%, #dbeafe 0%, transparent 55%),
+                linear-gradient(180deg, var(--canvas-2) 0%, var(--canvas) 220px, var(--canvas) 100%);
+            font-family: var(--sans);
+            font-size: 14px;
+            line-height: 1.55;
+            -webkit-font-smoothing: antialiased;
+        }
+
+        a { color: var(--brand-2); text-decoration: none; }
+        a:hover { text-decoration: underline; }
+
+        .page {
+            max-width: var(--max);
+            margin: 0 auto;
+            padding: 0 20px 48px;
+        }
+
+        /* —— Brand masthead —— */
+        .masthead {
+            background: linear-gradient(135deg, var(--brand) 0%, var(--brand-2) 58%, #0e7490 100%);
+            color: #f8fafc;
+            box-shadow: 0 10px 30px rgba(11, 61, 92, 0.28);
+        }
+
+        .masthead-inner {
+            max-width: var(--max);
+            margin: 0 auto;
+            padding: 28px 20px 22px;
+            display: grid;
+            gap: 18px;
+        }
+
+        .brand-row {
+            display: flex;
+            flex-wrap: wrap;
+            align-items: flex-start;
+            justify-content: space-between;
+            gap: 12px 24px;
+        }
+
+        .brand-mark {
+            display: flex;
+            align-items: center;
+            gap: 14px;
+        }
+
+        .brand-mark .logo {
+            width: 44px;
+            height: 44px;
+            border-radius: 10px;
+            background: rgba(255, 255, 255, 0.14);
+            border: 1px solid rgba(255, 255, 255, 0.28);
+            display: grid;
+            place-items: center;
+            font-weight: 700;
+            font-size: 13px;
+            letter-spacing: 0.04em;
+        }
+
+        .brand-copy .eyebrow {
+            margin: 0 0 4px;
+            font-size: 12px;
+            letter-spacing: 0.14em;
+            text-transform: uppercase;
+            opacity: 0.82;
+            font-weight: 600;
+        }
+
+        .brand-copy h1 {
+            margin: 0;
+            font-size: clamp(1.35rem, 2.2vw, 1.75rem);
+            font-weight: 700;
+            letter-spacing: 0.01em;
+            line-height: 1.25;
+        }
+
+        .brand-copy .subtitle {
+            margin: 6px 0 0;
+            font-size: 13px;
+            opacity: 0.88;
+            max-width: 46rem;
+        }
+
+        .meta-chip-row {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 8px;
+        }
+
+        .meta-chip {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            padding: 6px 12px;
+            border-radius: 999px;
+            background: rgba(255, 255, 255, 0.12);
+            border: 1px solid rgba(255, 255, 255, 0.22);
+            font-size: 12px;
+            backdrop-filter: blur(6px);
+        }
+
+        .meta-chip strong {
+            font-weight: 600;
+            font-family: var(--mono);
+            font-size: 12px;
+        }
+
+        /* —— Sticky nav —— */
+        .toc {
+            position: sticky;
+            top: 0;
+            z-index: 40;
+            background: rgba(248, 250, 252, 0.92);
+            backdrop-filter: blur(10px);
+            border-bottom: 1px solid var(--line);
+        }
+
+        .toc-inner {
+            max-width: var(--max);
+            margin: 0 auto;
+            padding: 10px 20px;
+            display: flex;
+            flex-wrap: wrap;
+            gap: 8px;
+            align-items: center;
+        }
+
+        .toc a {
+            color: var(--ink-2);
+            font-size: 13px;
+            font-weight: 600;
+            padding: 6px 12px;
+            border-radius: 8px;
+            border: 1px solid transparent;
+        }
+
+        .toc a:hover {
+            background: var(--brand-soft);
+            border-color: #c5d9e8;
+            text-decoration: none;
+        }
+
+        .toc .spacer { flex: 1; }
+
+        .toc .doc-tag {
+            font-size: 11px;
+            color: var(--muted);
+            font-weight: 600;
+            letter-spacing: 0.04em;
+        }
+
+        /* —— Sections —— */
+        section.panel {
+            margin-top: 22px;
+            background: var(--surface);
+            border: 1px solid var(--line);
+            border-radius: var(--radius);
+            box-shadow: var(--shadow);
+            overflow: hidden;
+        }
+
+        .panel-head {
+            display: flex;
+            flex-wrap: wrap;
+            align-items: baseline;
+            justify-content: space-between;
+            gap: 8px 16px;
+            padding: 16px 20px;
+            border-bottom: 1px solid var(--line);
+            background: linear-gradient(180deg, #fbfcfe 0%, #f8fafc 100%);
+        }
+
+        .panel-head h2 {
+            margin: 0;
+            font-size: 1.05rem;
+            font-weight: 700;
+            color: var(--ink);
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        .panel-head h2 .idx {
+            display: inline-grid;
+            place-items: center;
+            min-width: 1.55rem;
+            height: 1.55rem;
+            padding: 0 6px;
+            border-radius: 6px;
+            background: var(--brand);
+            color: #fff;
+            font-size: 11px;
+            font-weight: 700;
+        }
+
+        .panel-head .panel-note {
+            margin: 0;
+            color: var(--muted);
+            font-size: 12px;
+            font-family: var(--sans);
+        }
+
+        .panel-body {
+            padding: 18px 20px 20px;
+        }
+
+        .panel-body > h3,
+        .panel-body .subhead {
+            margin: 18px 0 10px;
+            font-size: 0.92rem;
+            font-weight: 700;
+            color: var(--ink-2);
+        }
+
+        .panel-body > h3:first-child,
+        .panel-body .subhead:first-child {
+            margin-top: 0;
+        }
+
+        .meta {
+            color: var(--muted);
+            font-size: 0.92rem;
+        }
+
+        /* —— KPI —— */
+        .kpi-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+            gap: 12px;
+            margin: 0 0 18px;
+        }
+
+        .kpi-grid-4 {
+            grid-template-columns: repeat(4, minmax(0, 1fr));
+        }
+
+        @media (max-width: 960px) {
+            .kpi-grid-4 {
+                grid-template-columns: repeat(2, minmax(0, 1fr));
+            }
+        }
+
+        @media (max-width: 640px) {
+            .kpi-grid-4 {
+                grid-template-columns: repeat(2, minmax(0, 1fr));
+            }
+        }
+
+        .kpi {
+            border: 1px solid var(--line);
+            border-radius: 10px;
+            padding: 14px 14px 12px;
+            background: #fff;
+            position: relative;
+            overflow: hidden;
+        }
+
+        .kpi::before {
+            content: "";
+            position: absolute;
+            left: 0;
+            top: 0;
+            bottom: 0;
+            width: 3px;
+            background: var(--line-strong);
+        }
+
+        .kpi .label {
+            display: block;
+            color: var(--muted);
+            font-size: 12px;
+            font-weight: 600;
+            margin-bottom: 6px;
+        }
+
+        .kpi .value {
+            font-size: 1.65rem;
+            font-weight: 750;
+            letter-spacing: -0.02em;
+            line-height: 1.1;
+            font-variant-numeric: tabular-nums;
+        }
+
+        .kpi .value.value-dual {
+            font-size: 1.05rem;
+            font-weight: 700;
+            line-height: 1.35;
+            letter-spacing: 0;
+        }
+
+        .kpi.kpi-need::before { background: var(--need); }
+        .kpi.kpi-need .value { color: var(--need); }
+        .kpi.kpi-review::before { background: var(--review); }
+        .kpi.kpi-review .value { color: var(--review); }
+        .kpi.kpi-pending::before { background: var(--pending); }
+        .kpi.kpi-pending .value { color: var(--pending); }
+        .kpi.kpi-ok::before { background: var(--ok); }
+        .kpi.kpi-ok .value { color: var(--ok); }
+        .kpi.kpi-neutral::before { background: var(--brand-2); }
+        .kpi.kpi-neutral .value { color: var(--ink); }
+
+        .risk-banner {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 12px 20px;
+            align-items: center;
+            padding: 14px 16px;
+            border-radius: 10px;
+            border: 1px solid var(--need-bd);
+            background: linear-gradient(90deg, var(--need-bg), #fff);
+            margin-top: 14px;
+        }
+
+        .risk-banner.ok {
+            border-color: var(--ok-bd);
+            background: linear-gradient(90deg, var(--ok-bg), #fff);
+        }
+
+        .risk-banner .risk-title {
+            font-weight: 700;
+            color: var(--ink);
+        }
+
+        .risk-banner .risk-metric {
+            font-size: 1.35rem;
+            font-weight: 750;
+            color: var(--need);
+            font-variant-numeric: tabular-nums;
+        }
+
+        .risk-banner.ok .risk-metric { color: var(--ok); }
+
+        .risk-banner .risk-note {
+            color: var(--muted);
+            font-size: 12px;
+            margin-left: auto;
+        }
+
+        .info-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+            gap: 10px 18px;
+            margin-bottom: 14px;
+        }
+
+        .info-item {
+            padding: 10px 12px;
+            border: 1px solid var(--line);
+            border-radius: 8px;
+            background: #fbfdff;
+        }
+
+        .info-item .k {
+            display: block;
+            font-size: 11px;
+            font-weight: 700;
+            color: var(--muted);
+            letter-spacing: 0.04em;
+            text-transform: uppercase;
+            margin-bottom: 4px;
+        }
+
+        .info-item .v {
+            font-size: 13px;
+            word-break: break-all;
+        }
+
+        /* —— Tables —— */
+        .table-wrap {
+            overflow-x: auto;
+            border: 1px solid var(--line);
+            border-radius: 8px;
+        }
+
+        table {
+            border-collapse: collapse;
+            width: 100%;
+            margin: 0;
+            min-width: 560px;
+            background: #fff;
+        }
+
+        th, td {
+            padding: 10px 12px;
+            text-align: left;
+            vertical-align: top;
+            border-bottom: 1px solid var(--line);
+        }
+
+        th {
+            background: #f1f5f9;
+            color: var(--ink-2);
+            font-size: 12px;
+            font-weight: 700;
+            white-space: nowrap;
+        }
+
+        tbody tr:nth-child(even) { background: #fafbfc; }
+        tbody tr:hover { background: #f0f7fb; }
+        tbody tr:last-child td { border-bottom: none; }
+
+        .mono, code, .hint {
+            font-family: var(--mono);
+            font-size: 12px;
+        }
+
+        .hint {
+            display: inline-block;
+            margin-top: 6px;
+            padding: 6px 10px;
+            background: #0f172a;
+            color: #e2e8f0;
+            border-radius: 6px;
+            word-break: break-all;
+        }
+
+        .evidence { font-size: 0.9rem; color: #334155; }
+
+        ul.compact {
+            margin: 0.25rem 0;
+            padding-left: 1.25rem;
+        }
+
+        /* —— Badges —— */
+        .badge {
+            display: inline-flex;
+            align-items: center;
+            gap: 4px;
+            padding: 3px 9px;
+            border-radius: 6px;
+            font-size: 12px;
+            font-weight: 700;
+            border: 1px solid transparent;
+            white-space: nowrap;
+        }
+
+        .kind-NeedSync,
+        .badge-need {
+            color: var(--need);
+            background: var(--need-bg);
+            border-color: var(--need-bd);
+            font-weight: 700;
+        }
+
+        .kind-ManualReview,
+        .badge-review {
+            color: var(--review);
+            background: var(--review-bg);
+            border-color: var(--review-bd);
+            font-weight: 700;
+        }
+
+        .badge-ok {
+            color: var(--ok);
+            background: var(--ok-bg);
+            border-color: var(--ok-bd);
+        }
+
+        .kind-AlreadyIncluded,
+        .badge-included {
+            color: #0f766e;
+            background: #f0fdfa;
+            border-color: #99f6e4;
+        }
+
+        .kind-OutOfScope,
+        .badge-scope {
+            color: var(--scope);
+            background: var(--scope-bg);
+            border-color: var(--line);
+        }
+
+        .badge-pending {
+            color: var(--pending);
+            background: var(--pending-bg);
+            border-color: var(--pending-bd);
+            font-weight: 700;
+        }
+
+        .badge-skip {
+            color: var(--muted);
+            background: #f8fafc;
+            border-color: var(--line);
+        }
+
+        .commit-badges {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 6px;
+            align-items: center;
+            justify-content: flex-end;
+        }
+
+        .badge-group {
+            display: inline-flex;
+            flex-wrap: wrap;
+            gap: 6px;
+            align-items: center;
+        }
+
+        .legend-note {
+            color: var(--muted);
+            font-size: 12px;
+            font-weight: 500;
+        }
+
+        .legend {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 8px;
+            margin: 0 0 14px;
+        }
+
+        /* —— Toolbar / filters —— */
+        .toolbar {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 8px;
+            align-items: center;
+            margin-bottom: 14px;
+            padding: 10px 12px;
+            border: 1px solid var(--line);
+            border-radius: 8px;
+            background: #f8fafc;
+        }
+
+        .toolbar .tb-label {
+            font-size: 12px;
+            font-weight: 700;
+            color: var(--muted);
+            margin-right: 4px;
+        }
+
+        .filter-btn {
+            appearance: none;
+            border: 1px solid var(--line-strong);
+            background: #fff;
+            color: var(--ink-2);
+            border-radius: 999px;
+            padding: 5px 12px;
+            font-size: 12px;
+            font-weight: 600;
+            cursor: pointer;
+            font-family: inherit;
+        }
+
+        .filter-btn:hover { border-color: var(--brand-2); color: var(--brand-2); }
+        .filter-btn.active {
+            background: var(--brand);
+            border-color: var(--brand);
+            color: #fff;
+        }
+
+        .search-box {
+            margin-left: auto;
+            min-width: 200px;
+            flex: 1 1 200px;
+            max-width: 320px;
+            border: 1px solid var(--line-strong);
+            border-radius: 8px;
+            padding: 6px 10px;
+            font: inherit;
+            font-size: 13px;
+        }
+
+        .search-box:focus {
+            outline: 2px solid rgba(18, 90, 130, 0.25);
+            border-color: var(--brand-2);
+        }
+
+        /* —— Commit cards —— */
+        article.commit-card {
+            border: 1px solid var(--line);
+            border-radius: 10px;
+            margin-bottom: 14px;
+            overflow: hidden;
+            background: #fff;
+        }
+
+        article.commit-card:last-child { margin-bottom: 0; }
+
+        .commit-card.is-need { border-left: 4px solid var(--need); }
+        .commit-card.is-review { border-left: 4px solid var(--review); }
+        .commit-card.is-pending { border-left: 4px solid var(--pending); }
+        .commit-card.is-skip { border-left: 4px solid var(--line-strong); }
+        .commit-card.is-bug { border-left: 4px solid var(--ok); }
+
+        .commit-head {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 10px 16px;
+            align-items: flex-start;
+            justify-content: space-between;
+            padding: 14px 16px;
+            background: linear-gradient(180deg, #fbfcfe, #f8fafc);
+            border-bottom: 1px solid var(--line);
+        }
+
+        .commit-head h3 {
+            flex: 1 1 240px;
+            margin: 0;
+            font-size: 0.98rem;
+            font-weight: 700;
+            line-height: 1.4;
+            max-width: 52rem;
+        }
+
+        .commit-head .sha {
+            font-family: var(--mono);
+            font-size: 12px;
+            color: var(--brand-2);
+            font-weight: 700;
+            margin-right: 6px;
+        }
+
+        .commit-body { padding: 14px 16px 16px; }
+
+        .kv-table { min-width: 0; }
+        .kv-table td:first-child {
+            width: 120px;
+            color: var(--muted);
+            font-weight: 600;
+            white-space: nowrap;
+            background: #f8fafc;
+        }
+
+        .commit-body h4 {
+            margin: 16px 0 8px;
+            font-size: 0.88rem;
+            font-weight: 700;
+            color: var(--ink-2);
+        }
+
+        .empty-state {
+            padding: 28px 16px;
+            text-align: center;
+            color: var(--muted);
+            border: 1px dashed var(--line-strong);
+            border-radius: 8px;
+            background: #fafbfc;
+        }
+
+        article.target-card {
+            border: 1px solid var(--line);
+            border-radius: 10px;
+            margin-bottom: 14px;
+            overflow: hidden;
+        }
+
+        article.target-card h3 {
+            margin: 0;
+            padding: 12px 16px;
+            font-size: 0.95rem;
+            background: #f8fafc;
+            border-bottom: 1px solid var(--line);
+        }
+
+        article.target-card .table-wrap {
+            border: none;
+            border-radius: 0;
+        }
+
+        .callout {
+            padding: 12px 14px;
+            border-radius: 8px;
+            border: 1px solid var(--line);
+            background: #f8fafc;
+            color: var(--muted);
+            font-size: 13px;
+        }
+
+        .callout.pending {
+            background: var(--pending-bg);
+            border-color: var(--pending-bd);
+            color: #0c4a6e;
+        }
+
+        .footer {
+            max-width: var(--max);
+            margin: 28px auto 0;
+            padding: 16px 20px 8px;
+            color: var(--muted);
+            font-size: 12px;
+            border-top: 1px solid var(--line);
+            display: flex;
+            flex-wrap: wrap;
+            gap: 8px 20px;
+            justify-content: space-between;
+        }
+
+        .back-to-top {
+            position: fixed;
+            right: 24px;
+            bottom: 24px;
+            z-index: 60;
+            width: 44px;
+            height: 44px;
+            border: none;
+            border-radius: 50%;
+            background: var(--brand);
+            color: #fff;
+            box-shadow: 0 8px 20px rgba(11, 61, 92, 0.35);
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            opacity: 0;
+            pointer-events: none;
+            transform: translateY(8px);
+            transition: opacity 0.2s ease, transform 0.2s ease, background 0.15s ease;
+        }
+
+        .back-to-top.visible {
+            opacity: 1;
+            pointer-events: auto;
+            transform: translateY(0);
+        }
+
+        .back-to-top:hover {
+            background: var(--brand-2);
+        }
+
+        .back-to-top:focus-visible {
+            outline: 2px solid var(--accent);
+            outline-offset: 3px;
+        }
+
+        .back-to-top svg {
+            width: 22px;
+            height: 22px;
+            display: block;
+        }
+
+        .btn-merge {
+            appearance: none;
+            border: 1px solid var(--brand-2);
+            background: var(--brand-soft);
+            color: var(--brand);
+            border-radius: 6px;
+            padding: 4px 12px;
+            font-size: 12px;
+            font-weight: 700;
+            cursor: pointer;
+            font-family: inherit;
+        }
+
+        .btn-merge:hover {
+            background: var(--brand);
+            color: #fff;
+        }
+
+        .col-action { white-space: nowrap; width: 72px; }
+
+        .bma-modal-backdrop {
+            position: fixed;
+            inset: 0;
+            background: rgba(15, 23, 42, 0.45);
+            z-index: 80;
+            display: none;
+            align-items: center;
+            justify-content: center;
+            padding: 20px;
+        }
+
+        .bma-modal-backdrop.open { display: flex; }
+
+        .bma-modal {
+            width: min(640px, 100%);
+            max-height: min(80vh, 720px);
+            overflow: auto;
+            background: #fff;
+            border-radius: 12px;
+            border: 1px solid var(--line);
+            box-shadow: 0 20px 50px rgba(15, 23, 42, 0.25);
+        }
+
+        .bma-modal-head {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 12px;
+            padding: 14px 16px;
+            border-bottom: 1px solid var(--line);
+            background: #f8fafc;
+        }
+
+        .bma-modal-head h3 {
+            margin: 0;
+            font-size: 1rem;
+        }
+
+        .bma-modal-close {
+            appearance: none;
+            border: 1px solid var(--line-strong);
+            background: #fff;
+            border-radius: 6px;
+            padding: 4px 10px;
+            cursor: pointer;
+            font-family: inherit;
+            font-size: 12px;
+            font-weight: 600;
+        }
+
+        .bma-modal-body { padding: 14px 16px 18px; }
+        .bma-modal-body dl {
+            margin: 0;
+            display: grid;
+            grid-template-columns: 96px 1fr;
+            gap: 8px 12px;
+            font-size: 13px;
+        }
+        .bma-modal-body dt {
+            color: var(--muted);
+            font-weight: 700;
+        }
+        .bma-modal-body dd {
+            margin: 0;
+            word-break: break-word;
+            white-space: pre-wrap;
+        }
+        .bma-modal-body .cmd {
+            font-family: var(--mono);
+            font-size: 12px;
+            background: #0f172a;
+            color: #e2e8f0;
+            padding: 10px 12px;
+            border-radius: 8px;
+            margin-top: 4px;
+        }
+
+        .hidden { display: none !important; }
+
+        @media (max-width: 720px) {
+            .masthead-inner { padding: 22px 16px 18px; }
+            .panel-body { padding: 14px; }
+            .search-box { margin-left: 0; max-width: none; }
+            .risk-banner .risk-note { margin-left: 0; }
+        }
+
+        @media print {
+            body { background: #fff; }
+            .toc, .toolbar, .btn-merge, .bma-modal-backdrop { display: none !important; }
+            .masthead { box-shadow: none; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+            section.panel { box-shadow: none; break-inside: avoid; }
+            article.commit-card, article.target-card { break-inside: avoid; }
+            a { color: inherit; text-decoration: none; }
+        }
+    </style>
+</head>
+<body>
+    <header class="masthead">
+        <div class="masthead-inner">
+            <div class="brand-row">
+                <div class="brand-mark">
+                    <div class="logo" aria-hidden="true">BMA</div>
+                    <div class="brand-copy">
+                        <p class="eyebrow">RCIOS · Branch Maintenance Agent</p>
+                        <h1>分支维护同步建议报告</h1>
+                        <p class="subtitle">跨同源分支 Bug Fix 同步评估交付件。机器标记优先；无法判定项由 Claude 主 Agent 复核后回填。</p>
+                    </div>
+                </div>
+                <div class="meta-chip-row">
+                    <span class="meta-chip">仓库 <strong>{{REPO_ID}}</strong></span>
+                    <span class="meta-chip">评估时间范围 <strong>{{EVAL_TIME_RANGE}}</strong></span>
+                    <span class="meta-chip">密级 <strong>内部使用</strong></span>
+                </div>
+            </div>
+        </div>
+    </header>
+
+    <nav class="toc" aria-label="报告导航">
+        <div class="toc-inner">
+            <a href="#bma-home">01 总览</a>
+            <a href="#bma-doc-bugs">02 文档问题</a>
+            <a href="#bma-commits">03 提交详情</a>
+            <a href="#bma-by-target">04 目标汇总</a>
+            <span class="spacer"></span>
+        </div>
+    </nav>
+
+    <main class="page">
+        <section class="panel" id="bma-home">
+            <div class="panel-head">
+                <h2><span class="idx">01</span>首页总览</h2>
+                <p class="panel-note">扫描信息 · 分类统计 · 风险汇总</p>
+            </div>
+            <div class="panel-body">
+                {{HOME_BODY}}
+            </div>
+        </section>
+
+        <section class="panel" id="bma-doc-bugs">
+            <div class="panel-head">
+                <h2><span class="idx">02</span>文档问题</h2>
+                <p class="panel-note">branch.md 重复命名 / 未知类型</p>
+            </div>
+            <div class="panel-body">
+                {{DOC_BUGS_BODY}}
+            </div>
+        </section>
+
+        <section class="panel" id="bma-commits">
+            <div class="panel-head">
+                <h2><span class="idx">03</span>提交详情</h2>
+                <p class="panel-note">时间窗内全部提交；仅 Bug Fix 进入跨分支同步评估</p>
+            </div>
+            <div class="panel-body">
+                {{COMMITS_BODY}}
+            </div>
+        </section>
+
+        <section class="panel" id="bma-by-target">
+            <div class="panel-head">
+                <h2><span class="idx">04</span>按目标分支汇总</h2>
+                <p class="panel-note">仅列「需要同步」与「人工确认」条目；点击「合入」查看合入建议</p>
+            </div>
+            <div class="panel-body">
+                {{BY_TARGET_BODY}}
+            </div>
+        </section>
+    </main>
+
+    <footer class="footer">
+        <div>RCIOS Branch Maintenance Agent · 只读分析交付 · 不自动推送变更</div>
+        <div>结论代码保留英文枚举（NeedSync / ManualReview / AlreadyIncluded / OutOfScope）便于自动化对接</div>
+    </footer>
+
+    <button type="button" class="back-to-top" id="bma-back-to-top" aria-label="返回顶部" title="返回顶部">
+        <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+            <path fill="currentColor" d="M12 4.5l-7.5 7.5h4.5v7.5h6v-7.5h4.5L12 4.5z"/>
+        </svg>
+    </button>
+
+    <div class="bma-modal-backdrop" id="bma-merge-modal" aria-hidden="true">
+        <div class="bma-modal" role="dialog" aria-modal="true" aria-labelledby="bma-merge-title">
+            <div class="bma-modal-head">
+                <h3 id="bma-merge-title">合入信息</h3>
+                <button type="button" class="bma-modal-close" id="bma-merge-close">关闭</button>
+            </div>
+            <div class="bma-modal-body" id="bma-merge-body"></div>
+        </div>
+    </div>
+
+    <script>
+    (function () {
+        var root = document.getElementById("bma-commits");
+        if (root) {
+            var buttons = root.querySelectorAll("[data-filter]");
+            var cards = root.querySelectorAll("article.commit-card");
+            var search = root.querySelector("#bma-commit-search");
+            var active = "all";
+
+            function apply() {
+                var q = (search && search.value || "").trim().toLowerCase();
+                cards.forEach(function (card) {
+                    var role = card.getAttribute("data-role") || "all";
+                    var kinds = (card.getAttribute("data-kinds") || "").split(/\s+/).filter(Boolean);
+                    var text = (card.getAttribute("data-search") || card.textContent || "").toLowerCase();
+                    var roleOk = active === "all"
+                        || role === active
+                        || kinds.indexOf(active) !== -1;
+                    var textOk = !q || text.indexOf(q) !== -1;
+                    card.classList.toggle("hidden", !(roleOk && textOk));
+                });
+            }
+
+            buttons.forEach(function (btn) {
+                btn.addEventListener("click", function () {
+                    active = btn.getAttribute("data-filter") || "all";
+                    buttons.forEach(function (b) {
+                        b.classList.toggle("active", b === btn);
+                    });
+                    apply();
+                });
+            });
+
+            if (search) {
+                search.addEventListener("input", apply);
+            }
+        }
+
+        var modal = document.getElementById("bma-merge-modal");
+        var modalBody = document.getElementById("bma-merge-body");
+        var modalClose = document.getElementById("bma-merge-close");
+
+        function closeModal() {
+            if (!modal) return;
+            modal.classList.remove("open");
+            modal.setAttribute("aria-hidden", "true");
+        }
+
+        function openMergeModal(btn) {
+            if (!modal || !modalBody) return;
+            var fields = [
+                ["目标分支", btn.getAttribute("data-target") || "—"],
+                ["源分支", btn.getAttribute("data-source") || "—"],
+                ["结论", btn.getAttribute("data-kind") || "—"],
+                ["可信度", btn.getAttribute("data-confidence") || "—"],
+                ["提交 SHA", btn.getAttribute("data-sha") || "—"],
+                ["作者", btn.getAttribute("data-author") || "—"],
+                ["提交时间", btn.getAttribute("data-committed-at") || "—"],
+                ["提交说明", btn.getAttribute("data-message") || "—"]
+            ];
+            var cherry = btn.getAttribute("data-cherry") || "";
+            var html = "<dl>";
+            fields.forEach(function (pair) {
+                html += "<dt>" + pair[0] + "</dt><dd>" + escapeHtml(pair[1]) + "</dd>";
+            });
+            html += "</dl>";
+            if (cherry) {
+                html += "<p style=\"margin:14px 0 6px;font-weight:700;font-size:13px;\">建议合入命令</p>";
+                html += "<div class=\"cmd\">" + escapeHtml(cherry) + "</div>";
+            }
+            html += "<p class=\"meta\" style=\"margin-top:12px;\">当前为只读展示，不会自动执行 git 操作。</p>";
+            modalBody.innerHTML = html;
+            modal.classList.add("open");
+            modal.setAttribute("aria-hidden", "false");
+        }
+
+        function escapeHtml(text) {
+            return String(text)
+                .replace(/&/g, "&amp;")
+                .replace(/</g, "&lt;")
+                .replace(/>/g, "&gt;")
+                .replace(/\"/g, "&quot;");
+        }
+
+        document.querySelectorAll("button.btn-merge[data-bma-merge]").forEach(function (btn) {
+            btn.addEventListener("click", function () {
+                openMergeModal(btn);
+            });
+        });
+
+        if (modalClose) {
+            modalClose.addEventListener("click", closeModal);
+        }
+        if (modal) {
+            modal.addEventListener("click", function (ev) {
+                if (ev.target === modal) closeModal();
+            });
+        }
+        document.addEventListener("keydown", function (ev) {
+            if (ev.key === "Escape") closeModal();
+        });
+
+        var backTop = document.getElementById("bma-back-to-top");
+        if (backTop) {
+            function syncBackTop() {
+                var y = window.pageYOffset || document.documentElement.scrollTop || 0;
+                backTop.classList.toggle("visible", y > 280);
+            }
+            backTop.addEventListener("click", function () {
+                window.scrollTo({ top: 0, behavior: "smooth" });
+            });
+            window.addEventListener("scroll", syncBackTop, { passive: true });
+            syncBackTop();
+        }
+    })();
+    </script>
+</body>
+</html>

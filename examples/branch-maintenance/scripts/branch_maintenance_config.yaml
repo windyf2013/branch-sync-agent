@@ -1,0 +1,43 @@
+# Branch Maintenance Agent — human-edited runtime config (G1).
+# Agent state (last_scan_ref) lives in ai_reports/branch_maintenance_state.json.
+
+repos: []
+
+state_path: ai_reports/branch_maintenance_state.json
+output_dir: ai_reports
+# Inventory SSOT: audit/.claude/scripts/branch.md (not under this package).
+# Agent runs MUST pass --from-branch-md to that path (or aiskill absolute path).
+# After copy_to_project, business repos may get a seeded copy under .cursor/scripts/,
+# but BMA in aiskill workspace still reads the audit SSOT.
+branch_file: .claude/scripts/branch.md
+# Temporary scope: only ## 1 RCIOS代码库 (path exactly rcios). Empty = all inventory repos.
+# Expand later by adding paths or clearing this list.
+inventory_repo_paths:
+  - rcios
+
+# Mail: after successful HTML reports, call release-integration mail_send_subflow.
+# SMTP is shared with bug超期预警 (.cursor/scripts/bug_stale_alert.py CONFIG_TEMPLATE.smtp).
+mail_enabled: true
+mail_phase: prod
+mail_to:
+  - yuhui@raisecom.com
+  - yangfu@raisecom.com
+  - renjing@raisecom.com
+  - zhangjunni@raisecom.com
+  - renguohui@raisecom.com
+mail_cc: []
+mail_dry_run: false
+mail_smtp_source: bug_stale_alert
+# Optional overrides only (host/user/pass come from bug_stale_alert by default):
+# mail_smtp:
+#   from_name: RCIOS分支维护报告
+
+develop_backfill_enabled: true
+
+similarity_high: 0.90
+similarity_low: 0.50
+
+cross_product_links: []
+lifecycle_overrides: {}
+
+agent_judgments_path: ai_reports/bma_agent_judgments.json
