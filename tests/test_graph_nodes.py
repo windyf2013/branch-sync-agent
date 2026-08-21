@@ -4,6 +4,8 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
 from bsa.build.runner import BuildResult
 from bsa.domain.models import (
     BranchResult,
@@ -16,6 +18,7 @@ from bsa.domain.models import (
     ErrorRecord,
     SyncDecision,
 )
+from bsa.executor.exceptions import InfrastructureError
 from bsa.graph.nodes import (
     GraphContext,
     build,
@@ -871,6 +874,84 @@ def test_generate_patch_writes_patch_path(tmp_path):
     assert expected in wg.calls
     assert update["branch_results"][TARGET].patch_path is not None
     assert update["status"] == "PATCHED"
+
+
+# --- worktree safety (no silent fallback to main repo) ---
+
+
+def test_cherry_pick_without_prepared_worktree_raises(tmp_path):
+    ctx = make_ctx(tmp_path)
+    ctx.git.cherry_pick_result = CherryPickResult(status="OK")
+    state = base_state(current_target=TARGET, current_commit="a1")
+
+    with pytest.raises(InfrastructureError):
+        cherry_pick(state, ctx)
+
+
+def test_cherry_pick_without_prepared_worktree_node_wrapper_fails(tmp_path):
+    ctx = make_ctx(tmp_path)
+    ctx.git.cherry_pick_result = CherryPickResult(status="OK")
+    state = base_state(current_target=TARGET, current_commit="a1")
+
+    update = node_wrapper(cherry_pick, ctx=ctx)(state)
+
+    assert update["status"] == "FAILED"
+    assert "cherry_pick" in update["errors"]
+    assert "worktree" in update["errors"]["cherry_pick"].error.lower()
+
+
+def test_build_without_prepared_worktree_raises(tmp_path):
+    ctx = make_ctx(tmp_path)
+    ctx.worktree_path = None
+    state = base_state(
+        current_target=TARGET,
+        current_commit="a1",
+        detected_commits=[commit("a1")],
+        batches={TARGET: ["a1"]},
+        branch_results={
+            TARGET: BranchResult(
+                target_branch=TARGET,
+                worktree_path="",
+                status="PARTIAL",
+                commits=[commit_result("a1")],
+                patch_path=None,
+                stop_reason=None,
+            )
+        },
+    )
+
+    with pytest.raises(InfrastructureError):
+        build(state, ctx)
+
+
+def test_generate_patch_without_prepared_worktree_raises(tmp_path):
+    ctx = make_ctx(tmp_path)
+    state = base_state(current_target=TARGET)
+
+    with pytest.raises(InfrastructureError):
+        generate_patch(state, ctx)
+
+
+def test_resolve_conflict_without_prepared_worktree_raises(tmp_path):
+    ctx = make_ctx(tmp_path)
+    state = base_state(
+        current_target=TARGET,
+        current_commit="a1",
+        detected_commits=[commit("a1")],
+        branch_results={
+            TARGET: BranchResult(
+                target_branch=TARGET,
+                worktree_path="",
+                status="PARTIAL",
+                commits=[commit_result("a1", cherry_pick_status="CONFLICT")],
+                patch_path=None,
+                stop_reason=None,
+            )
+        },
+    )
+
+    with pytest.raises(InfrastructureError):
+        resolve_conflict(state, ctx)
 
 
 # --- report ---

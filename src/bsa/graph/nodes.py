@@ -24,6 +24,7 @@ from bsa.domain.models import (
     SyncDecision,
 )
 from bsa.executor.base import CommandExecutor
+from bsa.executor.exceptions import InfrastructureError
 from bsa.git.service import GitService
 from bsa.rules import (
     DecisionRules,
@@ -299,7 +300,9 @@ def _worktree_git(state: dict, ctx: GraphContext) -> GitService:
     if branch is not None and branch.worktree_path:
         ctx.worktree_git = GitService(executor=ctx.executor, repo_path=Path(branch.worktree_path))
         return ctx.worktree_git
-    return ctx.git
+    raise InfrastructureError(
+        f"no worktree prepared for target {target!r}; refusing to operate on the main repo"
+    )
 
 
 def _worktree_path(state: dict, ctx: GraphContext) -> Path:
@@ -309,7 +312,9 @@ def _worktree_path(state: dict, ctx: GraphContext) -> Path:
     branch = (state.get("branch_results") or {}).get(target)
     if branch is not None and branch.worktree_path:
         return Path(branch.worktree_path)
-    return Path(ctx.settings.repo_path)
+    raise InfrastructureError(
+        f"no worktree prepared for target {target!r}; refusing to operate on the main repo"
+    )
 
 
 def _branch_results(state: dict, ctx: GraphContext, target: str) -> tuple[dict, BranchResult]:
