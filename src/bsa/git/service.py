@@ -167,6 +167,15 @@ class GitService:
             error_msg=f"cannot remove worktree {path}",
         )
 
+    def list_worktrees(self) -> list[Path]:
+        """List registered worktree paths (``git worktree list --porcelain``)."""
+        result = self._run(["worktree", "list", "--porcelain"])
+        paths: list[Path] = []
+        for line in result.stdout.splitlines():
+            if line.startswith("worktree "):
+                paths.append(Path(line[len("worktree ") :].strip()))
+        return paths
+
     def cherry_pick(self, sha: str) -> CherryPickResult:
         result = self.executor.run(["cherry-pick", sha], cwd=self.repo_path)
         if result.returncode == 0:
@@ -182,6 +191,18 @@ class GitService:
         if conflicts:
             return CherryPickResult(status="CONFLICT", conflict_files=conflicts)
         return CherryPickResult(status="FAILED")
+
+    def cherry_pick_continue(self) -> None:
+        """Finish an in-progress cherry-pick after a resolved conflict.
+
+        ``--no-edit`` reuses the original commit message so the sequencer
+        commits without opening an editor; this clears the sequencer and makes
+        ``HEAD`` advance so the sync patch is non-empty (C1).
+        """
+        self._run(
+            ["cherry-pick", "--continue", "--no-edit"],
+            error_msg="cannot finish cherry-pick after conflict resolution",
+        )
 
     def unmerged_files(self) -> list[str]:
         result = self._run(["diff", "--name-only", "--diff-filter=U"])

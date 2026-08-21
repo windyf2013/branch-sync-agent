@@ -172,6 +172,19 @@ def test_per_model_serial_loop(tmp_path):
     assert build["RTL9607F"].status == "OK"
 
 
+def test_cycle_rerun_prepare_reuses_existing_worktree(tmp_path):
+    write_branch_md(tmp_path)
+    ctx = batch_ctx(tmp_path, shas=["a1"])
+    wt = worktree_path_for(ctx, TARGET)
+    wt.mkdir(parents=True)
+
+    out = run(build_workflow(ctx), base_state())
+
+    assert out["status"] == "REPORTED"
+    assert out["branch_results"][TARGET].status == "SUCCESS"
+    assert not any(name == "add_worktree" for name, args in ctx.git.calls)
+
+
 def test_multi_branch_loop_uses_per_branch_worktree_git(tmp_path):
     path = tmp_path / "branch.md"
     path.write_text(BRANCH_MD_TWO, encoding="utf-8")
@@ -188,6 +201,35 @@ def test_multi_branch_loop_uses_per_branch_worktree_git(tmp_path):
     assert out["branch_results"][TARGET].patch_path is not None
     assert out["branch_results"][TARGET2].patch_path is not None
     assert out["report"].summary["branches"] == sorted([TARGET, TARGET2])
+
+
+def test_conflict_resolved_continue_build_patch_success(tmp_path):
+    write_branch_md(tmp_path)
+    ctx = batch_ctx(tmp_path, shas=["a1"])
+    from bsa.domain.models import ConflictResolution
+
+    ctx.conflict_agent.resolution = ConflictResolution(
+        files=["plat/demo.c"], diff="+fixed", agent_reason="resolved"
+    )
+    inject_worktree_git(
+        ctx,
+        FakeWorktreeGit(
+            results={"a1": CherryPickResult(status="CONFLICT")}, unmerged=["plat/demo.c"]
+        ),
+        TARGET,
+    )
+
+    out = run(build_workflow(ctx), base_state())
+
+    wg = worktree_git_for(ctx, TARGET)
+    assert wg.cherry_pick_continue_calls == 1
+    branch = out["branch_results"][TARGET]
+    assert branch.commits[0].cherry_pick == "OK"
+    assert branch.commits[0].conflict_resolution is not None
+    assert branch.commits[0].build["RTL9617C"].status == "OK"
+    assert branch.status == "SUCCESS"
+    assert branch.patch_path is not None
+    assert out["report"] is not None
 
 
 def test_failfast_related_stops_batch(tmp_path):

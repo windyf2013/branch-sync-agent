@@ -127,25 +127,60 @@ def default_window(now: datetime | None = None) -> tuple[str, str]:
     )
 
 
+def _parse_dt(text: str) -> datetime:
+    dt = datetime.fromisoformat(text)
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=_CST)
+    return dt
+
+
+def _derive_window(
+    since: str | None, until: str | None, now: datetime | None = None
+) -> tuple[str, str]:
+    """Resolve a scan window, deriving a missing bound (决策 38, partial override).
+
+    A partial ``--since``/``--until`` override is honored instead of silently
+    falling back to the default window: only ``--since`` → until = now; only
+    ``--until`` → since = until − 1 day. Both or neither keep the existing
+    behaviour.
+    """
+    if since is not None and until is not None:
+        return since, until
+    if since is None and until is None:
+        return default_window(now) if now is not None else default_window()
+    if until is None:
+        if now is None:
+            now = datetime.now(_CST)
+        elif now.tzinfo is None:
+            now = now.replace(tzinfo=_CST)
+        else:
+            now = now.astimezone(_CST)
+        return since, now.isoformat(timespec="seconds")
+    derived = _parse_dt(until) - timedelta(days=1)
+    return derived.isoformat(timespec="seconds"), until
+
+
 def _load_matrix(ctx: GraphContext) -> list[HomologousSet]:
     if ctx.matrix is None:
         text = Path(ctx.settings.branch_file).read_text(encoding="utf-8")
-        ctx.matrix = build_matrix(parse_branch_md(text))
+        ctx.matrix = build_matrix(
+            parse_branch_md(text, branch_mapping=ctx.decision_rules.branch_mapping)
+        )
     return ctx.matrix
 
 
 def detect_commits(state: dict, ctx: GraphContext) -> dict:
     """Scan window fetch + matrix + classify → detected_commits + classifications."""
     settings = ctx.settings
-    since, until = settings.scan_since, settings.scan_until
-    if since is None or until is None:
-        since, until = default_window()
+    since, until = _derive_window(settings.scan_since, settings.scan_until)
 
     ctx.git.fetch_all()
 
     branch_path = Path(settings.branch_file)
     branch_md_text = branch_path.read_text(encoding="utf-8")
-    ctx.matrix = build_matrix(parse_branch_md(branch_md_text))
+    ctx.matrix = build_matrix(
+        parse_branch_md(branch_md_text, branch_mapping=ctx.decision_rules.branch_mapping)
+    )
     branch_md_version = hashlib.sha1(branch_md_text.encode("utf-8")).hexdigest()[:12]
 
     detected: list[CommitInfo] = []
@@ -191,7 +226,9 @@ def detect_commits(state: dict, ctx: GraphContext) -> dict:
     }
 
 
-def _to_analysis(commit: CommitInfo, decision: SyncDecision) -> CommitAnalysis:
+def _to_analysis(
+    commit: CommitInfo, decision: SyncDecision, branch_mapping: dict[str, str] | None = None
+) -> CommitAnalysis:
     return CommitAnalysis(
         sha=commit.sha,
         message=commit.message,
@@ -202,7 +239,7 @@ def _to_analysis(commit: CommitInfo, decision: SyncDecision) -> CommitAnalysis:
         issue_ids=list(commit.issue_ids),
         recognition_source=decision.recognition_source,
         source_branch=commit.source_branch,
-        source_branch_type=resolve_branch_type(commit.source_branch),
+        source_branch_type=resolve_branch_type(commit.source_branch, branch_mapping),
         homologous_section=commit.homologous_section,
     )
 
@@ -236,7 +273,9 @@ def sync_decision(state: dict, ctx: GraphContext) -> dict:
         classifications.update(ctx.sync_decision_agent.run(pending))
 
     analyses = {
-        commit.sha: _to_analysis(commit, classifications[commit.sha])
+        commit.sha: _to_analysis(
+            commit, classifications[commit.sha], ctx.decision_rules.branch_mapping
+        )
         for commit in detected
         if commit.sha in classifications
     }
@@ -251,6 +290,13 @@ def sync_decision(state: dict, ctx: GraphContext) -> dict:
                 continue
             analysis = analyses[commit.sha]
             for target in hs.need_sync_targets:
+                if not ctx.safety.check_sync_branch(target.name):
+                    decisions.setdefault(commit.sha, {})[target.name] = Conclusion4(
+                        kind="OutOfScope",
+                        evidence=[f"目标分支 {target.name} 命中禁止同步清单，跳过。"],
+                        confidence="high",
+                    )
+                    continue
                 snapshot = _build_target_snapshot(ctx, analysis, target)
                 conclusion = ctx.conclude(
                     analysis,
@@ -372,13 +418,19 @@ def _current_build(state: dict, ctx: GraphContext) -> tuple[str, BuildOutcome] |
 
 
 def prepare_worktree(state: dict, ctx: GraphContext) -> dict:
-    """Add a worktree for current_target from its remote tip (决策 24)."""
+    """Add a worktree for current_target from its remote tip (决策 24).
+
+    Idempotent for resume/re-run: if the worktree path already exists on disk
+    (from an interrupted cycle or a previous run), it is reused instead of
+    failing ``git worktree add`` (I5).
+    """
     target = state["current_target"]
     if target is None:
         raise ValueError("current_target is not set")
     resolved, _ = ctx.git.branch_tip(target)
     worktree_path = Path(ctx.settings.worktree_root) / f"{target}-{state['cycle_id']}"
-    ctx.git.add_worktree(resolved, worktree_path)
+    if not worktree_path.exists():
+        ctx.git.add_worktree(resolved, worktree_path)
     ctx.worktree_path = worktree_path
     if str(worktree_path) not in ctx.worktree_gits:
         ctx.worktree_gits[str(worktree_path)] = GitService(
@@ -426,23 +478,36 @@ def cherry_pick(state: dict, ctx: GraphContext) -> dict:
 
 
 def resolve_conflict(state: dict, ctx: GraphContext) -> dict:
-    """Resolve the current commit's conflicts; None resolution is fail-fast."""
+    """Resolve the current commit's conflicts; None resolution is fail-fast.
+
+    On a successful resolution the agent stages the resolved files; this node
+    then runs ``cherry-pick --continue`` to commit the resolution, clear the
+    sequencer, and advance HEAD so the sync patch is non-empty (C1). The
+    CommitResult is upgraded to ``cherry_pick=OK``.
+    """
     target = state["current_target"]
     sha = state["current_commit"]
     commit = _find_commit(state, sha)
     wg = _worktree_git(state, ctx)
     conflict_files = wg.unmerged_files()
-    resolution = ctx.conflict_agent.resolve(commit, conflict_files)
+    resolution = ctx.conflict_agent.resolve(commit, conflict_files, git=wg, target_branch=target)
     results, branch = _branch_results(state, ctx, target)
     index = _commit_result_index(branch, sha)
-    updated = branch.commits[index].model_copy(update={"conflict_resolution": resolution})
+    if resolution is not None:
+        wg.cherry_pick_continue()
+        status = "RESOLVED"
+    else:
+        status = "RESOLUTION_FAILED"
+    updated = branch.commits[index].model_copy(
+        update={
+            "conflict_resolution": resolution,
+            "cherry_pick": "OK" if resolution is not None else branch.commits[index].cherry_pick,
+        }
+    )
     commits = list(branch.commits)
     commits[index] = updated
     results[target] = branch.model_copy(update={"commits": commits})
-    return {
-        "branch_results": results,
-        "status": "RESOLVED" if resolution is not None else "RESOLUTION_FAILED",
-    }
+    return {"branch_results": results, "status": status}
 
 
 def _next_model(state: dict, ctx: GraphContext) -> str | None:
@@ -509,7 +574,10 @@ def fix_build(state: dict, ctx: GraphContext) -> dict:
     if current is None:
         return {"status": "BUILD_OK"}
     model, failed = current
-    ctx.build_agent.fix(commit, failed.errors, model)
+    wg = _worktree_git(state, ctx)
+    attribution = ctx.build_agent.fix(
+        commit, failed.errors, model, git=wg, target_branch=target
+    )
     log_path = _log_path(ctx, target, sha)
     result = ctx.runner.build_commit(
         _worktree_path(state, ctx), model, clean=False, module=None, log_path=log_path
@@ -521,7 +589,7 @@ def fix_build(state: dict, ctx: GraphContext) -> dict:
         log_path=str(log_path),
         errors=result.errors,
         agent_attempts=failed.agent_attempts + 1,
-        fix_diff=None,
+        fix_diff=attribution.fix_diff,
     )
     results = _record_build(state, ctx, outcome)
     return {"branch_results": results, "status": "BUILD_OK" if ok else "BUILD_FAILED"}

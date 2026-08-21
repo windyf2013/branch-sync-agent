@@ -42,6 +42,7 @@ class BuildAttribution(BaseModel):
     category: Literal["introduced_by_commit", "pre_existing", "environment", "unresolvable"]
     reason: str
     files_to_fix: list[str]
+    fix_diff: str | None = None
 
 
 class BuildFix(BaseModel):

@@ -183,6 +183,24 @@ def test_successful_resolution_removes_markers_stages_and_returns(tmp_path: Path
     assert ctx.conflict_markers == {"src/net.c": CONFLICT_TEXT}
 
 
+def test_resolve_uses_worktree_scoped_git(tmp_path: Path) -> None:
+    main = FakeGit(Path("/main"))
+    wt = FakeGit(tmp_path, status_text="UU src/net.c\n")
+    write_conflicted(tmp_path)
+    llm = FakeLLM([resolved()])
+    agent = ConflictAgent(llm, main, make_safety())
+
+    result = agent.resolve(make_commit(), CONFLICT_FILES, git=wt, target_branch="br_target")
+
+    assert result is not None
+    assert wt.staged == [CONFLICT_FILES]
+    assert main.staged == []
+    assert (tmp_path / "src/net.c").read_text(encoding="utf-8") == "int value = 1;\n"
+    assert not (Path("/main") / "src").exists()
+    assert llm.calls[0].target_branch == "br_target"
+    assert llm.calls[0].worktree == tmp_path
+
+
 def test_target_branch_from_constructor_reaches_context(tmp_path: Path) -> None:
     write_conflicted(tmp_path)
     git = FakeGit(tmp_path, status_text="UU src/net.c\n")

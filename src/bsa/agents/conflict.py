@@ -134,34 +134,48 @@ class ConflictAgent:
         self._target_branch = target_branch
 
     def resolve(
-        self, commit: CommitInfo, conflict_files: list[str]
+        self,
+        commit: CommitInfo,
+        conflict_files: list[str],
+        *,
+        git: GitService | None = None,
+        target_branch: str | None = None,
     ) -> ConflictResolution | None:
         """Return the resolution, or None for manual review / fail-fast.
 
+        ``git`` is the worktree-scoped GitService: all file I/O and git
+        commands run against the target worktree, never the main repo (C2).
         None is returned when: a conflict file hits a forbidden path (manual),
         the LLM is unavailable (manual), or max_attempts rounds fail (fail-fast).
         """
+        wgit = git or self._git
+        tgt = target_branch or self._target_branch
         try:
             self._safety.check_editable(conflict_files)
         except SafetyViolation:
             return None
         for _ in range(self._max_attempts):
-            snapshots = self._git.snapshot(conflict_files)
+            snapshots = wgit.snapshot(conflict_files)
             try:
-                resolution = self._attempt(commit, conflict_files)
+                resolution = self._attempt(commit, conflict_files, git=wgit, target_branch=tgt)
             except LLMUnavailable:
                 return None
             if resolution is not None:
                 return resolution
-            self._rollback(conflict_files, snapshots)
+            self._rollback(conflict_files, snapshots, git=wgit)
         return None
 
     def _attempt(
-        self, commit: CommitInfo, conflict_files: list[str]
+        self,
+        commit: CommitInfo,
+        conflict_files: list[str],
+        *,
+        git: GitService,
+        target_branch: str | None,
     ) -> ConflictResolution | None:
         markers: dict[str, str] = {}
         for rel in conflict_files:
-            path = self._git.repo_path / rel
+            path = git.repo_path / rel
             if path.is_file():
                 markers[rel] = path.read_text(encoding="utf-8")
         ctx = ConflictContext(
@@ -169,22 +183,26 @@ class ConflictAgent:
             conflict_files=conflict_files,
             conflict_markers=markers,
             source_branch=commit.source_branch,
-            target_branch=self._target_branch or commit.source_branch,
-            worktree=self._git.repo_path,
+            target_branch=target_branch or commit.source_branch,
+            worktree=git.repo_path,
         )
         resolution = self._llm.solve_conflict(ctx)
-        if not self._apply(resolution, conflict_files):
+        if not self._apply(resolution, conflict_files, git=git):
             return None
         try:
-            if not self._verified(conflict_files):
+            if not self._verified(conflict_files, git=git):
                 return None
-            self._git.stage(conflict_files)
+            git.stage(conflict_files)
         except InfrastructureError:
             return None
         return resolution
 
     def _apply(
-        self, resolution: ConflictResolution, conflict_files: list[str]
+        self,
+        resolution: ConflictResolution,
+        conflict_files: list[str],
+        *,
+        git: GitService,
     ) -> bool:
         allowed = set(conflict_files)
         if not set(resolution.files) <= allowed:
@@ -193,7 +211,7 @@ class ConflictAgent:
             for path, patch in _diff_files(resolution.diff).items():
                 if path not in allowed:
                     return False
-                target = self._git.repo_path / path
+                target = git.repo_path / path
                 current = target.read_text(encoding="utf-8") if target.is_file() else ""
                 target.parent.mkdir(parents=True, exist_ok=True)
                 target.write_text(_apply_patch(current, patch), encoding="utf-8")
@@ -201,17 +219,17 @@ class ConflictAgent:
             return False
         return True
 
-    def _verified(self, conflict_files: list[str]) -> bool:
+    def _verified(self, conflict_files: list[str], *, git: GitService) -> bool:
         for rel in conflict_files:
-            path = self._git.repo_path / rel
+            path = git.repo_path / rel
             if not path.is_file():
                 continue
             for line in path.read_text(encoding="utf-8").splitlines():
                 if line.startswith(_MARKERS):
                     return False
-        if not self._git.diff_check():
+        if not git.diff_check():
             return False
-        if not _modified_paths(self._git.status()) <= set(conflict_files):
+        if not _modified_paths(git.status()) <= set(conflict_files):
             return False
         try:
             self._safety.check_editable(conflict_files)
@@ -219,10 +237,16 @@ class ConflictAgent:
             return False
         return True
 
-    def _rollback(self, conflict_files: list[str], snapshots: dict[str, str]) -> None:
-        self._git.restore(snapshots)
+    def _rollback(
+        self,
+        conflict_files: list[str],
+        snapshots: dict[str, str],
+        *,
+        git: GitService,
+    ) -> None:
+        git.restore(snapshots)
         for rel in conflict_files:
             if rel not in snapshots:
-                path = self._git.repo_path / rel
+                path = git.repo_path / rel
                 if path.is_file():
                     path.unlink()

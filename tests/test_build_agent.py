@@ -250,6 +250,30 @@ def test_llm_unavailable_classify_degrades_to_unresolvable(tmp_path: Path) -> No
     assert runner.build_calls == []
 
 
+def test_fix_uses_worktree_scoped_git(tmp_path: Path) -> None:
+    write_file(tmp_path, "src/dhcp.c", "#include <stdlib.h>\nint value = bad;\n")
+    main = FakeGit(Path("/main"))
+    wt = FakeGit(tmp_path)
+    llm = FakeLLM(
+        make_attribution("introduced_by_commit", ["src/dhcp.c"]),
+        fixes=[make_fix()],
+    )
+    runner = FakeRunner([([], True)])
+    agent = BuildAgent(llm, main, runner, make_safety())
+
+    result = agent.fix(
+        make_commit(), [ERROR_BLOCK], "RTL9617C", git=wt, target_branch="br_v4.33"
+    )
+
+    assert result.category == "introduced_by_commit"
+    assert (tmp_path / "src/dhcp.c").read_text(encoding="utf-8") == (
+        "#include <stdlib.h>\nint value = 1;\n"
+    )
+    assert llm.classify_calls[0].worktree == tmp_path
+    assert runner.build_calls[0]["worktree"] == tmp_path
+    assert not (Path("/main") / "src").exists()
+
+
 def test_introduced_by_commit_fix_loop_success(tmp_path: Path) -> None:
     write_file(tmp_path, "src/dhcp.c", "#include <stdlib.h>\nint value = bad;\n")
     git = FakeGit(tmp_path)
@@ -276,6 +300,22 @@ def test_introduced_by_commit_fix_loop_success(tmp_path: Path) -> None:
     assert ctx.commit.sha == "b1b2c3d4e5f60718293a4b5c6d7e8f9a0b1c2d3e"
     assert ctx.model == "RTL9617C"
     assert ctx.worktree == tmp_path
+
+
+def test_successful_fix_captures_applied_diff(tmp_path: Path) -> None:
+    write_file(tmp_path, "src/dhcp.c", "#include <stdlib.h>\nint value = bad;\n")
+    git = FakeGit(tmp_path)
+    llm = FakeLLM(
+        make_attribution("introduced_by_commit", ["src/dhcp.c"]),
+        fixes=[make_fix()],
+    )
+    runner = FakeRunner([([], True)])
+    agent = BuildAgent(llm, git, runner, make_safety())
+
+    result = agent.fix(make_commit(), [ERROR_BLOCK], "RTL9617C")
+
+    assert result.category == "introduced_by_commit"
+    assert result.fix_diff == FIX_DIFF
 
 
 def test_fix_failure_restores_and_retries_three_attempts(tmp_path: Path) -> None:

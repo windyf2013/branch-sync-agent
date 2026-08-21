@@ -7,6 +7,7 @@ from datetime import UTC, date, datetime
 from pathlib import Path
 
 from bsa.config.settings import load_settings
+from bsa.executor.exceptions import InfrastructureError
 from bsa.graph import (
     GraphContext,
     build_graph_context,
@@ -35,6 +36,39 @@ def _parse_cycle_date(date: str) -> date:
         except ValueError:
             continue
     raise ValueError(f"无效的周期日期 {date!r}，期望格式 YYYY-MM-DD")
+
+
+def _stale_worktree(path: Path, root: Path, cycle_id: str) -> bool:
+    """True when ``path`` is a linked worktree under ``root`` from an older cycle.
+
+    The main repo is never under ``root``; a worktree belonging to the current
+    cycle is named ``<target>-<cycle_id>`` and is kept.
+    """
+    try:
+        path.relative_to(root)
+    except ValueError:
+        return False
+    return not path.name.endswith(f"-{cycle_id}")
+
+
+def cleanup_worktrees(context: GraphContext, cycle_id: str) -> None:
+    """Remove linked worktrees from previous cycles (决策 9).
+
+    Runs at the start of every cycle so a re-run never trips over stale
+    worktrees; ``prepare_worktree`` stays idempotent for the current cycle.
+    Failures are skipped so cleanup never breaks a cycle.
+    """
+    root = Path(context.settings.worktree_root)
+    try:
+        paths = context.git.list_worktrees()
+    except (AttributeError, InfrastructureError):
+        return
+    for path in paths:
+        if _stale_worktree(Path(path), root, cycle_id):
+            try:
+                context.git.remove_worktree(path)
+            except InfrastructureError:
+                continue
 
 
 def _initial_state(cycle_id: str) -> dict:
@@ -174,6 +208,8 @@ def _execute(
     cycle_dir = log_dir / cycle_id
     cycle_dir.mkdir(parents=True, exist_ok=True)
     logger = _setup_run_logger(cycle_dir / "run.log")
+
+    cleanup_worktrees(context, cycle_id)
 
     started_at = datetime.now().isoformat(timespec="seconds")
     logger.info(

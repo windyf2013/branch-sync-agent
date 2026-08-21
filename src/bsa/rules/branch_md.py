@@ -53,8 +53,24 @@ def _detect_markers(normalized: str) -> list[str]:
     return markers
 
 
-def resolve_branch_type(name: str) -> str:
+def resolve_branch_type(name: str, branch_mapping: dict[str, str] | None = None) -> str:
+    """Infer a branch type by name markers, or honor an explicit mapping (决策 19).
+
+    ``branch_mapping`` (branch name → type) takes precedence over name-pattern
+    inference: an exact branch-name match wins, then the longest prefix match.
+    """
     normalized = _normalize_branch_name_for_type(name)
+    if branch_mapping:
+        mapped = branch_mapping.get(normalized) or branch_mapping.get(name)
+        if mapped is not None:
+            return mapped
+        best: tuple[str, str] | None = None
+        for key, branch_type in branch_mapping.items():
+            if normalized.startswith(_normalize_branch_name_for_type(key)):
+                if best is None or len(key) > len(best[0]):
+                    best = (key, branch_type)
+        if best is not None:
+            return best[1]
     markers = _detect_markers(normalized)
     if not markers:
         return "unknown"
@@ -111,7 +127,9 @@ def _collect_duplicates(sections: list[BranchSection]) -> list[dict]:
     return duplicates
 
 
-def parse_branch_md(text: str) -> BranchMdDocument:
+def parse_branch_md(
+    text: str, branch_mapping: dict[str, str] | None = None
+) -> BranchMdDocument:
     title: str | None = None
     sections: list[BranchSection] = []
     current_section: BranchSection | None = None
@@ -151,7 +169,7 @@ def parse_branch_md(text: str) -> BranchMdDocument:
 
         branch_ref = BranchRef(
             name=branch_name,
-            branch_type=resolve_branch_type(branch_name),
+            branch_type=resolve_branch_type(branch_name, branch_mapping=branch_mapping),
             section=current_section.title,
         )
         current_section.branches.append(branch_ref)

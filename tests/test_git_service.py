@@ -285,6 +285,41 @@ class TestCherryPick:
         assert result == CherryPickResult(status="FAILED")
 
 
+class TestWorktreeList:
+    def test_parses_porcelain_paths(self, tmp_path):
+        out = (
+            f"worktree {tmp_path}\n"
+            "HEAD abc\n"
+            "branch refs/heads/master\n"
+            "\n"
+            f"worktree {tmp_path}/wt\n"
+            "HEAD def\n"
+            "branch refs/heads/release\n"
+        )
+        executor = FakeExecutor([ok(out)])
+        result = GitService(executor, tmp_path).list_worktrees()
+        assert result == [tmp_path, tmp_path / "wt"]
+        assert executor.calls[0][0] == ["worktree", "list", "--porcelain"]
+
+    def test_ignores_detached_metadata_lines(self, tmp_path):
+        out = f"worktree {tmp_path}/wt\nHEAD def\ndetached\n\n"
+        result = GitService(FakeExecutor([ok(out)]), tmp_path).list_worktrees()
+        assert result == [tmp_path / "wt"]
+
+
+class TestCherryPickContinue:
+    def test_runs_continue_with_no_edit(self, tmp_path):
+        executor = FakeExecutor([ok()])
+        GitService(executor, tmp_path).cherry_pick_continue()
+        assert executor.calls[0][0] == ["cherry-pick", "--continue", "--no-edit"]
+        assert executor.calls[0][1]["cwd"] == tmp_path
+
+    def test_failure_raises(self, tmp_path):
+        executor = FakeExecutor([CompletedProcess(returncode=1, stdout="", stderr="cannot commit")])
+        with pytest.raises(InfrastructureError):
+            GitService(executor, tmp_path).cherry_pick_continue()
+
+
 class TestUnmergedAndDiffCheck:
     def test_unmerged_files(self, tmp_path):
         executor = FakeExecutor([ok("f.c\n\ng.h\n")])
@@ -368,8 +403,10 @@ class TestWhitelistIntegration:
         svc.show_file("HEAD", "f")
         svc.is_ancestor("a", "b")
         svc.add_worktree("feature", tmp_path / "wt")
+        svc.list_worktrees()
         svc.remove_worktree(tmp_path / "wt")
         svc.cherry_pick("abc")
+        svc.cherry_pick_continue()
         svc.unmerged_files()
         svc.diff_check()
         svc.stage(["f.c"])

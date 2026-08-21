@@ -14,7 +14,12 @@ from bsa.domain.models import (
 )
 from bsa.report.renderer import build_email_body, render_html_report
 from bsa.rules import Classification
-from bsa.scheduler.cycle import _derive_cycle_id, list_cycle_records, run_cycle
+from bsa.scheduler.cycle import (
+    _derive_cycle_id,
+    cleanup_worktrees,
+    list_cycle_records,
+    run_cycle,
+)
 from tests.test_config import valid_env
 from tests.test_graph_nodes import (
     DEVELOP,
@@ -56,6 +61,46 @@ def test_validate_config_missing_env_exits_two(monkeypatch):
     monkeypatch.setattr("bsa.config.settings.os.environ", {})
 
     assert main(["validate-config"]) == 2
+
+
+def test_cleanup_worktrees_removes_stale_only(tmp_path):
+    ctx = make_ctx(tmp_path)
+    wt_root = Path(ctx.settings.worktree_root)
+    ctx.git.worktrees = [
+        wt_root / f"{TARGET}-cycle-2026-08-19",
+        wt_root / f"{TARGET}-cycle-2026-08-20",
+        tmp_path / "repo",
+    ]
+
+    cleanup_worktrees(ctx, "cycle-2026-08-20")
+
+    removed = [args[0] for name, args in ctx.git.calls if name == "remove_worktree"]
+    assert removed == [wt_root / f"{TARGET}-cycle-2026-08-19"]
+
+
+def test_cleanup_worktrees_ignores_failed_removal(tmp_path):
+    ctx = make_ctx(tmp_path)
+    ctx.git.worktrees = [
+        Path(ctx.settings.worktree_root) / f"{TARGET}-cycle-2026-08-19",
+        Path(ctx.settings.worktree_root) / f"{TARGET}-cycle-2026-08-18",
+    ]
+    ctx.git.fail_remove_worktree = True
+    cleanup_worktrees(ctx, "cycle-2026-08-20")
+    removed = [args[0] for name, args in ctx.git.calls if name == "remove_worktree"]
+    assert len(removed) == 2
+
+
+def test_run_cycle_invokes_worktree_cleanup(tmp_path):
+    write_branch_md(tmp_path)
+    ctx = make_ctx(tmp_path)
+    _populate(ctx, ["a1"])
+    stale = Path(ctx.settings.worktree_root) / f"{TARGET}-cycle-2026-08-19"
+    ctx.git.worktrees = [stale]
+
+    assert run_cycle("2026-08-20", context=ctx) == 0
+
+    assert any(name == "list_worktrees" for name, args in ctx.git.calls)
+    assert ("remove_worktree", (stale,)) in ctx.git.calls
 
 
 def test_run_cycle_dry_run_full_cycle_produces_artifacts(tmp_path):
@@ -148,12 +193,12 @@ def test_run_cycle_checkpoint_resume_reuses_state(tmp_path):
 
     assert run_cycle("2026-08-20", context=ctx) == 0
     runner_calls = len(ctx.runner.build_calls)
-    git_calls = len(ctx.git.calls)
+    fetch_calls = [c for c in ctx.git.calls if c[0] == "fetch_all"]
 
     assert run_cycle("2026-08-20", context=ctx) == 0
 
     assert len(ctx.runner.build_calls) == runner_calls
-    assert len(ctx.git.calls) == git_calls
+    assert len([c for c in ctx.git.calls if c[0] == "fetch_all"]) == len(fetch_calls)
 
 
 def test_status_shows_latest_cycle(monkeypatch, tmp_path, capsys):

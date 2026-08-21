@@ -82,7 +82,8 @@ class TestDefaults:
         for field, expected in DEFAULTS.items():
             assert getattr(s, field) == expected
 
-    def test_defaults_need_no_env_vars(self):
+    def test_defaults_need_no_env_vars(self, monkeypatch):
+        monkeypatch.setattr("bsa.config.settings.os.environ", {})
         s = Settings(
             repo_path="r",
             branch_file="b",

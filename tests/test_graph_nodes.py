@@ -21,6 +21,8 @@ from bsa.domain.models import (
 from bsa.executor.exceptions import InfrastructureError
 from bsa.graph.nodes import (
     GraphContext,
+    _derive_window,
+    _to_analysis,
     build,
     cherry_pick,
     default_window,
@@ -122,6 +124,7 @@ class FakeGit:
         self.is_ancestor_results: dict[tuple[str, str], bool] = {}
         self.file_exists_results: dict[tuple[str, str], bool] = {}
         self.cherry_pick_result: CherryPickResult | None = None
+        self.cherry_pick_continue_calls = 0
         self.unmerged_files_result: list[str] = []
         self.format_patch_result: Path | None = None
         self.file_texts: dict[tuple[str, str], str] = {}
@@ -171,6 +174,15 @@ class FakeGit:
     def add_worktree(self, branch: str, path: Path) -> None:
         self._record("add_worktree", (branch, path))
 
+    def list_worktrees(self) -> list[Path]:
+        self._record("list_worktrees", ())
+        return list(getattr(self, "worktrees", []))
+
+    def remove_worktree(self, path: Path) -> None:
+        self._record("remove_worktree", (path,))
+        if getattr(self, "fail_remove_worktree", False):
+            raise InfrastructureError("cannot remove worktree")
+
     def cherry_pick(self, sha: str) -> CherryPickResult:
         self._record("cherry_pick", (sha,))
         return self.cherry_pick_result
@@ -178,6 +190,9 @@ class FakeGit:
     def unmerged_files(self) -> list[str]:
         self._record("unmerged_files", ())
         return list(self.unmerged_files_result)
+
+    def cherry_pick_continue(self) -> None:
+        self.cherry_pick_continue_calls += 1
 
     def format_patch(self, base: str, head: str, out_dir: Path, prefix: str) -> Path:
         self._record("format_patch", (base, head, out_dir, prefix))
@@ -262,8 +277,13 @@ class FakeRunner:
 
 
 class FakeSafety:
-    def __init__(self, models: tuple[str, ...] = ("RTL9617C",)) -> None:
+    def __init__(
+        self,
+        models: tuple[str, ...] = ("RTL9617C",),
+        forbidden_branches: set[str] | None = None,
+    ) -> None:
         self.models = list(models)
+        self.forbidden = set(forbidden_branches or set())
 
     def required_models(self) -> list[str]:
         return list(self.models)
@@ -272,7 +292,7 @@ class FakeSafety:
         pass
 
     def check_sync_branch(self, branch: str) -> bool:
-        return True
+        return branch not in self.forbidden
 
 
 class FakeConflictAgent:
@@ -280,8 +300,8 @@ class FakeConflictAgent:
         self.resolution = resolution
         self.calls: list[tuple] = []
 
-    def resolve(self, commit, conflict_files):
-        self.calls.append((commit, list(conflict_files)))
+    def resolve(self, commit, conflict_files, *, git=None, target_branch=None):
+        self.calls.append((commit, list(conflict_files), git, target_branch))
         return self.resolution
 
 
@@ -294,8 +314,8 @@ class FakeBuildAgent:
             category=category, reason="fixed", files_to_fix=[]
         )
 
-    def fix(self, commit, errors, model):
-        self.calls.append((commit, errors, model))
+    def fix(self, commit, errors, model, *, git=None, target_branch=None):
+        self.calls.append((commit, errors, model, git, target_branch))
         return self.attribution
 
 
@@ -454,6 +474,53 @@ def test_default_window_after_2200_uses_today():
     assert until == "2026-08-21T22:00:00+08:00"
 
 
+# --- partial window override (决策 38) ---
+
+
+def test_derive_window_both_provided_passthrough():
+    assert _derive_window("2026-08-18T22:00:00+08:00", "2026-08-20T22:00:00+08:00") == (
+        "2026-08-18T22:00:00+08:00",
+        "2026-08-20T22:00:00+08:00",
+    )
+
+
+def test_derive_window_neither_uses_default(monkeypatch):
+    monkeypatch.setattr("bsa.graph.nodes.default_window", lambda now=None: ("D", "U"))
+    assert _derive_window(None, None) == ("D", "U")
+
+
+def test_derive_window_only_until_derives_since():
+    since, until = _derive_window(None, "2026-08-20T22:00:00+08:00")
+    assert since == "2026-08-19T22:00:00+08:00"
+    assert until == "2026-08-20T22:00:00+08:00"
+
+
+def test_derive_window_only_since_derives_until():
+    now = datetime(2026, 8, 21, 12, 0, tzinfo=CST)
+    since, until = _derive_window("2026-08-18T22:00:00+08:00", None, now=now)
+    assert since == "2026-08-18T22:00:00+08:00"
+    assert until == "2026-08-21T12:00:00+08:00"
+
+
+def test_derive_window_naive_until_assumes_cst():
+    since, until = _derive_window(None, "2026-08-20T22:00:00")
+    assert since == "2026-08-19T22:00:00+08:00"
+
+
+def test_detect_commits_partial_override_not_dropped(tmp_path, monkeypatch):
+    write_branch_md(tmp_path)
+    ctx = make_ctx(
+        tmp_path,
+        settings_overrides={"scan_since": "2026-08-18T22:00:00+08:00", "scan_until": None},
+    )
+    monkeypatch.setattr("bsa.graph.nodes.default_window", lambda now=None: ("DEFAULT", "WINDOW"))
+    update = detect_commits(base_state(), ctx)
+    since, until = update["scan_window"]
+    assert since == "2026-08-18T22:00:00+08:00"
+    assert until != "WINDOW"
+    assert update["status"] == "DETECTED"
+
+
 # --- detect_commits ---
 
 
@@ -584,6 +651,71 @@ def test_sync_decision_resolves_pending_and_builds_batches(tmp_path):
     assert update["status"] == "DECIDED"
 
 
+def test_to_analysis_uses_branch_mapping_for_source_type(tmp_path):
+    decision = SyncDecision(
+        sha="a1",
+        is_bug_fix=True,
+        reason=None,
+        recognition_source="machine:[BUG]",
+        needs_agent=False,
+    )
+    analysis = _to_analysis(commit("a1"), decision, {DEVELOP: "release"})
+    assert analysis.source_branch_type == "release"
+
+
+def test_sync_decision_branch_mapping_overrides_target_type(tmp_path):
+    write_branch_md(tmp_path)
+    ctx = make_ctx(tmp_path)
+    ctx.decision_rules.branch_mapping = {TARGET: "develop"}
+    c1 = commit("a1", issue_ids=["CQ1"])
+    state = base_state(
+        detected_commits=[c1],
+        classifications={
+            "a1": SyncDecision(
+                sha="a1",
+                is_bug_fix=True,
+                reason=None,
+                recognition_source="machine:[BUG]",
+                needs_agent=False,
+            )
+        },
+    )
+    ctx.conclude.results = {
+        ("a1", TARGET): Conclusion4(kind="NeedSync", evidence=[], confidence="high")
+    }
+
+    update = sync_decision(state, ctx)
+
+    assert update["batches"] == {}
+    assert ctx.matrix is not None
+
+
+def test_sync_decision_forbidden_branch_routes_out_of_scope(tmp_path):
+    write_branch_md(tmp_path)
+    ctx = make_ctx(tmp_path)
+    ctx.safety.forbidden = {TARGET}
+    c1 = commit("a1", issue_ids=["CQ1"])
+    state = base_state(
+        detected_commits=[c1],
+        classifications={
+            "a1": SyncDecision(
+                sha="a1",
+                is_bug_fix=True,
+                reason=None,
+                recognition_source="machine:[BUG]",
+                needs_agent=False,
+            )
+        },
+    )
+
+    update = sync_decision(state, ctx)
+
+    assert update["decisions"]["a1"][TARGET].kind == "OutOfScope"
+    assert "禁止" in update["decisions"]["a1"][TARGET].evidence[0]
+    assert update["batches"] == {}
+    assert update["status"] == "DECIDED"
+
+
 def test_sync_decision_no_pending_skips_agent(tmp_path):
     write_branch_md(tmp_path)
     ctx = make_ctx(tmp_path)
@@ -701,6 +833,22 @@ def test_prepare_worktree_adds_worktree_and_records_path(tmp_path):
     assert update["status"] == "PREPARED"
 
 
+def test_prepare_worktree_reuses_existing_worktree(tmp_path):
+    ctx = make_ctx(tmp_path)
+    git = ctx.git
+    git.tips = {TARGET: ("origin/" + TARGET, "tip1")}
+    worktree_path = Path(ctx.settings.worktree_root) / f"{TARGET}-cycle-20260101"
+    worktree_path.mkdir(parents=True)
+    state = base_state(current_target=TARGET)
+
+    update = prepare_worktree(state, ctx)
+
+    assert not any(name == "add_worktree" for name, args in git.calls)
+    assert update["branch_results"][TARGET].worktree_path == str(worktree_path)
+    assert ctx.worktree_path == worktree_path
+    assert update["status"] == "PREPARED"
+
+
 # --- cherry_pick ---
 
 
@@ -763,8 +911,10 @@ def test_resolve_conflict_resolution_recorded(tmp_path):
 
     update = resolve_conflict(state, ctx)
 
-    assert ctx.conflict_agent.calls == [(commit("a1"), ["plat/demo.c"])]
+    assert ctx.conflict_agent.calls == [(commit("a1"), ["plat/demo.c"], wg, TARGET)]
     assert update["branch_results"][TARGET].commits[0].conflict_resolution == resolution
+    assert update["branch_results"][TARGET].commits[0].cherry_pick == "OK"
+    assert wg.cherry_pick_continue_calls == 1
     assert update["status"] == "RESOLVED"
 
 
@@ -790,6 +940,7 @@ def test_resolve_conflict_fail_fast(tmp_path):
 
     assert update["status"] == "RESOLUTION_FAILED"
     assert update["branch_results"][TARGET].commits[0].conflict_resolution is None
+    assert wg.cherry_pick_continue_calls == 0
 
 
 # --- build ---
@@ -901,6 +1052,8 @@ def test_fix_build_calls_agent_and_rebuilds(tmp_path):
     ctx = make_ctx(tmp_path)
     ctx.runner = FakeRunner(success=False)
     ctx.worktree_path = Path("/wt")
+    wg = FakeGit()
+    ctx.worktree_gits[str(Path("/wt"))] = wg
     state = base_state(
         current_target=TARGET,
         current_commit="a1",
@@ -925,10 +1078,48 @@ def test_fix_build_calls_agent_and_rebuilds(tmp_path):
 
     assert ctx.build_agent.calls[0][0] == commit("a1")
     assert ctx.build_agent.calls[0][1] == ["compile error"]
+    assert ctx.build_agent.calls[0][3] == wg
+    assert ctx.build_agent.calls[0][4] == TARGET
     outcome = update["branch_results"][TARGET].commits[0].build["RTL9617C"]
     assert outcome.status == "OK"
     assert outcome.agent_attempts == 1
     assert update["status"] == "BUILD_OK"
+
+
+def test_fix_build_persists_agent_fix_diff(tmp_path):
+    ctx = make_ctx(tmp_path)
+    ctx.runner = FakeRunner(success=False)
+    ctx.worktree_path = Path("/wt")
+    ctx.worktree_gits[str(Path("/wt"))] = FakeGit()
+    from bsa.agents.base import BuildAttribution
+
+    ctx.build_agent.attribution = BuildAttribution(
+        category="introduced_by_commit", reason="fixed", files_to_fix=[], fix_diff="@@ -1 +1 @@"
+    )
+    state = base_state(
+        current_target=TARGET,
+        current_commit="a1",
+        detected_commits=[commit("a1")],
+        branch_results={
+            TARGET: branch_result(
+                TARGET,
+                commits=[
+                    CommitResult(
+                        sha="a1",
+                        cherry_pick="OK",
+                        conflict_resolution=None,
+                        build={"RTL9617C": failed_outcome()},
+                    )
+                ],
+            )
+        },
+    )
+
+    ctx.runner.success = True
+    update = fix_build(state, ctx)
+
+    outcome = update["branch_results"][TARGET].commits[0].build["RTL9617C"]
+    assert outcome.fix_diff == "@@ -1 +1 @@"
 
 
 def test_fix_build_still_failed_after_attempts(tmp_path):

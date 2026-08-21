@@ -131,8 +131,23 @@ class BuildAgent:
         self._log_path = log_path
         self._docker_mount_workspace = docker_mount_workspace
 
-    def fix(self, commit: CommitInfo, errors: list[str], model: str) -> BuildAttribution:
-        ctx = self._context(commit, errors, model)
+    def fix(
+        self,
+        commit: CommitInfo,
+        errors: list[str],
+        model: str,
+        *,
+        git: GitService | None = None,
+        target_branch: str | None = None,
+    ) -> BuildAttribution:
+        """Attribute + auto-fix; ``git`` is the worktree-scoped service (C2).
+
+        The applied fix diff is captured on ``attribution.fix_diff`` so the
+        graph can persist it into ``BuildOutcome.fix_diff`` (审计闸门 5).
+        """
+        wgit = git or self._git
+        tgt = target_branch or self._target_branch
+        ctx = self._context(commit, errors, model, git=wgit)
         try:
             attribution = self._llm.classify_build_error(ctx)
         except LLMUnavailable:
@@ -142,7 +157,9 @@ class BuildAgent:
                 files_to_fix=[],
             )
         if attribution.category == "pre_existing":
-            attribution = self._verify_pre_existing(commit, errors, model, attribution)
+            attribution = self._verify_pre_existing(
+                commit, errors, model, attribution, git=wgit, target_branch=tgt
+            )
             if attribution.category == "pre_existing":
                 return attribution
         if attribution.category != "introduced_by_commit":
@@ -153,16 +170,18 @@ class BuildAgent:
             self._safety.check_editable(attribution.files_to_fix)
         except SafetyViolation:
             return attribution
-        self._fix_loop(commit, errors, model, attribution)
+        self._fix_loop(commit, errors, model, attribution, git=wgit)
         return attribution
 
-    def _context(self, commit: CommitInfo, errors: list[str], model: str) -> BuildErrorContext:
+    def _context(
+        self, commit: CommitInfo, errors: list[str], model: str, *, git: GitService
+    ) -> BuildErrorContext:
         return BuildErrorContext(
             commit=commit,
             model=model,
             errors=errors,
             log_path=self._log_path or Path(f"build_{model}.log"),
-            worktree=self._git.repo_path,
+            worktree=git.repo_path,
         )
 
     def _verify_pre_existing(
@@ -171,20 +190,23 @@ class BuildAgent:
         errors: list[str],
         model: str,
         attribution: BuildAttribution,
+        *,
+        git: GitService,
+        target_branch: str | None,
     ) -> BuildAttribution:
         """Deterministic check (decision 30): revert the commit's files to the
         target tip, compile, and compare error signatures. The original tip
         reproducing the same errors confirms pre_existing; otherwise the
         errors are treated as introduced by the commit and enter the fix loop.
         """
-        if not self._target_branch or not commit.changed_files:
+        if not target_branch or not commit.changed_files:
             return attribution
-        snap = self._git.snapshot(commit.changed_files)
+        snap = git.snapshot(commit.changed_files)
         try:
-            ref, _ = self._git.branch_tip(self._target_branch)
+            ref, _ = git.branch_tip(target_branch)
             for rel in commit.changed_files:
-                original = self._git.show_file(ref, rel)
-                path = self._git.repo_path / rel
+                original = git.show_file(ref, rel)
+                path = git.repo_path / rel
                 if original is None:
                     if path.is_file():
                         path.unlink()
@@ -192,13 +214,13 @@ class BuildAgent:
                 path.parent.mkdir(parents=True, exist_ok=True)
                 path.write_text(original, encoding="utf-8")
             original_errors = self._runner.build_commit(
-                self._git.repo_path, model, clean=False, module=self._module
+                git.repo_path, model, clean=False, module=self._module
             ).errors
         except InfrastructureError:
             return attribution
         finally:
-            self._git.restore(snap)
-        repo_path = self._git.repo_path
+            git.restore(snap)
+        repo_path = git.repo_path
         mount = self._docker_mount_workspace
         current_sigs = _error_signatures(errors, repo_path=repo_path, mount_prefix=mount)
         original_sigs = _error_signatures(
@@ -222,12 +244,14 @@ class BuildAgent:
         errors: list[str],
         model: str,
         attribution: BuildAttribution,
+        *,
+        git: GitService,
     ) -> bool:
         """Snapshot -> LLM fix -> apply -> rebuild; restore and retry on failure."""
         allowed = set(commit.changed_files) | set(
             _error_files(
                 errors,
-                repo_path=self._git.repo_path,
+                repo_path=git.repo_path,
                 mount_prefix=self._docker_mount_workspace,
             )
         )
@@ -235,14 +259,16 @@ class BuildAgent:
         if not set(files_to_fix) <= allowed:
             return False
         for _ in range(self._max_attempts):
-            snap = self._git.snapshot(files_to_fix)
+            snap = git.snapshot(files_to_fix)
             try:
-                if self._attempt_fix(commit, errors, model, files_to_fix):
+                applied = self._attempt_fix(commit, errors, model, files_to_fix, git=git)
+                if applied is not None:
+                    attribution.fix_diff = applied
                     return True
             except LLMUnavailable:
-                self._git.restore(snap)
+                git.restore(snap)
                 return False
-            self._git.restore(snap)
+            git.restore(snap)
         return False
 
     def _attempt_fix(
@@ -251,24 +277,29 @@ class BuildAgent:
         errors: list[str],
         model: str,
         files_to_fix: list[str],
-    ) -> bool:
-        fix = self._llm.fix_build_error(self._context(commit, errors, model))
+        *,
+        git: GitService,
+    ) -> str | None:
+        """Apply one LLM fix and rebuild; returns the applied diff or None."""
+        fix = self._llm.fix_build_error(self._context(commit, errors, model, git=git))
         if not set(fix.files) <= set(files_to_fix):
-            return False
+            return None
         try:
             for path, patch in _diff_files(fix.diff).items():
                 if path not in files_to_fix:
-                    return False
-                target = self._git.repo_path / path
+                    return None
+                target = git.repo_path / path
                 current = target.read_text(encoding="utf-8") if target.is_file() else ""
                 target.parent.mkdir(parents=True, exist_ok=True)
                 target.write_text(_apply_patch(current, patch), encoding="utf-8")
         except Exception:
-            return False
+            return None
         try:
             result = self._runner.build_commit(
-                self._git.repo_path, model, clean=False, module=self._module
+                git.repo_path, model, clean=False, module=self._module
             )
         except InfrastructureError:
-            return False
-        return self._runner.is_success(result)
+            return None
+        if not self._runner.is_success(result):
+            return None
+        return fix.diff

@@ -568,6 +568,33 @@ def test_resolve_branch_type_unknown():
     assert resolve_branch_type("br_v4_LineA_main_20260101") == "unknown"
 
 
+def test_resolve_branch_type_branch_mapping_exact_overrides():
+    mapping = {"br_v4_LineA_main_20260101": "release"}
+    assert (
+        resolve_branch_type("br_v4_LineA_main_20260101", branch_mapping=mapping)
+        == "release"
+    )
+
+
+def test_resolve_branch_type_branch_mapping_prefix_overrides():
+    mapping = {"br_qa": "release"}
+    assert resolve_branch_type("br_qa_fix_20260101", branch_mapping=mapping) == "release"
+
+
+def test_resolve_branch_type_branch_mapping_falls_back_to_inference():
+    mapping = {"br_qa": "release"}
+    assert resolve_branch_type("br_v4_LineA_main_20260101", branch_mapping=mapping) == "unknown"
+
+
+def test_parse_branch_md_honors_branch_mapping():
+    text = """# Doc title
+## LineOne
+- br_v4_LineA_main_20260101
+"""
+    doc = parse_branch_md(text, branch_mapping={"br_v4_LineA_main_20260101": "release"})
+    assert doc.sections[0].branches[0].branch_type == "release"
+
+
 def test_branch_prefix_strips_date():
     assert (
         branch_prefix("br_v4.34_develop_FTTR_P300_CTEB_20260316")
