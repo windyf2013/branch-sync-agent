@@ -235,6 +235,9 @@ class SubprocessExecutor:  # 生产：subprocess + 超时 + 输出捕获
 class WhitelistExecutor:   # 安全装饰：命令白名单强制，非白名单 raise SafetyViolation
     ALLOWED_GIT: frozenset[str] = {fetch, checkout, cherry-pick, log, diff,
                                    show, format-patch, worktree, merge-base, status, add, rev-parse, diff-tree}
+    # 调用约定（controller ruling）：调用方传 git 子命令 args（如 ["fetch","--all"]），
+    # WhitelistExecutor 内部前置 "git" 后转发 inner executor。Docker 命令不经此白名单
+    # （BuildRunner 单独处理）。Task 1.2 GitService 必须遵守此约定。
 
 # executor/fake.py（测试用）
 class FakeExecutor:        # 预置返回 + 记录调用
