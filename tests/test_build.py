@@ -147,17 +147,18 @@ class TestBuildCommit:
             "sleep",
             "infinity",
         ]
-        assert executor.calls[1][0] == [
+        assert executor.calls[1][0][:5] == [
             "sudo",
             "docker",
             "exec",
             "-w",
             "/workspace/rcios",
-            "rcios-sync-20260821",
-            "bash",
-            "-c",
-            "cd build/platform/RTL9617C && code_update.sh -d && RTL9617C_build.sh 5200 rtk_api",
         ]
+        assert executor.calls[1][0][-1] == (
+            "cd /workspace/rcios/build && ./code_update.sh -d "
+            "&& cd /workspace/rcios/build/platform/RTL9617C "
+            "&& RTL9617C_build.sh 5200 rtk_api"
+        )
         assert executor.calls[2][0] == ["sudo", "docker", "rm", "-f", "rcios-sync-20260821"]
         assert result.model == "5200"
         assert result.log_path.read_text() == "build log"
@@ -168,7 +169,8 @@ class TestBuildCommit:
         runner.build_commit(tmp_path / "wt", "5200", clean=True, module=None)
         inner = executor.calls[1][0][-1]
         assert inner == (
-            "cd build/platform/RTL9617C && code_update.sh -d "
+            "cd /workspace/rcios/build && ./code_update.sh -d "
+            "&& cd /workspace/rcios/build/platform/RTL9617C "
             "&& RTL9617C_build.sh clean && RTL9617C_build.sh 5200"
         )
 

@@ -90,7 +90,15 @@ class BuildRunner:
         # docker exec 默认工作目录是容器启动目录(/)；必须显式 -w 到挂载点，
         # 否则 cd build/platform/RTL9617C 在 / 下失败 (真机测试: No such file or directory)
         mount = self.settings.docker_mount_workspace.rstrip("/")
-        steps = [f"cd {shlex.quote(script_dir)}", "code_update.sh -d"]
+        # code_update.sh 在 build/ 目录（不在 platform/RTL9617C 里）：
+        # 先 cd build 拉插件，再 cd script_dir 编译（真机测试:
+        # cd RTL9617C 后 code_update.sh: command not found）。
+        build_root = f"{mount}/build"
+        steps = [
+            f"cd {shlex.quote(build_root)}",
+            "./code_update.sh -d",
+            f"cd {shlex.quote(f'{mount}/{script_dir}')}",
+        ]
         if clean:
             steps.append("RTL9617C_build.sh clean")
         build_cmd = f"RTL9617C_build.sh {shlex.quote(model)}"
