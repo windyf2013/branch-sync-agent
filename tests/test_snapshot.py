@@ -181,9 +181,11 @@ def test_file_similarity_missing_side_none():
 
 
 def test_file_similarity_caps_long_inputs_returns_none():
-    # 大文件截断后 ratio 不可靠（真机测试 zebra_cli.c 虚高 1.0 误判），返回 None
+    # 大文件内容不同时，截断后 ratio 不可靠（真机测试 zebra_cli.c 虚高 1.0 误判），返回 None
     assert _file_similarity("a" * 25000, "b" * 25000) is None
-    assert _file_similarity("a" * 25000, "a" * 25000) is None
+    # 大文件完全相同 → 相等短路，1.0 可靠
+    assert _file_similarity("a" * 25000, "a" * 25000) == 1.0
+    # 小文件正常计算
     assert _file_similarity("a" * 100, "b" * 100) == 0.0
 
 
