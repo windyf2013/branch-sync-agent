@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import logging
 from dataclasses import replace
-from datetime import datetime
+from datetime import UTC, date, datetime
 from pathlib import Path
 
 from bsa.config.settings import load_settings
@@ -21,9 +21,20 @@ _RUN_LOGGER = logging.getLogger("bsa.cycle")
 
 
 def _derive_cycle_id(date: str | None) -> str:
-    if date:
-        return f"cycle-{date}"
-    return f"cycle-{datetime.now().strftime('%Y%m%d')}"
+    if date is None:
+        day = datetime.now().date()
+    else:
+        day = _parse_cycle_date(date)
+    return f"cycle-{day.isoformat()}"
+
+
+def _parse_cycle_date(date: str) -> date:
+    for fmt in ("%Y-%m-%d", "%Y%m%d"):
+        try:
+            return datetime.strptime(date, fmt).date()
+        except ValueError:
+            continue
+    raise ValueError(f"无效的周期日期 {date!r}，期望格式 YYYY-MM-DD")
 
 
 def _initial_state(cycle_id: str) -> dict:
@@ -91,16 +102,30 @@ def _write_cycle_record(
     return record
 
 
+def _started_sort_key(record: dict) -> tuple:
+    started = record.get("started_at")
+    try:
+        dt = datetime.fromisoformat(started) if started else None
+    except (TypeError, ValueError):
+        dt = None
+    if dt is None:
+        return (datetime.min, record.get("cycle_id", ""))
+    if dt.tzinfo is not None:
+        dt = dt.astimezone(UTC).replace(tzinfo=None)
+    return (dt, record.get("cycle_id", ""))
+
+
 def list_cycle_records(log_dir: str | Path) -> list[dict]:
     root = Path(log_dir)
     if not root.is_dir():
         return []
     records = []
-    for path in sorted(root.glob("cycle-*/cycle.json")):
+    for path in root.glob("cycle-*/cycle.json"):
         try:
             records.append(json.loads(path.read_text(encoding="utf-8")))
         except (OSError, json.JSONDecodeError):
             continue
+    records.sort(key=_started_sort_key)
     return records
 
 

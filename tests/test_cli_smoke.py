@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from datetime import datetime
 from pathlib import Path
 
 from bsa.cli import main
@@ -13,7 +14,7 @@ from bsa.domain.models import (
 )
 from bsa.report.renderer import build_email_body, render_html_report
 from bsa.rules import Classification
-from bsa.scheduler.cycle import run_cycle
+from bsa.scheduler.cycle import _derive_cycle_id, list_cycle_records, run_cycle
 from tests.test_config import valid_env
 from tests.test_graph_nodes import (
     DEVELOP,
@@ -40,7 +41,7 @@ def _populate(ctx, shas: list[str]) -> None:
         ctx.conclude.results[(sha, TARGET)] = Conclusion4(
             kind="NeedSync", evidence=[], confidence="high"
         )
-    inject_worktree_git(ctx, FakeWorktreeGit(), TARGET, cycle_id="cycle-20260820")
+    inject_worktree_git(ctx, FakeWorktreeGit(), TARGET, cycle_id="cycle-2026-08-20")
 
 
 def test_validate_config_exits_zero_with_env(monkeypatch, tmp_path):
@@ -62,10 +63,10 @@ def test_run_cycle_dry_run_full_cycle_produces_artifacts(tmp_path):
     ctx = make_ctx(tmp_path)
     _populate(ctx, ["a1"])
 
-    code = run_cycle("20260820", dry_run=True, context=ctx)
+    code = run_cycle("2026-08-20", dry_run=True, context=ctx)
 
     assert code == 0
-    cycle_dir = Path(ctx.settings.log_dir) / "cycle-20260820"
+    cycle_dir = Path(ctx.settings.log_dir) / "cycle-2026-08-20"
     assert (cycle_dir / "report.html").exists()
     assert (cycle_dir / "decisions.json").exists()
     assert (cycle_dir / "run.log").exists()
@@ -84,7 +85,7 @@ def test_run_cycle_window_override_honored(tmp_path):
     _populate(ctx, ["a1"])
 
     code = run_cycle(
-        "20260820",
+        "2026-08-20",
         since="2026-08-18T22:00:00+08:00",
         until="2026-08-19T22:00:00+08:00",
         context=ctx,
@@ -130,7 +131,7 @@ def test_run_cycle_cli_passes_dry_run(monkeypatch):
 
     monkeypatch.setattr("bsa.cli.run_cycle", fake_run_cycle)
 
-    assert main(["run-cycle", "--date", "20260101", "--dry-run"]) == 0
+    assert main(["run-cycle", "--date", "2026-01-01", "--dry-run"]) == 0
     assert seen["kwargs"]["dry_run"] is True
 
 
@@ -145,11 +146,11 @@ def test_run_cycle_checkpoint_resume_reuses_state(tmp_path):
     ctx = make_ctx(tmp_path)
     _populate(ctx, ["a1"])
 
-    assert run_cycle("20260820", context=ctx) == 0
+    assert run_cycle("2026-08-20", context=ctx) == 0
     runner_calls = len(ctx.runner.build_calls)
     git_calls = len(ctx.git.calls)
 
-    assert run_cycle("20260820", context=ctx) == 0
+    assert run_cycle("2026-08-20", context=ctx) == 0
 
     assert len(ctx.runner.build_calls) == runner_calls
     assert len(ctx.git.calls) == git_calls
@@ -159,7 +160,7 @@ def test_status_shows_latest_cycle(monkeypatch, tmp_path, capsys):
     write_branch_md(tmp_path)
     ctx = make_ctx(tmp_path)
     _populate(ctx, ["a1"])
-    assert run_cycle("20260820", context=ctx) == 0
+    assert run_cycle("2026-08-20", context=ctx) == 0
 
     env = valid_env()
     env["LOG_DIR"] = str(ctx.settings.log_dir)
@@ -167,7 +168,7 @@ def test_status_shows_latest_cycle(monkeypatch, tmp_path, capsys):
 
     assert main(["status"]) == 0
     captured = capsys.readouterr().out
-    assert "cycle-20260820" in captured
+    assert "cycle-2026-08-20" in captured
     assert "REPORTED" in captured
 
 
@@ -203,7 +204,7 @@ def test_render_html_report_three_sections(tmp_path):
         )
     }
     report = Report(
-        cycle_id="cycle-20260820",
+        cycle_id="cycle-2026-08-20",
         html_path=tmp_path / "report.html",
         summary={"status": "REPORTED", "commits_detected": 1},
         action_required=[],
@@ -221,6 +222,88 @@ def test_render_html_report_three_sections(tmp_path):
     assert TARGET in html
 
     body = build_email_body(report, state)
-    assert "cycle-20260820" in body
+    assert "cycle-2026-08-20" in body
     assert "NeedSync 1" in body
     assert "检测 commit" in body
+
+
+class _FixedClock:
+    _now = datetime(2026, 8, 20, 10, 0, 0)
+
+    @classmethod
+    def now(cls, tz=None):
+        return cls._now
+
+    @classmethod
+    def strptime(cls, value, fmt):
+        return datetime.strptime(value, fmt)
+
+
+def test_derive_cycle_id_same_physical_date_always_same(monkeypatch):
+    monkeypatch.setattr("bsa.scheduler.cycle.datetime", _FixedClock)
+
+    assert _derive_cycle_id(None) == "cycle-2026-08-20"
+    assert _derive_cycle_id("2026-08-20") == "cycle-2026-08-20"
+    assert _derive_cycle_id("20260820") == "cycle-2026-08-20"
+
+
+def test_list_cycle_records_orders_by_started_at(tmp_path):
+    log_dir = tmp_path / "logs"
+    for cid, ts in [
+        ("cycle-2026-08-21", "2026-08-20T09:00:00"),
+        ("cycle-2026-08-20", "2026-08-21T09:00:00"),
+    ]:
+        d = log_dir / cid
+        d.mkdir(parents=True)
+        (d / "cycle.json").write_text(
+            json.dumps(
+                {
+                    "cycle_id": cid,
+                    "status": "REPORTED",
+                    "report_path": None,
+                    "mail_status": None,
+                    "started_at": ts,
+                    "finished_at": ts,
+                }
+            ),
+            encoding="utf-8",
+        )
+
+    records = list_cycle_records(log_dir)
+
+    assert [r["cycle_id"] for r in records] == [
+        "cycle-2026-08-21",
+        "cycle-2026-08-20",
+    ]
+
+
+def test_status_picks_latest_by_started_at(monkeypatch, tmp_path, capsys):
+    log_dir = tmp_path / "logs"
+    for cid, ts in [
+        ("cycle-2026-08-21", "2026-08-20T09:00:00"),
+        ("cycle-2026-08-20", "2026-08-21T09:00:00"),
+    ]:
+        d = log_dir / cid
+        d.mkdir(parents=True)
+        (d / "cycle.json").write_text(
+            json.dumps(
+                {
+                    "cycle_id": cid,
+                    "status": "REPORTED",
+                    "report_path": None,
+                    "mail_status": None,
+                    "started_at": ts,
+                    "finished_at": ts,
+                }
+            ),
+            encoding="utf-8",
+        )
+
+    env = valid_env()
+    env["LOG_DIR"] = str(log_dir)
+    monkeypatch.setattr("bsa.config.settings.os.environ", env)
+
+    assert main(["status"]) == 0
+    captured = capsys.readouterr().out
+    assert "cycle-2026-08-20" in captured
+    assert "cycle-2026-08-21" not in captured
