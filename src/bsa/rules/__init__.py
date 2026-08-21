@@ -17,6 +17,7 @@ from bsa.rules.decision_rules import (
 )
 from bsa.rules.paths import is_public_file
 from bsa.rules.safety import SafetyEnforcer, SafetyRules, load_safety_rules
+from bsa.rules.snapshot import build_target_snapshot, extract_symbols
 
 __all__ = [
     "BranchMdDocument",
@@ -32,8 +33,10 @@ __all__ = [
     "TargetSnapshot",
     "branch_prefix",
     "build_matrix",
+    "build_target_snapshot",
     "classify_commit",
     "conclude_pair",
+    "extract_symbols",
     "is_public_file",
     "load_decision_rules",
     "load_safety_rules",

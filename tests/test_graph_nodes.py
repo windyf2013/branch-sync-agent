@@ -51,6 +51,37 @@ BRANCH_MD = f"""# 分支清单
 - {TARGET}
 """
 
+SOURCE_FIX_TEXT = """#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+static int demo_check(const char *name, size_t len)
+{
+    if (NULL == name)
+    {
+        return -1;
+    }
+    if (0 == len)
+    {
+        return -1;
+    }
+    for (size_t i = 0; i < len; i++)
+    {
+        if (name[i] == '\\0')
+        {
+            return -1;
+        }
+    }
+    return 0;
+}
+"""
+
+TARGET_OLD_TEXT = """static int demo_check(const char *name, size_t len)
+{
+    return 0;
+}
+"""
+
 
 def write_branch_md(tmp_path: Path) -> Path:
     path = tmp_path / "branch.md"
@@ -93,6 +124,7 @@ class FakeGit:
         self.cherry_pick_result: CherryPickResult | None = None
         self.unmerged_files_result: list[str] = []
         self.format_patch_result: Path | None = None
+        self.file_texts: dict[tuple[str, str], str] = {}
 
     def _record(self, name: str, args: tuple) -> None:
         self.calls.append((name, args))
@@ -131,6 +163,10 @@ class FakeGit:
     def file_exists(self, ref: str, path: str) -> bool:
         self._record("file_exists", (ref, path))
         return self.file_exists_results.get((ref, path), True)
+
+    def show_file(self, ref: str, path: str) -> str | None:
+        self._record("show_file", (ref, path))
+        return self.file_texts.get((ref, path))
 
     def add_worktree(self, branch: str, path: Path) -> None:
         self._record("add_worktree", (branch, path))
@@ -485,6 +521,20 @@ def test_detect_commits_populates_commits_and_classifications(tmp_path):
 # --- sync_decision ---
 
 
+def test_detect_commits_extracts_symbols_from_patch(tmp_path):
+    write_branch_md(tmp_path)
+    ctx = make_ctx(tmp_path)
+    git = ctx.git
+    git.window_shas = {f"origin/{DEVELOP}": ["a1"]}
+    git.changed = {"a1": ["plat/demo.c"]}
+    git.patches = {"a1": "+static int demo_check(const char *p)\n+{\n+    return 0;\n+}\n"}
+    git.patch_ids = {"a1": "pid1"}
+
+    update = detect_commits(base_state(), ctx)
+
+    assert update["detected_commits"][0].symbols == ["demo_check"]
+
+
 def test_sync_decision_resolves_pending_and_builds_batches(tmp_path):
     write_branch_md(tmp_path)
     ctx = make_ctx(tmp_path)
@@ -557,6 +607,76 @@ def test_sync_decision_no_pending_skips_agent(tmp_path):
     assert ctx.sync_decision_agent.calls == []
     assert update["decisions"]["a1"][TARGET].kind == "ManualReview"
     assert update["batches"] == {}
+
+
+# --- sync_decision with real conclude_pair (four-state fidelity, task 3.2a) ---
+
+
+def test_sync_decision_real_conclude_has_source_sha_already_included(tmp_path):
+    write_branch_md(tmp_path)
+    ctx = make_ctx(tmp_path)
+    from bsa.rules.conclude import conclude_pair
+    from bsa.rules.snapshot import build_target_snapshot
+
+    ctx.conclude = conclude_pair
+    ctx.build_snapshot = build_target_snapshot
+    ctx.git.is_ancestor_results = {("a1", f"origin/{TARGET}"): True}
+    c1 = commit("a1", issue_ids=["CQ1"])
+    state = base_state(
+        detected_commits=[c1],
+        classifications={
+            "a1": SyncDecision(
+                sha="a1",
+                is_bug_fix=True,
+                reason=None,
+                recognition_source="machine:[BUG]",
+                needs_agent=False,
+            )
+        },
+    )
+
+    update = sync_decision(state, ctx)
+
+    assert update["decisions"]["a1"][TARGET].kind == "AlreadyIncluded"
+    assert update["decisions"]["a1"][TARGET].confidence == "high"
+    assert update["batches"] == {}
+
+
+def test_sync_decision_real_conclude_missing_fix_need_sync(tmp_path):
+    write_branch_md(tmp_path)
+    ctx = make_ctx(tmp_path)
+    from bsa.rules.conclude import conclude_pair
+    from bsa.rules.snapshot import build_target_snapshot
+
+    ctx.conclude = conclude_pair
+    ctx.build_snapshot = build_target_snapshot
+    ctx.git.file_texts = {
+        (f"origin/{DEVELOP}", "plat/demo.c"): SOURCE_FIX_TEXT,
+        (f"origin/{TARGET}", "plat/demo.c"): TARGET_OLD_TEXT,
+    }
+    c1 = commit(
+        "a1",
+        changed_files=["plat/demo.c"],
+        symbols=["demo_check"],
+        patch_id="pid-a1",
+    )
+    state = base_state(
+        detected_commits=[c1],
+        classifications={
+            "a1": SyncDecision(
+                sha="a1",
+                is_bug_fix=True,
+                reason=None,
+                recognition_source="machine:[BUG]",
+                needs_agent=False,
+            )
+        },
+    )
+
+    update = sync_decision(state, ctx)
+
+    assert update["decisions"]["a1"][TARGET].kind == "NeedSync"
+    assert update["batches"] == {TARGET: ["a1"]}
 
 
 # --- prepare_worktree ---

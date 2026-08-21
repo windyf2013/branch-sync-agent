@@ -39,9 +39,9 @@ from bsa.rules import (
 from bsa.rules.conclude import CommitAnalysis
 from bsa.rules.paths import is_public_file
 from bsa.rules.safety import SafetyEnforcer
+from bsa.rules.snapshot import build_target_snapshot, extract_symbols
 
 _CST = timezone(timedelta(hours=8))
-_TARGET_HISTORY_LIMIT = 100
 
 
 @dataclass
@@ -65,6 +65,7 @@ class GraphContext:
     decision_rules: DecisionRules
     classify: Callable = classify_commit
     conclude: Callable = conclude_pair
+    build_snapshot: Callable = build_target_snapshot
     is_public_file: Callable[[str], bool] | None = None
     matrix: list[HomologousSet] | None = None
     worktree_git: GitService | None = None
@@ -152,7 +153,8 @@ def detect_commits(state: dict, ctx: GraphContext) -> dict:
                 author, committed_at, message = ctx.git.commit_metadata(sha)
                 changed_files = ctx.git.changed_files(sha)
                 patch_text = ctx.git.commit_patch(sha)
-                classification = ctx.classify(message, changed_files, [], patch_text, sha=sha)
+                symbols = extract_symbols(patch_text)
+                classification = ctx.classify(message, changed_files, symbols, patch_text, sha=sha)
                 detected.append(
                     CommitInfo(
                         sha=sha,
@@ -161,7 +163,7 @@ def detect_commits(state: dict, ctx: GraphContext) -> dict:
                         committed_at=committed_at,
                         changed_files=changed_files,
                         patch_text=patch_text,
-                        symbols=[],
+                        symbols=symbols,
                         patch_id=ctx.git.patch_id(sha),
                         issue_ids=list(classification.issue_ids),
                         source_branch=source.name,
@@ -201,43 +203,19 @@ def _to_analysis(commit: CommitInfo, decision: SyncDecision) -> CommitAnalysis:
     )
 
 
-def _target_messages(ctx: GraphContext, resolved: str) -> list[str]:
-    shas = ctx.git.commits_in_window("1970-01-01", "2100-01-01", resolved)
-    return [ctx.git.commit_metadata(sha)[2] for sha in shas[-_TARGET_HISTORY_LIMIT:]]
-
-
-def _target_issue_ids(ctx: GraphContext, messages: list[str]) -> set[str]:
-    ids: set[str] = set()
-    for message in messages:
-        ids.update(ctx.classify(message, [], [], "").issue_ids)
-    return ids
-
-
-def _target_patch_ids(ctx: GraphContext, resolved: str) -> set[str]:
-    shas = ctx.git.commits_in_window("1970-01-01", "2100-01-01", resolved)
-    return {pid for sha in shas[-40:] if (pid := ctx.git.patch_id(sha))}
-
-
 def _build_target_snapshot(
     ctx: GraphContext, analysis: CommitAnalysis, target: Any
 ) -> TargetSnapshot:
-    resolved, _ = ctx.git.branch_tip(target.name)
-    snapshot = TargetSnapshot(
-        branch_name=target.name,
-        branch_type=target.branch_type,
-        has_source_sha=ctx.git.is_ancestor(analysis.sha, resolved),
-        in_same_homologous_set=True,
+    target_ref, _ = ctx.git.branch_tip(target.name)
+    source_ref, _ = ctx.git.branch_tip(analysis.source_branch)
+    return ctx.build_snapshot(
+        source=analysis,
+        target_branch=target.name,
+        target_branch_type=target.branch_type,
+        git=ctx.git,
+        target_ref=target_ref,
+        source_ref=source_ref,
     )
-    if snapshot.has_source_sha:
-        return snapshot
-    messages = _target_messages(ctx, resolved)
-    snapshot.target_commit_messages = messages
-    snapshot.target_issue_ids = _target_issue_ids(ctx, messages)
-    snapshot.target_patch_ids = _target_patch_ids(ctx, resolved)
-    snapshot.files_on_target = {
-        path for path in analysis.changed_files if ctx.git.file_exists(resolved, path)
-    }
-    return snapshot
 
 
 def sync_decision(state: dict, ctx: GraphContext) -> dict:
