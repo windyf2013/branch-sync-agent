@@ -449,6 +449,11 @@ class BuildAttribution(BaseModel):
     reason: str
     files_to_fix: list[str]
 
+class BuildFix(BaseModel):            # Task 2.4 新增：LLMClient.fix_build_error 输出
+    files: list[str]                  # 要修改的文件（⊆ files_to_fix）
+    diff: str                         # unified diff（冲突解决同款 patch applier 应用）
+    agent_reason: str
+
 class FailedCommit(BaseModel):
     sha: str
     failure_summary: str
@@ -479,12 +484,13 @@ class LLMClient:
       结构化输出靠 prompt 强约束 + 健壮解析器（json.loads → 提取重试 → 降级安全默认），
       记录调用耗时 + 输入/输出摘要补偿观测；忽略 per-agent 模型覆盖。
     实现要点：构造时按 llm_backend 只实例化所选后端，绝不两者同时执行。
-    接口 4 方法不变，后端实现隔离在内部；未来加新后端不破坏接口。
+    接口方法固定，后端实现隔离在内部；未来加新后端不破坏接口。
     """
     def __init__(self, settings: Settings): ...
     def judge_bug_fix(self, commit: CommitInfo) -> SyncDecision        # 失败 → degrade ManualReview
     def solve_conflict(self, ctx: ConflictContext) -> ConflictResolution  # 失败 → 转人工
     def classify_build_error(self, ctx: BuildErrorContext) -> BuildAttribution
+    def fix_build_error(self, ctx: BuildErrorContext) -> BuildFix       # Task 2.4 新增：LLM 产出修复 diff（决策 5/30 修复循环所需）
     def judge_failfast_related(self, failed: FailedCommit, subsequent: list[CommitInfo]) -> bool
 
 # agents/sync_decision.py（子图，只判 is_bug_fix）
