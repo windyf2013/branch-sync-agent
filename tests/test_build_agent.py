@@ -3,18 +3,33 @@ from __future__ import annotations
 from pathlib import Path
 
 from bsa.agents.base import BuildAttribution, BuildFix, LLMUnavailable
-from bsa.agents.build_agent import BuildAgent, _error_files
+from bsa.agents.build_agent import BuildAgent, _error_files, _error_signatures
 from bsa.build.runner import BuildResult
 from bsa.domain.models import CommitInfo
 from bsa.rules.safety import SafetyEnforcer, SafetyRules
 
 ERROR_BLOCK = "src/dhcp.c:2:9: error: 'bad' undeclared\n    int value = bad;\n"
+ABS_ERROR_BLOCK = (
+    "/workspace/rcios/build/../src/dhcp.c:2:9: error: 'bad' undeclared\n"
+    "    int value = bad;\n"
+)
+NEW_FILE_ERROR_BLOCK = (
+    "src/newfile.c:2:9: error: 'bad' undeclared\n    int value = bad;\n"
+)
 FIX_DIFF = (
     "diff --git a/src/dhcp.c b/src/dhcp.c\n"
     "--- a/src/dhcp.c\n"
     "+++ b/src/dhcp.c\n"
     "@@ -1,2 +1,2 @@\n"
     " #include <stdlib.h>\n"
+    "-int value = bad;\n"
+    "+int value = 1;\n"
+)
+NEW_FILE_FIX_DIFF = (
+    "diff --git a/src/newfile.c b/src/newfile.c\n"
+    "--- a/src/newfile.c\n"
+    "+++ b/src/newfile.c\n"
+    "@@ -1,1 +1,1 @@\n"
     "-int value = bad;\n"
     "+int value = 1;\n"
 )
@@ -135,7 +150,15 @@ class FakeRunner:
         log_path: Path | None = None,
     ) -> BuildResult:
         self.build_calls.append(
-            {"worktree": worktree, "model": model, "clean": clean, "module": module}
+            {
+                "worktree": worktree,
+                "model": model,
+                "clean": clean,
+                "module": module,
+                "files": sorted(
+                    str(p.relative_to(worktree)) for p in worktree.rglob("*") if p.is_file()
+                ),
+            }
         )
         errors, succeeded = self.responses.pop(0)
         return BuildResult(
@@ -367,3 +390,69 @@ def test_fix_loop_llm_unavailable_stops_without_retry(tmp_path: Path) -> None:
     assert len(git.snapshots) == 1
     assert len(git.restored) == 1
     assert runner.build_calls == []
+
+
+def test_error_files_normalizes_absolute_docker_path() -> None:
+    errors = ["/workspace/rcios/build/../src/dhcp.c:2:9: error: 'bad' undeclared\n"]
+    assert _error_files(errors, mount_prefix="/workspace/rcios") == ["src/dhcp.c"]
+
+
+def test_error_files_strips_repo_root_when_no_mount_prefix() -> None:
+    errors = ["/home/ci/repo/src/dhcp.c:2:9: error: 'bad' undeclared\n"]
+    assert _error_files(errors, repo_path=Path("/home/ci/repo")) == ["src/dhcp.c"]
+
+
+def test_error_files_resolves_dotdot_segments() -> None:
+    errors = ["build/../src/dhcp.c:2:9: error: 'bad' undeclared\n"]
+    assert _error_files(errors) == ["src/dhcp.c"]
+
+
+def test_error_signatures_normalize_paths_consistently() -> None:
+    abs_block = ["/workspace/rcios/build/../src/dhcp.c:2:9: error: 'bad' undeclared\n"]
+    rel_block = ["src/dhcp.c:2:9: error: 'bad' undeclared\n"]
+    assert _error_signatures(abs_block, mount_prefix="/workspace/rcios") == (
+        _error_signatures(rel_block)
+    )
+
+
+def test_absolute_error_path_scope_gate_passes(tmp_path: Path) -> None:
+    write_file(tmp_path, "src/dhcp.c", "#include <stdlib.h>\nint value = bad;\n")
+    git = FakeGit(tmp_path)
+    llm = FakeLLM(
+        make_attribution("introduced_by_commit", ["src/dhcp.c"]),
+        fixes=[make_fix()],
+    )
+    runner = FakeRunner([([], True)])
+    agent = BuildAgent(
+        llm, git, runner, make_safety(), docker_mount_workspace="/workspace/rcios"
+    )
+
+    result = agent.fix(make_commit(), [ABS_ERROR_BLOCK], "RTL9617C")
+
+    assert result.category == "introduced_by_commit"
+    assert len(llm.fix_calls) == 1
+    assert (tmp_path / "src/dhcp.c").read_text(encoding="utf-8") == (
+        "#include <stdlib.h>\nint value = 1;\n"
+    )
+
+
+def test_pre_existing_verify_new_file_denied_and_fixed(tmp_path: Path) -> None:
+    write_file(tmp_path, "src/newfile.c", "int value = bad;\n")
+    git = FakeGit(tmp_path)
+    llm = FakeLLM(
+        make_attribution("pre_existing", ["src/newfile.c"]),
+        fixes=[make_fix(files=["src/newfile.c"], diff=NEW_FILE_FIX_DIFF)],
+    )
+    runner = FakeRunner([([], True), ([], True)])
+    agent = BuildAgent(llm, git, runner, make_safety(), target_branch="br_v4.33")
+
+    result = agent.fix(
+        make_commit(changed_files=["src/newfile.c"]), [NEW_FILE_ERROR_BLOCK], "RTL9617C"
+    )
+
+    assert result.category == "introduced_by_commit"
+    assert len(llm.fix_calls) == 1
+    assert git.show_file_calls == [("origin/br_v4.33", "src/newfile.c")]
+    assert runner.build_calls[0]["files"] == []
+    assert runner.build_calls[1]["files"] == ["src/newfile.c"]
+    assert (tmp_path / "src/newfile.c").read_text(encoding="utf-8") == "int value = 1;\n"

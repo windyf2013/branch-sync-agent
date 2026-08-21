@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import re
 from pathlib import Path
 
@@ -16,17 +17,68 @@ from bsa.executor.exceptions import InfrastructureError, SafetyViolation
 from bsa.git.service import GitService
 from bsa.rules.safety import SafetyEnforcer
 
-_ERROR_FILE_RE = re.compile(r"(?P<path>[^ \t:]+\.(?:c|h|cpp|cc|hpp|cxx|s|S|asm|mk)):\d+")
+_ERROR_FILE_RE = re.compile(
+    r"(?P<path>[^ \t:]+\.(?:c|h|cpp|cc|hpp|cxx|s|S|asm|mk)):(?P<line>\d+)"
+)
 
 
-def _error_files(errors: list[str]) -> list[str]:
-    """Extract file paths (path:line) referenced by compile error blocks."""
+def _normalize_error_path(
+    path: str, repo_path: Path | None, mount_prefix: str | None
+) -> str:
+    """Map an error-log file path to a repo-relative path.
+
+    Docker build logs yield absolute container paths (e.g.
+    ``/workspace/rcios/build/../src/dhcp.c``) while ``changed_files`` are
+    repo-relative (``src/dhcp.c``). Strip a known prefix (the docker mount
+    point first, else the host repo root) and resolve ``..`` segments so the
+    scope gate and signature comparison use consistent paths.
+    """
+    path = path.strip()
+    if not path:
+        return path
+    norm = os.path.normpath(path)
+    if not os.path.isabs(norm):
+        return norm
+    prefixes: list[str] = []
+    if mount_prefix:
+        prefixes.append(os.path.normpath(mount_prefix))
+    if repo_path is not None:
+        prefixes.append(os.path.normpath(os.fspath(repo_path)))
+    for prefix in prefixes:
+        if norm == prefix:
+            return "."
+        if norm.startswith(prefix + os.sep):
+            return norm[len(prefix) + 1 :]
+    return norm.lstrip(os.sep)
+
+
+def _normalize_error_text(
+    text: str, repo_path: Path | None, mount_prefix: str | None
+) -> str:
+    """Rewrite file paths inside an error line to repo-relative form."""
+
+    def _repl(match: re.Match[str]) -> str:
+        rel = _normalize_error_path(match.group("path"), repo_path, mount_prefix)
+        return f"{rel}:{match.group('line')}"
+
+    return _ERROR_FILE_RE.sub(_repl, text)
+
+
+def _error_files(
+    errors: list[str],
+    *,
+    repo_path: Path | None = None,
+    mount_prefix: str | None = None,
+) -> list[str]:
+    """Extract repo-relative file paths (path:line) from compile error blocks."""
     found: list[str] = []
     for block in errors:
         for line in block.splitlines():
             match = _ERROR_FILE_RE.search(line)
             if match is not None:
-                found.append(match.group("path"))
+                found.append(
+                    _normalize_error_path(match.group("path"), repo_path, mount_prefix)
+                )
     seen: set[str] = set()
     unique: list[str] = []
     for path in found:
@@ -36,13 +88,19 @@ def _error_files(errors: list[str]) -> list[str]:
     return unique
 
 
-def _error_signatures(errors: list[str]) -> set[str]:
+def _error_signatures(
+    errors: list[str],
+    *,
+    repo_path: Path | None = None,
+    mount_prefix: str | None = None,
+) -> set[str]:
     """Normalized error-line texts, for deterministic error comparison."""
     sigs: set[str] = set()
     for block in errors:
         for line in block.splitlines():
             if re.search(r"\berror:", line, re.IGNORECASE):
-                sigs.add(" ".join(line.split()))
+                norm = _normalize_error_text(line, repo_path, mount_prefix)
+                sigs.add(" ".join(norm.split()))
     return sigs
 
 
@@ -61,6 +119,7 @@ class BuildAgent:
         target_branch: str | None = None,
         module: str | None = None,
         log_path: Path | None = None,
+        docker_mount_workspace: str | None = None,
     ) -> None:
         self._llm = llm
         self._git = git
@@ -70,6 +129,7 @@ class BuildAgent:
         self._target_branch = target_branch
         self._module = module
         self._log_path = log_path
+        self._docker_mount_workspace = docker_mount_workspace
 
     def fix(self, commit: CommitInfo, errors: list[str], model: str) -> BuildAttribution:
         ctx = self._context(commit, errors, model)
@@ -124,9 +184,11 @@ class BuildAgent:
             ref, _ = self._git.branch_tip(self._target_branch)
             for rel in commit.changed_files:
                 original = self._git.show_file(ref, rel)
-                if original is None:
-                    continue
                 path = self._git.repo_path / rel
+                if original is None:
+                    if path.is_file():
+                        path.unlink()
+                    continue
                 path.parent.mkdir(parents=True, exist_ok=True)
                 path.write_text(original, encoding="utf-8")
             original_errors = self._runner.build_commit(
@@ -136,7 +198,13 @@ class BuildAgent:
             return attribution
         finally:
             self._git.restore(snap)
-        if _error_signatures(original_errors) & _error_signatures(errors):
+        repo_path = self._git.repo_path
+        mount = self._docker_mount_workspace
+        current_sigs = _error_signatures(errors, repo_path=repo_path, mount_prefix=mount)
+        original_sigs = _error_signatures(
+            original_errors, repo_path=repo_path, mount_prefix=mount
+        )
+        if original_sigs & current_sigs:
             return BuildAttribution(
                 category="pre_existing",
                 reason="原 tip 编译复现相同错误，确定为原分支已有",
@@ -156,7 +224,13 @@ class BuildAgent:
         attribution: BuildAttribution,
     ) -> bool:
         """Snapshot -> LLM fix -> apply -> rebuild; restore and retry on failure."""
-        allowed = set(commit.changed_files) | set(_error_files(errors))
+        allowed = set(commit.changed_files) | set(
+            _error_files(
+                errors,
+                repo_path=self._git.repo_path,
+                mount_prefix=self._docker_mount_workspace,
+            )
+        )
         files_to_fix = list(dict.fromkeys(attribution.files_to_fix))
         if not set(files_to_fix) <= allowed:
             return False
