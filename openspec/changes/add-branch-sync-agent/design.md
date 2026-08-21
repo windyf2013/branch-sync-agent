@@ -118,7 +118,7 @@ class SyncDecision(BaseModel):
     sha: str
     is_bug_fix: bool
     reason: str | None
-    recognition_source: str      # 枚举统一（参考实现）：machine:[BUG] / machine:fix: / machine:issue / machine:cherry-pick / machine:version-bump / machine:chore-docs / machine:docs-only / agent:bug-fix / agent:not-bug-fix / pending:claude-agent / not-included
+    recognition_source: str      # 枚举（参考实现完整集，15 个）：machine:[BUG] / machine:fix: / machine::bug: / machine:zh-fix / machine:issue / machine:cherry-pick / machine:version-bump / machine:version-file / machine:chore-docs / machine:ai-ignor / machine:docs-only / agent:bug-fix / agent:not-bug-fix / pending:claude-agent / not-included
     needs_agent: bool
 
 class Conclusion4(BaseModel):

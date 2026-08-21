@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import importlib.resources
 import re
-from dataclasses import dataclass
 from collections.abc import Mapping
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal
 
