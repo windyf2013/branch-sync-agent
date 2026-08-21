@@ -1,4 +1,5 @@
 import os  # noqa: F401 — os.environ is the env source for pydantic-settings; tests monkeypatch bsa.config.settings.os.environ
+from typing import Literal
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -22,9 +23,11 @@ class Settings(BaseSettings):
     worktree_root: str
 
     # --- LLM ---
+    llm_backend: Literal["api", "claude_cli"] = "api"
     llm_model: str
     llm_api_key: str
     llm_base_url: str
+    claude_cli_path: str = "claude"
     llm_timeout_sec: int = 60
     llm_max_retries: int = 3
     llm_degrade_to_manual: bool = True

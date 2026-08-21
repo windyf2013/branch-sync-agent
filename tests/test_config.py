@@ -22,9 +22,11 @@ REQUIRED = [
 ]
 
 DEFAULTS = {
+    "llm_backend": "api",
     "llm_timeout_sec": 60,
     "llm_max_retries": 3,
     "llm_degrade_to_manual": True,
+    "claude_cli_path": "claude",
     "docker_prefix": "",
     "docker_container_prefix": "rcios-sync",
     "max_conflict_attempts": 3,
