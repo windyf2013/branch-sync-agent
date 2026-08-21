@@ -12,8 +12,8 @@ TYPE_PRIORITY: dict[str, int] = {
     "personal": 4,
 }
 
-SOURCE_TYPES = frozenset({"develop"})
-TARGET_TYPES = frozenset({"release", "fix"})
+SOURCE_TYPES = frozenset({"develop", "release", "fix"})
+TARGET_TYPES = frozenset({"develop", "release", "fix"})
 
 _DATE_SUFFIX_RE = re.compile(r"_\d{8}$")
 
@@ -196,11 +196,11 @@ def first_occurrence_sections(doc: BranchMdDocument) -> dict[str, str]:
 
 
 def build_matrix(doc: BranchMdDocument) -> list[HomologousSet]:
-    """同源矩阵（决策 35）。
+    """同源矩阵（决策 35/36 修订）。
 
-    双源判定：同产品线 = branch.md section；同步方向 = develop 父 → 前缀下子
-    release/fix 分支（child 分支名以 develop 分支前缀 + "_" 开头）。
-    决策 20：feature/personal 全排除；决策 36：develop 只作源不作目标。
+    同源 = branch.md section（产品线人工标注）；section 内 develop/release/fix
+    分支全互联，互为源和目标（feature/personal 排除，决策 20）。不靠前缀血缘方向。
+    自身分支排除由 conclude_pair 的「目标分支与源分支相同」检查处理。
     """
     first_seen = first_occurrence_sections(doc)
     homologous_sets: list[HomologousSet] = []
@@ -210,19 +210,16 @@ def build_matrix(doc: BranchMdDocument) -> list[HomologousSet]:
             for branch in section.branches
             if first_seen.get(branch.name) == section.title
         ]
-        sources = [branch for branch in branches if branch.branch_type in SOURCE_TYPES]
-        develop_prefixes = [branch_prefix(branch.name) for branch in sources]
-        need_sync_targets = [
-            branch
-            for branch in branches
-            if branch.branch_type in TARGET_TYPES
-            and any(branch.name.startswith(prefix + "_") for prefix in develop_prefixes)
-        ]
+        eligible = [branch for branch in branches if branch.branch_type in SOURCE_TYPES]
         homologous_sets.append(
             HomologousSet(
                 section=section.title,
-                sources=sources,
-                need_sync_targets=need_sync_targets,
+                sources=list(eligible),
+                need_sync_targets=[
+                    branch
+                    for branch in eligible
+                    if branch.branch_type in TARGET_TYPES
+                ],
             )
         )
     return homologous_sets

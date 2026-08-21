@@ -29,6 +29,8 @@ class FakeLLM:
     def __init__(self, result: SyncDecision | None = None) -> None:
         self.result = result
         self.calls: list[CommitInfo] = []
+        self.risk_result: str | None = None
+        self.severity_calls: list[CommitInfo] = []
 
     def judge_bug_fix(self, commit: CommitInfo) -> SyncDecision:
         self.calls.append(commit)
@@ -41,6 +43,10 @@ class FakeLLM:
             recognition_source="agent:bug-fix",
             needs_agent=False,
         )
+
+    def judge_severity(self, commit: CommitInfo) -> str | None:
+        self.severity_calls.append(commit)
+        return self.risk_result
 
 
 def test_cached_sha_returned_without_llm_call(tmp_path: Path) -> None:
@@ -89,6 +95,7 @@ def test_new_sha_calls_llm_and_saves_to_cache(tmp_path: Path) -> None:
         "is_bug_fix": True,
         "reason": "llm said bug",
         "recognition_source": "agent:bug-fix",
+        "risk": None,
     }
 
 
@@ -317,3 +324,82 @@ def test_minimal_human_entry_defaults_source(tmp_path: Path) -> None:
     assert result[sha].recognition_source == "agent:bug-fix"
     assert result[sha].needs_agent is False
     assert llm.calls == []
+
+
+def test_resolve_risks_calls_llm_and_caches(tmp_path: Path) -> None:
+    sha = "5eed00000000000000000000000000000000000"
+    path = tmp_path / "judgments.json"
+    llm = FakeLLM()
+    llm.risk_result = "high"
+    agent = SyncDecisionAgent(llm, path)
+
+    result = agent.resolve_risks([make_commit(sha=sha)])
+
+    assert result == {sha: "high"}
+    assert llm.severity_calls == [make_commit(sha=sha)]
+    saved = json.loads(path.read_text(encoding="utf-8"))
+    assert saved[sha]["risk"] == "high"
+
+
+def test_resolve_risks_uses_cached_risk_without_llm(tmp_path: Path) -> None:
+    sha = "c0ffee0000000000000000000000000000000000"
+    path = tmp_path / "judgments.json"
+    path.write_text(
+        json.dumps(
+            {
+                sha: {
+                    "is_bug_fix": True,
+                    "reason": "human says yes",
+                    "recognition_source": "agent:bug-fix",
+                    "risk": "high",
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    llm = FakeLLM()
+    agent = SyncDecisionAgent(llm, path)
+
+    result = agent.resolve_risks([make_commit(sha=sha)])
+
+    assert result == {sha: "high"}
+    assert llm.severity_calls == []
+
+
+def test_resolve_risks_invalid_cached_risk_ignored(tmp_path: Path) -> None:
+    sha = "badc0de000000000000000000000000000000000"
+    path = tmp_path / "judgments.json"
+    path.write_text(
+        json.dumps(
+            {
+                sha: {
+                    "is_bug_fix": True,
+                    "recognition_source": "agent:bug-fix",
+                    "risk": "CRITICAL",
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    llm = FakeLLM()
+    llm.risk_result = "medium"
+    agent = SyncDecisionAgent(llm, path)
+
+    result = agent.resolve_risks([make_commit(sha=sha)])
+
+    assert result == {sha: "medium"}
+    assert llm.severity_calls == [make_commit(sha=sha)]
+
+
+def test_resolve_risks_none_risk_not_cached(tmp_path: Path) -> None:
+    sha = "0dd0000000000000000000000000000000000000"
+    path = tmp_path / "judgments.json"
+    llm = FakeLLM()
+    llm.risk_result = None
+    agent = SyncDecisionAgent(llm, path)
+
+    result = agent.resolve_risks([make_commit(sha=sha)])
+
+    assert result == {sha: None}
+    saved = json.loads(path.read_text(encoding="utf-8"))
+    assert sha not in saved

@@ -33,6 +33,7 @@ from bsa.rules import (
     TargetSnapshot,
     build_matrix,
     classify_commit,
+    classify_severity,
     conclude_pair,
     parse_branch_md,
     resolve_branch_type,
@@ -194,6 +195,8 @@ def detect_commits(state: dict, ctx: GraphContext) -> dict:
                 patch_text = ctx.git.commit_patch(sha)
                 symbols = extract_symbols(patch_text)
                 classification = ctx.classify(message, changed_files, symbols, patch_text, sha=sha)
+                severity = classify_severity(message, changed_files)
+                risk = severity if severity in ("low", "medium", "high") else None
                 detected.append(
                     CommitInfo(
                         sha=sha,
@@ -215,6 +218,7 @@ def detect_commits(state: dict, ctx: GraphContext) -> dict:
                     reason=classification.reason,
                     recognition_source=classification.recognition_source,
                     needs_agent=classification.needs_agent,
+                    risk=risk,
                 )
 
     return {
@@ -241,6 +245,7 @@ def _to_analysis(
         source_branch=commit.source_branch,
         source_branch_type=resolve_branch_type(commit.source_branch, branch_mapping),
         homologous_section=commit.homologous_section,
+        risk=decision.risk,
     )
 
 
@@ -271,6 +276,19 @@ def sync_decision(state: dict, ctx: GraphContext) -> dict:
     ]
     if pending:
         classifications.update(ctx.sync_decision_agent.run(pending))
+
+    risk_pending = [
+        commit
+        for commit in detected
+        if (entry := classifications.get(commit.sha)) is not None
+        and not entry.needs_agent
+        and entry.is_bug_fix
+        and entry.risk is None
+    ]
+    if risk_pending:
+        risks = ctx.sync_decision_agent.resolve_risks(risk_pending)
+        for sha, risk in risks.items():
+            classifications[sha] = classifications[sha].model_copy(update={"risk": risk})
 
     analyses = {
         commit.sha: _to_analysis(

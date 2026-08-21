@@ -128,6 +128,7 @@ class FakeGit:
         self.unmerged_files_result: list[str] = []
         self.format_patch_result: Path | None = None
         self.file_texts: dict[tuple[str, str], str] = {}
+        self.metadata_results: dict[str, tuple[str, str, str]] = {}
 
     def _record(self, name: str, args: tuple) -> None:
         self.calls.append((name, args))
@@ -145,7 +146,9 @@ class FakeGit:
 
     def commit_metadata(self, sha: str) -> tuple[str, str, str]:
         self._record("commit_metadata", (sha,))
-        return ("dev", "2026-01-01T10:00:00+08:00", f"msg-{sha}")
+        return self.metadata_results.get(
+            sha, ("dev", "2026-01-01T10:00:00+08:00", f"msg-{sha}")
+        )
 
     def changed_files(self, sha: str) -> list[str]:
         self._record("changed_files", (sha,))
@@ -230,7 +233,9 @@ class FakeConclude:
 class FakeSyncDecisionAgent:
     def __init__(self) -> None:
         self.calls: list[list[CommitInfo]] = []
+        self.risk_calls: list[list[CommitInfo]] = []
         self.results: dict[str, SyncDecision] = {}
+        self.risk_results: dict[str, str | None] = {}
 
     def run(self, pending: list[CommitInfo]) -> dict[str, SyncDecision]:
         self.calls.append(list(pending))
@@ -247,6 +252,10 @@ class FakeSyncDecisionAgent:
                 ),
             )
         return out
+
+    def resolve_risks(self, commits: list[CommitInfo]) -> dict[str, str | None]:
+        self.risk_calls.append(list(commits))
+        return {commit.sha: self.risk_results.get(commit.sha) for commit in commits}
 
 
 class FakeRunner:
@@ -602,6 +611,42 @@ def test_detect_commits_extracts_symbols_from_patch(tmp_path):
     assert update["detected_commits"][0].symbols == ["demo_check"]
 
 
+def test_detect_commits_sets_high_risk_from_severity_rules(tmp_path):
+    write_branch_md(tmp_path)
+    ctx = make_ctx(tmp_path)
+    git = ctx.git
+    git.window_shas = {f"origin/{DEVELOP}": ["a1"]}
+    git.changed = {"a1": ["plat/demo.c"]}
+    git.patches = {"a1": "+x"}
+    git.patch_ids = {"a1": "pid1"}
+    git.metadata_results = {"a1": ("dev", "2026-01-01T10:00:00+08:00", "[CRITICAL] fix crash")}
+    ctx.classify.results = {
+        "a1": Classification(
+            is_bug_fix=True,
+            recognition_source="machine:[BUG]",
+            needs_agent=False,
+        )
+    }
+
+    update = detect_commits(base_state(), ctx)
+
+    assert update["classifications"]["a1"].risk == "high"
+
+
+def test_detect_commits_leaves_risk_none_when_severity_unknown(tmp_path):
+    write_branch_md(tmp_path)
+    ctx = make_ctx(tmp_path)
+    git = ctx.git
+    git.window_shas = {f"origin/{DEVELOP}": ["a1"]}
+    git.changed = {"a1": ["plat/demo.c"]}
+    git.patches = {"a1": "+x"}
+    git.patch_ids = {"a1": "pid1"}
+
+    update = detect_commits(base_state(), ctx)
+
+    assert update["classifications"]["a1"].risk is None
+
+
 def test_sync_decision_resolves_pending_and_builds_batches(tmp_path):
     write_branch_md(tmp_path)
     ctx = make_ctx(tmp_path)
@@ -643,6 +688,7 @@ def test_sync_decision_resolves_pending_and_builds_batches(tmp_path):
     update = sync_decision(state, ctx)
 
     assert [c.sha for c in ctx.sync_decision_agent.calls[0]] == ["a2"]
+    assert [c.sha for c in ctx.sync_decision_agent.risk_calls[0]] == ["a1", "a2"]
     assert update["classifications"]["a2"].is_bug_fix is True
     assert update["classifications"]["a2"].needs_agent is False
     assert update["decisions"]["a1"][TARGET].kind == "NeedSync"
@@ -663,7 +709,7 @@ def test_to_analysis_uses_branch_mapping_for_source_type(tmp_path):
     assert analysis.source_branch_type == "release"
 
 
-def test_sync_decision_branch_mapping_overrides_target_type(tmp_path):
+def test_sync_decision_develop_target_is_valid(tmp_path):
     write_branch_md(tmp_path)
     ctx = make_ctx(tmp_path)
     ctx.decision_rules.branch_mapping = {TARGET: "develop"}
@@ -686,7 +732,7 @@ def test_sync_decision_branch_mapping_overrides_target_type(tmp_path):
 
     update = sync_decision(state, ctx)
 
-    assert update["batches"] == {}
+    assert update["batches"] == {TARGET: ["a1"]}
     assert ctx.matrix is not None
 
 
@@ -716,7 +762,7 @@ def test_sync_decision_forbidden_branch_routes_out_of_scope(tmp_path):
     assert update["status"] == "DECIDED"
 
 
-def test_sync_decision_no_pending_skips_agent(tmp_path):
+def test_sync_decision_no_pending_skips_is_bugfix_llm(tmp_path):
     write_branch_md(tmp_path)
     ctx = make_ctx(tmp_path)
     c1 = commit("a1")
@@ -737,8 +783,40 @@ def test_sync_decision_no_pending_skips_agent(tmp_path):
     }
     update = sync_decision(state, ctx)
     assert ctx.sync_decision_agent.calls == []
+    assert [c.sha for c in ctx.sync_decision_agent.risk_calls[0]] == ["a1"]
     assert update["decisions"]["a1"][TARGET].kind == "ManualReview"
     assert update["batches"] == {}
+
+
+def test_sync_decision_resolves_risk_and_threads_into_analysis(tmp_path):
+    write_branch_md(tmp_path)
+    ctx = make_ctx(tmp_path)
+    c1 = commit("a1", issue_ids=["CQ1"])
+    state = base_state(
+        detected_commits=[c1],
+        classifications={
+            "a1": SyncDecision(
+                sha="a1",
+                is_bug_fix=True,
+                reason=None,
+                recognition_source="machine:[BUG]",
+                needs_agent=False,
+            )
+        },
+    )
+    ctx.sync_decision_agent.risk_results = {"a1": "high"}
+    ctx.conclude.results = {
+        ("a1", TARGET): Conclusion4(kind="NeedSync", evidence=["x"], confidence="high")
+    }
+
+    update = sync_decision(state, ctx)
+
+    assert ctx.sync_decision_agent.calls == []
+    assert [c.sha for c in ctx.sync_decision_agent.risk_calls[0]] == ["a1"]
+    assert update["classifications"]["a1"].risk == "high"
+    assert ctx.conclude.calls[0][0].risk == "high"
+    assert update["decisions"]["a1"][TARGET].kind == "NeedSync"
+    assert update["batches"] == {TARGET: ["a1"]}
 
 
 # --- sync_decision with real conclude_pair (four-state fidelity, task 3.2a) ---

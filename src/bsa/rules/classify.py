@@ -76,6 +76,12 @@ class _CompiledRules:
     public_dirs: tuple[str, ...]
 
 
+@dataclass(frozen=True)
+class _CompiledSeverity:
+    high_keywords: tuple[re.Pattern, ...]
+    severity_paths: tuple[str, ...]
+
+
 def _compile_markers(markers: list[MarkerRule]) -> tuple[_CompiledMarker, ...]:
     compiled: list[_CompiledMarker] = []
     for marker in markers:
@@ -93,7 +99,7 @@ def _compile_markers(markers: list[MarkerRule]) -> tuple[_CompiledMarker, ...]:
     return tuple(compiled)
 
 
-def _load_classify_rules() -> _CompiledRules:
+def _load_rules_yaml() -> dict:
     try:
         text = (
             importlib.resources.files("bsa.rules")
@@ -104,7 +110,10 @@ def _load_classify_rules() -> _CompiledRules:
         text = (Path(__file__).with_name("decision_rules.yaml")).read_text(
             encoding="utf-8"
         )
-    data = yaml.safe_load(text) or {}
+    return yaml.safe_load(text) or {}
+
+
+def _compile_classify_rules(data: dict) -> _CompiledRules:
     model = _ClassifyRules(**data.get("classify", {}))
     return _CompiledRules(
         bugfix_markers=_compile_markers(model.bugfix_markers),
@@ -122,7 +131,20 @@ def _load_classify_rules() -> _CompiledRules:
     )
 
 
-_RULES = _load_classify_rules()
+def _compile_severity_rules(data: dict) -> _CompiledSeverity:
+    high_keywords = list((data.get("severity") or {}).get("high_keywords", []))
+    severity_paths = list((data.get("severity") or {}).get("severity_paths", []))
+    return _CompiledSeverity(
+        high_keywords=tuple(
+            re.compile(kw, re.IGNORECASE) for kw in high_keywords if kw
+        ),
+        severity_paths=tuple(severity_paths),
+    )
+
+
+_RULES_DATA = _load_rules_yaml()
+_RULES = _compile_classify_rules(_RULES_DATA)
+_SEVERITY_RULES = _compile_severity_rules(_RULES_DATA)
 
 
 def lookup_agent_judgment(
@@ -266,3 +288,24 @@ def classify_commit(
         reason="无机器可读修复标记；交由 Claude 主 Agent 阅读 diff 后判定。",
         needs_agent=True,
     )
+
+
+def _is_severity_path(path: str, severity_paths: tuple[str, ...]) -> bool:
+    return any(
+        (p.endswith("/") and path.startswith(p)) or (not p.endswith("/") and path == p)
+        for p in severity_paths
+    )
+
+
+def classify_severity(
+    message: str, changed_files: list[str]
+) -> Literal["high", "medium", "low", "unknown"]:
+    """规则层严重性判定（决策 41）：命中 high 标记/核心路径 → high；否则 unknown 交 LLM。"""
+    for keyword in _SEVERITY_RULES.high_keywords:
+        if keyword.search(message):
+            return "high"
+    if any(
+        _is_severity_path(f, _SEVERITY_RULES.severity_paths) for f in changed_files
+    ):
+        return "high"
+    return "unknown"

@@ -24,6 +24,7 @@ class SyncDecision(BaseModel):
     reason: str | None
     recognition_source: str
     needs_agent: bool
+    risk: Literal["low", "medium", "high"] | None = None
 
 
 class Conclusion4(BaseModel):

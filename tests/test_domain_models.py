@@ -131,6 +131,21 @@ class TestSyncDecision:
         data["reason"] = None
         assert SyncDecision(**data).reason is None
 
+    @pytest.mark.parametrize("risk", ["low", "medium", "high"])
+    def test_valid_risk(self, risk):
+        data = valid_sync_decision()
+        data["risk"] = risk
+        assert SyncDecision(**data).risk == risk
+
+    def test_risk_optional_defaults_none(self):
+        assert SyncDecision(**valid_sync_decision()).risk is None
+
+    def test_invalid_risk_rejected(self):
+        data = valid_sync_decision()
+        data["risk"] = "CRITICAL"
+        with pytest.raises(ValidationError):
+            SyncDecision(**data)
+
     def test_required_fields(self):
         for field in ["sha", "is_bug_fix", "recognition_source", "needs_agent"]:
             data = valid_sync_decision()

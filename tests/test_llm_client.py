@@ -157,6 +157,17 @@ class TestJudgeBugFix:
         assert decision.recognition_source == "agent:not-bug-fix"
         assert decision.needs_agent is False
 
+    def test_parses_risk_from_judgment(self, tmp_path, monkeypatch):
+        client = LLMClient(make_settings(tmp_path, llm_backend="api"))
+        monkeypatch.setattr(
+            client._backend,
+            "complete",
+            lambda prompt, schema: schema(is_bug_fix=True, risk="high", reason="crash"),
+        )
+        decision = client.judge_bug_fix(make_commit())
+        assert decision.risk == "high"
+        assert decision.is_bug_fix is True
+
     def test_failure_degrades_to_manual(self, tmp_path, monkeypatch):
         client = LLMClient(make_settings(tmp_path, llm_backend="api"))
 
@@ -179,6 +190,45 @@ class TestJudgeBugFix:
         monkeypatch.setattr(client._backend, "complete", boom)
         with pytest.raises(LLMUnavailable):
             client.judge_bug_fix(make_commit())
+
+
+class TestJudgeSeverity:
+    def test_parses_risk(self, tmp_path, monkeypatch):
+        client = LLMClient(make_settings(tmp_path, llm_backend="api"))
+        monkeypatch.setattr(
+            client._backend,
+            "complete",
+            lambda prompt, schema: schema(risk="high", reason="crash"),
+        )
+        assert client.judge_severity(make_commit()) == "high"
+
+    def test_parses_low_risk(self, tmp_path, monkeypatch):
+        client = LLMClient(make_settings(tmp_path, llm_backend="api"))
+        monkeypatch.setattr(
+            client._backend,
+            "complete",
+            lambda prompt, schema: schema(risk="low"),
+        )
+        assert client.judge_severity(make_commit()) == "low"
+
+    def test_failure_degrades_to_none(self, tmp_path, monkeypatch):
+        client = LLMClient(make_settings(tmp_path, llm_backend="api"))
+
+        def boom(prompt, schema):
+            raise LLMUnavailable("api down")
+
+        monkeypatch.setattr(client._backend, "complete", boom)
+        assert client.judge_severity(make_commit()) is None
+
+    def test_failure_raises_when_no_degrade(self, tmp_path, monkeypatch):
+        client = LLMClient(make_settings(tmp_path, llm_backend="api", llm_degrade_to_manual=False))
+
+        def boom(prompt, schema):
+            raise LLMUnavailable("api down")
+
+        monkeypatch.setattr(client._backend, "complete", boom)
+        with pytest.raises(LLMUnavailable):
+            client.judge_severity(make_commit())
 
 
 class TestSolveConflict:

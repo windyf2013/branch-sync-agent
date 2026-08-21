@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+from typing import Literal
 
 from pydantic import BaseModel, Field
 
@@ -12,7 +13,7 @@ CHERRY_PICK_RE = re.compile(
 )
 
 INELIGIBLE_TARGET_TYPES = frozenset({"feature", "personal"})
-NEED_SYNC_TARGET_TYPES = frozenset({"release", "fix"})
+NEED_SYNC_TARGET_TYPES = frozenset({"develop", "release", "fix"})
 
 
 class CommitAnalysis(BaseModel):
@@ -27,6 +28,7 @@ class CommitAnalysis(BaseModel):
     source_branch: str
     source_branch_type: str
     homologous_section: str
+    risk: Literal["low", "medium", "high"] | None = None
 
 
 class TargetSnapshot(BaseModel):
@@ -91,6 +93,30 @@ def _target_role_eligible(target: TargetSnapshot) -> bool:
     if target.branch_type in INELIGIBLE_TARGET_TYPES:
         return False
     return target.branch_type in NEED_SYNC_TARGET_TYPES
+
+
+def _release_line_not_synced(source: CommitAnalysis, target: TargetSnapshot) -> bool:
+    return (
+        source.source_branch_type == target.branch_type
+        and target.branch_type in ("release", "fix")
+    )
+
+
+def _severity_gate_reason(source: CommitAnalysis, target: TargetSnapshot) -> str | None:
+    source_type = source.source_branch_type
+    target_type = target.branch_type
+    risk = source.risk
+    if target_type == "fix" and risk != "high":
+        return (
+            f"fix 分支仅接收 high 严重性 bug-fix（决策 41），"
+            f"当前 risk={risk or 'unknown'}，不自动传播。"
+        )
+    if target_type == "develop" and source_type in ("release", "fix") and risk != "high":
+        return (
+            f"发布线（{source_type}）回灌 develop 仅限 high 严重性 bug-fix（决策 41），"
+            f"当前 risk={risk or 'unknown'}，不自动传播。"
+        )
+    return None
 
 
 def _anchor_files_exist(source: CommitAnalysis, target: TargetSnapshot) -> bool:
@@ -190,6 +216,15 @@ def conclude_pair(
             confidence="high",
         )
 
+    if _release_line_not_synced(source, target):
+        return Conclusion4(
+            kind="OutOfScope",
+            evidence=[
+                f"{target.branch_type} 分支之间不互同步（决策 41，各发布线独立维护）。"
+            ],
+            confidence="high",
+        )
+
     if not _anchor_files_exist(source, target):
         return Conclusion4(
             kind="OutOfScope",
@@ -236,6 +271,14 @@ def conclude_pair(
             kind="ManualReview",
             evidence=["目标分支上修复是否缺失无法判定。"],
             confidence="low",
+        )
+
+    gate_reason = _severity_gate_reason(source, target)
+    if gate_reason is not None:
+        return Conclusion4(
+            kind="ManualReview",
+            evidence=[gate_reason],
+            confidence="high",
         )
 
     anchor_bits: list[str] = []

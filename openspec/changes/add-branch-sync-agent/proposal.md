@@ -228,7 +228,7 @@ Agent 具备真实世界的写权限（git worktree、代码修改、docker 编�
   - **安全红线采用纯数据驱动 + 通用 SafetyEnforcer 校验器**：Agent 的编辑/执行工具在操作前主动检查红线，命中即拒绝；新增红线只改 yaml 不碰代码。
   - safety_rules 字段：`forbidden_paths`（禁改路径）、`required_models`（必验证型号）、`forbidden_branches`（禁同步分支）、`max_single_edit_lines`（单次修改规模红线）。
   - decision_rules 字段：`classify`（机器 bugfix/notbugfix 标记、issue-id 模式、路径规则）、`conclude`（相似度阈值、目标类型）、`branch_mapping`（分支类型覆盖项）。
-  - 修正（决策 35/36/37 联动）：不做生命周期策略；不做 develop_backfill；branch_mapping 仅分支类型覆盖，不含生命周期覆盖。
+  - 修正（决策 35/36/37/41 联动）：不做生命周期策略；develop_backfill 改为全互联（develop 合法目标）；发布线严重性门控（risk 字段）；branch_mapping 仅分支类型覆盖，不含生命周期覆盖。
 
 
 ### 决策 20：feature/personal 分支矩阵排除
@@ -383,20 +383,36 @@ Agent 具备真实世界的写权限（git worktree、代码修改、docker 编�
   - **安全**：见决策 33 安全编码条。
   - **扩展性约束**：多 repo 配置结构预留（v1 单 repo）；v2 web 平台读同一 SQLite。
 
-### 决策 35：分支语义修正（基于分支管理规范）
+### 决策 35：分支语义修正（同产品线全互联传播，取代前缀血缘）
 
-- **问题**：`spec/分支管理规范.md` 定义了分支前缀血缘体系，同源矩阵如何对齐？
-- **用户关键信息**：同产品线需互相同步，但一般同产品线不会出现多个 develop 分支；分支命名及关系参考 `spec/分支管理规范.md`。
+- **问题**：`spec/分支管理规范.md` 定义分支前缀血缘，但真机测试暴露严格父子血缘不符合业务。
+- **用户关键修正**：同产品线多个 develop 分支是真实存在的（短时独立项目线），它们之间 bug-fix 需互相同步；严格父子血缘无意义；回灌操作有时间间隔，bug-fix 等不起。
 - **结论**：
-  - **同源判定 = 双源结合**：产品线归属 = branch.md section（人工标注，如 1.1 组网 / 1.2 FTTR-B / 1.3 政企网关 / 1.4 4.34 主线 / 1.5 路由器类）；同步方向 = 前缀血缘（develop 父 → 前缀下子 release/fix）。
-  - **同步方向 = develop 父 → 子 release/fix**（规范 5.1 语义），源为 develop，目标为其前缀下派生的 release/fix；非参考实现的"源 develop/release/fix 皆可"。
-  - **branch.md 是唯一权威分支来源**（真实状态，以它为准，不管远端）；release/fix 分支后续加入 branch.md。
-  - **边界风险记录**：参考实现 `resolve_branch_type` 纯关键词匹配，`br_v4.33_5200_sdwan_release_feature_quantum_20260625` 会误判为 feature（实为 release 阶段特性分支）。当前 branch.md 无此类分支不影响主流程；后续若出现，须在分支类型解析时处理"release_feature"歧义。
+  - **同源判定 = branch.md section（产品线人工标注）**；网络内所有 develop/release/fix 分支互为源和目标（全互联传播 bug-fix）。
+  - **不靠前缀血缘方向**；`branch_prefix` 仅用于诊断/辅助，不决定同步方向。
+  - **branch.md 是唯一权威分支来源**。
+  - 废弃原"develop 父 → 子 release/fix"单向模型。
 
-### 决策 36：develop_backfill 定案
+### 决策 36：develop_backfill 改为全互联（develop 合法目标）
 
-- **问题**：v1 是否启用 develop_backfill（develop 分支作为同步目标）？
-- **结论**：**不启用**。同步目标是 release/fix（develop 父 → 子 release/fix），develop 只作源不作目标。与决策 35 前缀血缘方向一致；同产品线不会出现多个 develop 分支，不存在 develop→develop 互同步场景。
+- **问题**：v1 是否启用 develop 作为同步目标？
+- **用户关键修正**：同产品线多个 develop 分支会真实发生，它们之间 bug-fix 需互相同步。
+- **结论**：**启用（全互联）**。develop 是合法目标；同产品线内 develop/release/fix 互为源目标。废弃原"develop 只作源不作目标"。
+
+### 决策 41：发布线严重性门控
+
+- **问题**：release/fix 是已发布产品线，随意同步会引入回归风险。如何控制？
+- **用户决策**：release 和 fix 除非是严重 bug-fix，否则不应随意同步。
+- **结论**：
+  - **方向矩阵（不对称）**：
+    - develop → release/fix：bug-fix 全同步（主方向，发布线需要修复）。
+    - release/fix → develop：**仅严重（high）bug-fix 回灌**（release 特有改动不污染开发主线）。
+    - 同产品线多 develop：全同步（并行线）。
+    - release 之间 / fix 之间：不互同步（独立发布线各自维护）。
+    - fix 最谨慎：仅接收严重 bug-fix（已发布更久，回归成本最高）。
+  - **严重性门控仅应用于发布线**（release/fix 的接收与回灌）；develop 之间全同步不受门控。
+  - **判定**：规则层先行（commit message 严重标记如 [CRITICAL]/[URGENT]/崩溃/宕机/数据丢失/安全漏洞 + 核心路径命中），无法判定交 LLM 兜底；输出 `SyncDecision.risk`（low/medium/high）。
+  - **处置**：`risk=high` → 自动同步；`medium` → ManualReview（进报告人工）；`low` → 不传播。
 
 ### 决策 37：lifecycle 不做
 

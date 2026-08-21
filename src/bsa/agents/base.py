@@ -59,6 +59,12 @@ class FailedCommit(BaseModel):
 
 class _BugFixJudgment(BaseModel):
     is_bug_fix: bool
+    risk: Literal["low", "medium", "high"] | None = None
+    reason: str | None = None
+
+
+class _SeverityJudgment(BaseModel):
+    risk: Literal["low", "medium", "high"]
     reason: str | None = None
 
 
@@ -191,12 +197,16 @@ class LLMClient:
 
     def judge_bug_fix(self, commit: CommitInfo) -> SyncDecision:
         prompt = (
-            "你是代码评审专家。判断下面这个 commit 是否属于 bug 修复。\n"
+            "你是代码评审专家。判断下面这个 commit 是否属于 bug 修复，"
+            "并评估其严重性（风险）。\n"
             f"commit: {commit.sha} {commit.message}\n"
             f"changed files: {', '.join(commit.changed_files)}\n"
             f"patch:\n{commit.patch_text}\n"
+            "严重性参考：崩溃/宕机/死机/数据丢失/内存泄漏/缓冲区溢出/安全漏洞等"
+            "高风险缺陷 → high；一般功能 bug → low 或 medium。\n"
             '只输出 JSON，不要任何其他文字或 markdown，'
-            '格式：{"is_bug_fix": true/false, "reason": "简短理由"}'
+            '格式：{"is_bug_fix": true/false, "risk": "low"|"medium"|"high", '
+            '"reason": "简短理由"}'
         )
         try:
             j = self._complete("judge_bug_fix", prompt, _BugFixJudgment)
@@ -216,7 +226,27 @@ class LLMClient:
             reason=j.reason,
             recognition_source="agent:bug-fix" if j.is_bug_fix else "agent:not-bug-fix",
             needs_agent=False,
+            risk=j.risk,
         )
+
+    def judge_severity(self, commit: CommitInfo) -> Literal["low", "medium", "high"] | None:
+        prompt = (
+            "你是代码评审专家。评估下面这个 commit 修复缺陷的严重性（决策 41 发布线门控）。\n"
+            f"commit: {commit.sha} {commit.message}\n"
+            f"changed files: {', '.join(commit.changed_files)}\n"
+            f"patch:\n{commit.patch_text}\n"
+            "严重性参考：崩溃/宕机/死机/数据丢失/内存泄漏/缓冲区溢出/安全漏洞等"
+            "高风险缺陷 → high；一般功能 bug → low 或 medium。\n"
+            '只输出 JSON，不要任何其他文字或 markdown，'
+            '格式：{"risk": "low"|"medium"|"high", "reason": "简短理由"}'
+        )
+        try:
+            j = self._complete("judge_severity", prompt, _SeverityJudgment)
+        except LLMUnavailable as exc:
+            if self._settings.llm_degrade_to_manual:
+                return None
+            raise exc
+        return j.risk
 
     def solve_conflict(self, ctx: ConflictContext) -> ConflictResolution:
         markers = "\n".join(f"{f}:\n{m}" for f, m in ctx.conflict_markers.items())

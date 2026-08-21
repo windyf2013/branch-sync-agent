@@ -265,7 +265,8 @@ def classify_commit(message: str, changed_files: list[str], symbols: list[str],
 def conclude_pair(source: CommitAnalysis, target: TargetSnapshot, *,
                   similarity_high: float, similarity_low: float) -> Conclusion4
     # 返回 domain 的 Conclusion4（唯一类型，问题 21 定案）
-    # 决策 36：develop_backfill 不启用，无此参数；决策 37：不做 lifecycle，TargetSnapshot 无 lifecycle 字段
+    # 决策 36：develop 合法目标（全互联）；决策 37：不做 lifecycle，TargetSnapshot 无 lifecycle 字段
+    # 决策 41：发布线严重性门控（release/fix 接收与回灌按 risk 门控），见 conclude 阈值/矩阵
     # similarity_high/lower 来源：decision_rules.yaml conclude.similarity_high/low（默认 0.90/0.50，参考实现默认，问题 27 定案）
 
 # rules/decision_rules.py（决策规则加载，数据驱动 decision_rules.yaml）
@@ -304,9 +305,10 @@ class SafetyEnforcer:
 def parse_branch_md(text: str) -> BranchMdDocument
 def branch_prefix(name: str) -> str                      # 去掉末尾 _YYYYMMDD 日期段（规范 3.2）
 def build_matrix(doc) -> list[HomologousSet]
-    # 双源判定：同产品线 = branch.md section（人工标注）；同步方向 = develop 父 → 前缀下子 release/fix
-    # source = develop 分支；target = 同 section 内、分支前缀命中该 develop 前缀的 release/fix 分支
-    # 决策 36：develop 只作源不作目标；决策 20：feature/personal 排除
+    # 决策 35 修订：同产品线 = branch.md section（人工标注）；网络内 develop/release/fix
+    # 全互联（互为源和目标）；feature/personal 排除（决策 20）；不靠前缀血缘方向
+    # 决策 36 修订：develop 是合法目标
+    # 决策 41：release/fix 方向由严重性门控在 sync_decision/conclude 层执行（risk 字段）
 
 # rules/paths.py（公共目录判定，数据驱动 decision_rules.yaml path_rules.public_dirs）
 def is_public_file(path: str, public_dirs: list[str]) -> bool   # 决策 2：命中 → build 降级全量编译
@@ -406,7 +408,7 @@ class TargetSnapshot(BaseModel):      # 一次判定的目标分支侧快照
     fix_clearly_missing: bool
     function_renamed: bool
     in_same_homologous_set: bool
-    # 决策 36：无 develop_backfill_allowed；决策 35：无 cross_product_linked（同源由 section+前缀判定）
+    # 决策 36：develop 合法目标（全互联）；决策 35：无 cross_product_linked（同源由 section 判定）
 
 # rules/branch_md.py 支撑类型
 class BranchRef(BaseModel):

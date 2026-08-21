@@ -4,19 +4,25 @@ from pathlib import Path
 from typing import Any
 
 import yaml
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class ConcludeThresholds(BaseModel):
     similarity_high: float = 0.90
     similarity_low: float = 0.50
-    need_sync_target_types: list[str] = ["release", "fix"]
+    need_sync_target_types: list[str] = ["develop", "release", "fix"]
+
+
+class SeverityRules(BaseModel):
+    high_keywords: list[str] = Field(default_factory=list)
+    severity_paths: list[str] = Field(default_factory=list)
 
 
 class DecisionRules(BaseModel):
     classify: dict[str, Any]
     conclude: ConcludeThresholds
     branch_mapping: dict[str, str] = {}
+    severity: SeverityRules = Field(default_factory=SeverityRules)
 
 
 def load_decision_rules(path: Path) -> DecisionRules:

@@ -18,6 +18,7 @@ from bsa.rules import (
     branch_prefix,
     build_matrix,
     classify_commit,
+    classify_severity,
     conclude_pair,
     is_public_file,
     load_decision_rules,
@@ -339,11 +340,11 @@ def test_feature_target_out_of_scope():
     assert conclusion.kind == "OutOfScope"
 
 
-def test_develop_target_out_of_scope():
+def test_develop_target_need_sync():
     source = _analysis()
     target = _target(branch_type="develop", branch_name="br_v4_LineA_develop_b_20260101")
     conclusion = conclude_pair(source, target, similarity_high=0.90, similarity_low=0.50)
-    assert conclusion.kind == "OutOfScope"
+    assert conclusion.kind == "NeedSync"
 
 
 def test_need_sync_with_clear_anchor():
@@ -420,6 +421,88 @@ def test_conclude_default_thresholds():
     assert conclusion.kind == "ManualReview"
 
 
+# --- conclude: 发布线严重性门控（决策 41） ---
+
+
+def test_develop_to_fix_low_risk_gated_manual_review():
+    source = _analysis(risk="low")
+    target = _target(branch_type="fix", branch_name="br_v4_LineA_fix_20260201")
+    conclusion = conclude_pair(source, target, similarity_high=0.90, similarity_low=0.50)
+    assert conclusion.kind == "ManualReview"
+    assert any("high" in item and "fix" in item for item in conclusion.evidence)
+
+
+def test_develop_to_fix_high_risk_need_sync():
+    source = _analysis(risk="high")
+    target = _target(branch_type="fix", branch_name="br_v4_LineA_fix_20260201")
+    conclusion = conclude_pair(source, target, similarity_high=0.90, similarity_low=0.50)
+    assert conclusion.kind == "NeedSync"
+
+
+def test_release_to_develop_medium_risk_gated_manual_review():
+    source = _analysis(source_branch_type="release", risk="medium")
+    target = _target(branch_type="develop", branch_name="br_v4_LineA_develop_b_20260101")
+    conclusion = conclude_pair(source, target, similarity_high=0.90, similarity_low=0.50)
+    assert conclusion.kind == "ManualReview"
+
+
+def test_release_to_develop_high_risk_need_sync():
+    source = _analysis(source_branch_type="release", risk="high")
+    target = _target(branch_type="develop", branch_name="br_v4_LineA_develop_b_20260101")
+    conclusion = conclude_pair(source, target, similarity_high=0.90, similarity_low=0.50)
+    assert conclusion.kind == "NeedSync"
+
+
+def test_fix_to_develop_unknown_risk_gated_manual_review():
+    source = _analysis(source_branch_type="fix", risk=None)
+    target = _target(branch_type="develop", branch_name="br_v4_LineA_develop_b_20260101")
+    conclusion = conclude_pair(source, target, similarity_high=0.90, similarity_low=0.50)
+    assert conclusion.kind == "ManualReview"
+
+
+def test_develop_to_develop_not_gated_even_unknown_risk():
+    source = _analysis(risk=None)
+    target = _target(branch_type="develop", branch_name="br_v4_LineA_develop_b_20260101")
+    conclusion = conclude_pair(source, target, similarity_high=0.90, similarity_low=0.50)
+    assert conclusion.kind == "NeedSync"
+
+
+def test_develop_to_release_not_gated_low_risk():
+    source = _analysis(risk="low")
+    target = _target()
+    conclusion = conclude_pair(source, target, similarity_high=0.90, similarity_low=0.50)
+    assert conclusion.kind == "NeedSync"
+
+
+def test_release_to_release_not_synced():
+    source = _analysis(source_branch_type="release", risk="high")
+    target = _target(branch_type="release", branch_name="br_v4_LineA_release_p361_20260101")
+    conclusion = conclude_pair(source, target, similarity_high=0.90, similarity_low=0.50)
+    assert conclusion.kind == "OutOfScope"
+    assert any("不互同步" in item for item in conclusion.evidence)
+
+
+def test_fix_to_fix_not_synced():
+    source = _analysis(source_branch_type="fix", risk="high")
+    target = _target(branch_type="fix", branch_name="br_v4_LineA_fix_2_20260101")
+    conclusion = conclude_pair(source, target, similarity_high=0.90, similarity_low=0.50)
+    assert conclusion.kind == "OutOfScope"
+
+
+def test_release_to_fix_high_risk_need_sync():
+    source = _analysis(source_branch_type="release", risk="high")
+    target = _target(branch_type="fix", branch_name="br_v4_LineA_fix_20260201")
+    conclusion = conclude_pair(source, target, similarity_high=0.90, similarity_low=0.50)
+    assert conclusion.kind == "NeedSync"
+
+
+def test_fix_to_release_normal_need_sync():
+    source = _analysis(source_branch_type="fix", risk="medium")
+    target = _target(branch_name="br_v4_LineA_release_p361_20260101")
+    conclusion = conclude_pair(source, target, similarity_high=0.90, similarity_low=0.50)
+    assert conclusion.kind == "NeedSync"
+
+
 # --- decision_rules: 数据驱动加载 ---
 
 
@@ -429,12 +512,14 @@ def test_load_decision_rules_bundled_yaml():
     assert isinstance(rules.conclude, ConcludeThresholds)
     assert rules.conclude.similarity_high == pytest.approx(0.90)
     assert rules.conclude.similarity_low == pytest.approx(0.50)
-    assert rules.conclude.need_sync_target_types == ["release", "fix"]
+    assert rules.conclude.need_sync_target_types == ["develop", "release", "fix"]
     assert "bugfix_markers" in rules.classify
     assert "not_bugfix_markers" in rules.classify
     assert isinstance(rules.branch_mapping, dict)
     assert isinstance(rules.classify["path_rules"], dict)
     assert "public_dirs" in rules.classify["path_rules"]
+    assert rules.severity.high_keywords
+    assert isinstance(rules.severity.severity_paths, list)
 
 
 def test_load_decision_rules_defaults(tmp_path):
@@ -443,7 +528,8 @@ def test_load_decision_rules_defaults(tmp_path):
     rules = load_decision_rules(path)
     assert rules.conclude.similarity_high == pytest.approx(0.90)
     assert rules.conclude.similarity_low == pytest.approx(0.50)
-    assert rules.conclude.need_sync_target_types == ["release", "fix"]
+    assert rules.conclude.need_sync_target_types == ["develop", "release", "fix"]
+    assert rules.severity.high_keywords == []
 
 
 def test_decision_rules_custom_thresholds(tmp_path):
@@ -454,6 +540,9 @@ def test_decision_rules_custom_thresholds(tmp_path):
         "  similarity_high: 0.95\n"
         "  similarity_low: 0.60\n"
         "  need_sync_target_types: ['release']\n"
+        "severity:\n"
+        "  high_keywords: ['\\[CRITICAL\\]']\n"
+        "  severity_paths: ['plat/security/']\n"
         "branch_mapping: {br_x: develop}\n",
         encoding="utf-8",
     )
@@ -461,7 +550,37 @@ def test_decision_rules_custom_thresholds(tmp_path):
     assert rules.conclude.similarity_high == pytest.approx(0.95)
     assert rules.conclude.similarity_low == pytest.approx(0.60)
     assert rules.conclude.need_sync_target_types == ["release"]
+    assert rules.severity.high_keywords == ["\\[CRITICAL\\]"]
+    assert rules.severity.severity_paths == ["plat/security/"]
     assert rules.branch_mapping == {"br_x": "develop"}
+
+
+# --- classify_severity: 规则层严重性判定（决策 41） ---
+
+
+def test_classify_severity_critical_keyword_high():
+    assert classify_severity("[CRITICAL] fix panic in dhcp", ["plat/dhcp/dhcp.c"]) == "high"
+
+
+def test_classify_severity_urgent_keyword_high():
+    assert classify_severity("[URGENT] 修复宕机问题", ["plat/dhcp/dhcp.c"]) == "high"
+
+
+def test_classify_severity_chinese_high_keywords():
+    for keyword in ["崩溃", "宕机", "数据丢失", "内存泄漏", "安全漏洞"]:
+        assert classify_severity(f"修复{keyword}问题", ["plat/demo/demo.c"]) == "high"
+
+
+def test_classify_severity_core_path_high():
+    assert classify_severity("refactor auth flow", ["plat/security/auth.c"]) == "high"
+
+
+def test_classify_severity_core_path_dir_boundary():
+    assert classify_severity("refactor auth flow", ["platform/security/auth.c"]) == "unknown"
+
+
+def test_classify_severity_no_rule_unknown():
+    assert classify_severity("fix minor typo", ["plat/demo/demo.c"]) == "unknown"
 
 
 # --- safety: 数据驱动校验 + SafetyEnforcer ---
@@ -634,21 +753,25 @@ SAMPLE_MD = """# 所有待审核分支
 """
 
 
-def test_build_matrix_develop_source_only():
+def test_build_matrix_sources_all_eligible():
     doc = parse_branch_md(SAMPLE_MD)
     sets = build_matrix(doc)
     assert isinstance(sets, list) and sets
     assert isinstance(sets[0], HomologousSet)
     s = sets[0]
     assert s.section == "1.1 组网产品分支"
-    assert [b.name for b in s.sources] == ["br_v4.33_5200_CU_develop_20260518"]
+    assert [b.name for b in s.sources] == [
+        "br_v4.33_5200_CU_develop_20260518",
+        "br_v4.33_5200_CU_develop_release_p360_20260625",
+    ]
     assert s.sources[0].branch_type == "develop"
 
 
-def test_build_matrix_prefix_children_targets():
+def test_build_matrix_all_eligible_branches_are_targets():
     doc = parse_branch_md(SAMPLE_MD)
     s = build_matrix(doc)[0]
     targets = {b.name for b in s.need_sync_targets}
+    assert "br_v4.33_5200_CU_develop_20260518" in targets
     assert "br_v4.33_5200_CU_develop_release_p360_20260625" in targets
     assert "br_v4.33_5200_CU_develop_feature_quantum_20260625" not in targets
     assert "br_v4.33_5200_CU_develop_personal_yuhui_20260625" not in targets
@@ -662,13 +785,13 @@ def test_build_matrix_feature_personal_excluded_everywhere():
     assert "br_v4.33_5200_CU_develop_personal_yuhui_20260625" not in names
 
 
-def test_build_matrix_develop_never_target():
+def test_build_matrix_develop_is_target():
     doc = parse_branch_md(SAMPLE_MD)
     s = build_matrix(doc)[0]
-    assert all(b.branch_type != "develop" for b in s.need_sync_targets)
+    assert any(b.branch_type == "develop" for b in s.need_sync_targets)
 
 
-def test_build_matrix_fix_children_targets():
+def test_build_matrix_fix_is_source_and_target():
     text = """# title
 ## LineA
 - br_v4.34_develop_FTTR_20260316
@@ -676,20 +799,24 @@ def test_build_matrix_fix_children_targets():
 - br_v4.34_develop_FTTR_release_p360_fix_20260501
 """
     s = build_matrix(parse_branch_md(text))[0]
-    targets = {b.name for b in s.need_sync_targets}
-    assert "br_v4.34_develop_FTTR_release_p360_20260401" in targets
-    assert "br_v4.34_develop_FTTR_release_p360_fix_20260501" in targets
+    source_names = {b.name for b in s.sources}
+    target_names = {b.name for b in s.need_sync_targets}
+    assert "br_v4.34_develop_FTTR_20260316" in source_names
+    assert "br_v4.34_develop_FTTR_release_p360_20260401" in source_names
+    assert "br_v4.34_develop_FTTR_release_p360_fix_20260501" in source_names
+    assert target_names == source_names
 
 
-def test_build_matrix_cross_prefix_release_excluded():
+def test_build_matrix_no_prefix_lineage():
     text = """# title
 ## LineA
 - br_v4_LineA_develop_20260101
 - br_v4_LineB_develop_release_20260101
 """
     s = build_matrix(parse_branch_md(text))[0]
-    assert {b.name for b in s.sources} == {"br_v4_LineA_develop_20260101"}
-    assert {b.name for b in s.need_sync_targets} == set()
+    names = {b.name for b in s.sources}
+    assert names == {"br_v4_LineA_develop_20260101", "br_v4_LineB_develop_release_20260101"}
+    assert {b.name for b in s.need_sync_targets} == names
 
 
 def test_build_matrix_cross_section_isolation():

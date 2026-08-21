@@ -53,6 +53,28 @@ conclude:
   similarity_high: 0.90
   similarity_low: 0.50
   need_sync_target_types:
+    - develop
     - release
     - fix
+severity:
+  # 决策 41 发布线严重性门控：规则层命中 high 标记/核心路径 → high；
+  # 未命中 → 交 LLM 兜底（classify_severity 返回 unknown）。low/medium 仅由 LLM 输出。
+  high_keywords:
+    - '\[CRITICAL\]'
+    - '\[URGENT\]'
+    - '\[紧急\]'
+    - '崩溃'
+    - '宕机'
+    - '死机'
+    - '数据丢失'
+    - '内存泄漏'
+    - '内存越界'
+    - '缓冲区溢出'
+    - '安全漏洞'
+    - '越权'
+    - '提权'
+    - '远程代码执行'
+  severity_paths:
+    - 'plat/security/'
+    - 'component/security/'
 branch_mapping: {}
