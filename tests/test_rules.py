@@ -453,6 +453,32 @@ def test_release_to_develop_high_risk_need_sync():
     assert conclusion.kind == "NeedSync"
 
 
+def test_release_to_develop_high_risk_missing_fix_still_need_sync():
+    # 真机测试: zebra_cli.c 初始化修复不属于 NULL==/return -1 模式，
+    # fix_clearly_missing=False 但 high 已过发布线门控 → 允许低置信度 NeedSync
+    source = _analysis(source_branch_type="release", risk="high")
+    target = _target(
+        branch_type="develop",
+        branch_name="br_v4_LineA_develop_b_20260101",
+        fix_clearly_missing=False,
+    )
+    conclusion = conclude_pair(source, target, similarity_high=0.90, similarity_low=0.50)
+    assert conclusion.kind == "NeedSync"
+    assert conclusion.confidence == "low"
+
+
+def test_release_to_develop_unknown_risk_missing_fix_manual_review():
+    # fix_clearly_missing=False 且 risk 非 high → 维持 ManualReview（保守）
+    source = _analysis(source_branch_type="release", risk=None)
+    target = _target(
+        branch_type="develop",
+        branch_name="br_v4_LineA_develop_b_20260101",
+        fix_clearly_missing=False,
+    )
+    conclusion = conclude_pair(source, target, similarity_high=0.90, similarity_low=0.50)
+    assert conclusion.kind == "ManualReview"
+
+
 def test_fix_to_develop_unknown_risk_gated_manual_review():
     source = _analysis(source_branch_type="fix", risk=None)
     target = _target(branch_type="develop", branch_name="br_v4_LineA_develop_b_20260101")

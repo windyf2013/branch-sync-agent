@@ -259,6 +259,14 @@ def conclude_pair(
             confidence="low",
         )
 
+    gate_reason = _severity_gate_reason(source, target)
+    if gate_reason is not None:
+        return Conclusion4(
+            kind="ManualReview",
+            evidence=[gate_reason],
+            confidence="high",
+        )
+
     if not _anchor_symbols_ok(source, target):
         return Conclusion4(
             kind="ManualReview",
@@ -267,18 +275,23 @@ def conclude_pair(
         )
 
     if not target.fix_clearly_missing:
+        if source.risk == "high":
+            # high 严重性已过门控，修复缺失无法用规则判定时，允许低置信度
+            # NeedSync（真机测试: zebra_cli.c 初始化修复不属于 NULL==/return -1
+            # 模式，fix_clearly_missing=False 但确实是缺失的 bug-fix）。
+            evidence = [
+                "目标分支缺少该修复（fix_clearly_missing 无法规则判定，"
+                "但 high 严重性已过发布线门控）。",
+            ]
+            return Conclusion4(
+                kind="NeedSync",
+                evidence=evidence,
+                confidence="low",
+            )
         return Conclusion4(
             kind="ManualReview",
             evidence=["目标分支上修复是否缺失无法判定。"],
             confidence="low",
-        )
-
-    gate_reason = _severity_gate_reason(source, target)
-    if gate_reason is not None:
-        return Conclusion4(
-            kind="ManualReview",
-            evidence=[gate_reason],
-            confidence="high",
         )
 
     anchor_bits: list[str] = []

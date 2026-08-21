@@ -77,4 +77,7 @@ severity:
   severity_paths:
     - 'plat/security/'
     - 'component/security/'
+    # 校准（真机测试）：CLI 层影响面广，视为核心路径。后续按真实 RCIOS
+    # 目录结构运维校准，见决策 41 遗留。
+    - 'plat/vtysh/'
 branch_mapping: {}
