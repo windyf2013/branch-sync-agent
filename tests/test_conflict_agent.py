@@ -2,9 +2,12 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from bsa.agents.base import ConflictContext, LLMUnavailable
-from bsa.agents.conflict import ConflictAgent, _apply_patch
+from bsa.agents.conflict import ConflictAgent, _apply_patch, _modified_paths
 from bsa.domain.models import CommitInfo, ConflictResolution
+from bsa.executor.exceptions import InfrastructureError
 from bsa.rules.safety import SafetyEnforcer, SafetyRules
 
 CONFLICT_TEXT = (
@@ -56,11 +59,21 @@ def resolved(files: list[str] | None = None) -> ConflictResolution:
 
 class FakeGit:
     def __init__(
-        self, repo_path: Path, *, status_text: str = "", diff_check_ok: bool = True
+        self,
+        repo_path: Path,
+        *,
+        status_text: str = "",
+        diff_check_ok: bool = True,
+        fail_stage: bool = False,
+        fail_status: bool = False,
+        fail_diff_check: bool = False,
     ) -> None:
         self.repo_path = repo_path
         self.status_text = status_text
         self.diff_check_ok = diff_check_ok
+        self.fail_stage = fail_stage
+        self.fail_status = fail_status
+        self.fail_diff_check = fail_diff_check
         self.snapshots: list[dict[str, str]] = []
         self.restored: list[dict[str, str]] = []
         self.staged: list[list[str]] = []
@@ -83,13 +96,19 @@ class FakeGit:
             path.write_text(content, encoding="utf-8")
 
     def diff_check(self) -> bool:
+        if self.fail_diff_check:
+            raise InfrastructureError("git diff --check exploded")
         return self.diff_check_ok
 
     def stage(self, paths: list[str]) -> None:
+        if self.fail_stage:
+            raise InfrastructureError("git add exploded")
         self.staged.append(list(paths))
 
     def status(self) -> str:
         self.status_calls += 1
+        if self.fail_status:
+            raise InfrastructureError("git status exploded")
         return self.status_text
 
 
@@ -268,3 +287,141 @@ def test_unresolved_conflict_file_causes_retry(tmp_path: Path) -> None:
     assert len(git.restored) == 3
     assert git.staged == []
     assert (tmp_path / "src/udp.c").read_text(encoding="utf-8") == CONFLICT_TEXT
+
+
+def test_modified_paths_reads_worktree_column_only() -> None:
+    assert _modified_paths("M  a.txt\nUU b.txt\n") == {"b.txt"}
+    assert _modified_paths(" M a.txt\nUU b.txt\n") == {"a.txt", "b.txt"}
+
+
+def test_cherry_pick_staged_file_does_not_fail_gate(tmp_path: Path) -> None:
+    write_conflicted(tmp_path)
+    git = FakeGit(tmp_path, status_text="M  src/other.c\nUU src/net.c\n")
+    llm = FakeLLM([resolved()])
+    agent = ConflictAgent(llm, git, make_safety())
+
+    result = agent.resolve(make_commit(), CONFLICT_FILES)
+
+    assert result is not None
+    assert git.staged == [CONFLICT_FILES]
+
+
+def test_worktree_modified_file_outside_conflict_rejected(tmp_path: Path) -> None:
+    write_conflicted(tmp_path)
+    git = FakeGit(tmp_path, status_text=" M src/other.c\nUU src/net.c\n")
+    llm = FakeLLM([resolved(), resolved(), resolved()])
+    agent = ConflictAgent(llm, git, make_safety())
+
+    result = agent.resolve(make_commit(), CONFLICT_FILES)
+
+    assert result is None
+    assert git.staged == []
+    assert len(git.restored) == 3
+
+
+def test_apply_patch_rejects_context_mismatch() -> None:
+    content = "alpha\nbeta\ngamma\n"
+    patch = (
+        "@@ -1,3 +1,3 @@\n"
+        " alpha\n"
+        " WRONG\n"
+        " gamma\n"
+    )
+    with pytest.raises(ValueError):
+        _apply_patch(content, patch)
+
+
+def test_apply_patch_rejects_removed_line_mismatch() -> None:
+    content = "alpha\nbeta\ngamma\n"
+    patch = (
+        "@@ -1,3 +1,2 @@\n"
+        " alpha\n"
+        "-WRONG\n"
+        " gamma\n"
+    )
+    with pytest.raises(ValueError):
+        _apply_patch(content, patch)
+
+
+def test_apply_patch_drops_no_newline_markers() -> None:
+    content = "alpha\nbeta\n"
+    patch = (
+        "@@ -1,2 +1,2 @@\n"
+        " alpha\n"
+        " beta\n"
+        "\\ No newline at end of file\n"
+    )
+    result = _apply_patch(content, patch)
+    assert result == "alpha\nbeta\n"
+    assert "\\ No newline" not in result
+
+
+def test_context_mismatch_diff_causes_invalid_attempt(tmp_path: Path) -> None:
+    write_conflicted(tmp_path)
+    git = FakeGit(tmp_path, status_text="UU src/net.c\n")
+    bad = ConflictResolution(
+        files=["src/net.c"],
+        diff=(
+            "diff --git a/src/net.c b/src/net.c\n"
+            "--- a/src/net.c\n"
+            "+++ b/src/net.c\n"
+            "@@ -1,5 +1,3 @@\n"
+            "-<<<<<<< HEAD\n"
+            " int value = WRONG;\n"
+            "-=======\n"
+            "-int value = 2;\n"
+            "->>>>>>> 2a5b6c7 (fix bug)\n"
+        ),
+        agent_reason="misaligned diff",
+    )
+    llm = FakeLLM([bad, bad, bad])
+    agent = ConflictAgent(llm, git, make_safety())
+
+    result = agent.resolve(make_commit(), CONFLICT_FILES)
+
+    assert result is None
+    assert git.staged == []
+    assert len(git.restored) == 3
+    assert (tmp_path / "src/net.c").read_text(encoding="utf-8") == CONFLICT_TEXT
+
+
+def test_infrastructure_error_during_diff_check_rolls_back(tmp_path: Path) -> None:
+    write_conflicted(tmp_path)
+    git = FakeGit(tmp_path, status_text="UU src/net.c\n", fail_diff_check=True)
+    llm = FakeLLM([resolved(), resolved(), resolved()])
+    agent = ConflictAgent(llm, git, make_safety())
+
+    result = agent.resolve(make_commit(), CONFLICT_FILES)
+
+    assert result is None
+    assert len(git.restored) == 3
+    assert git.staged == []
+    assert (tmp_path / "src/net.c").read_text(encoding="utf-8") == CONFLICT_TEXT
+
+
+def test_infrastructure_error_during_status_rolls_back(tmp_path: Path) -> None:
+    write_conflicted(tmp_path)
+    git = FakeGit(tmp_path, status_text="UU src/net.c\n", fail_status=True)
+    llm = FakeLLM([resolved(), resolved(), resolved()])
+    agent = ConflictAgent(llm, git, make_safety())
+
+    result = agent.resolve(make_commit(), CONFLICT_FILES)
+
+    assert result is None
+    assert len(git.restored) == 3
+    assert git.staged == []
+    assert (tmp_path / "src/net.c").read_text(encoding="utf-8") == CONFLICT_TEXT
+
+
+def test_infrastructure_error_during_stage_rolls_back(tmp_path: Path) -> None:
+    write_conflicted(tmp_path)
+    git = FakeGit(tmp_path, status_text="UU src/net.c\n", fail_stage=True)
+    llm = FakeLLM([resolved(), resolved(), resolved()])
+    agent = ConflictAgent(llm, git, make_safety())
+
+    result = agent.resolve(make_commit(), CONFLICT_FILES)
+
+    assert result is None
+    assert len(git.restored) == 3
+    assert git.staged == []
+    assert (tmp_path / "src/net.c").read_text(encoding="utf-8") == CONFLICT_TEXT

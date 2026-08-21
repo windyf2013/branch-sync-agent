@@ -4,12 +4,13 @@ import re
 
 from bsa.agents.base import ConflictContext, LLMClient, LLMUnavailable
 from bsa.domain.models import CommitInfo, ConflictResolution
-from bsa.executor.exceptions import SafetyViolation
+from bsa.executor.exceptions import InfrastructureError, SafetyViolation
 from bsa.git.service import GitService
 from bsa.rules.safety import SafetyEnforcer
 
 _MARKERS = ("<<<<<<<", "=======", ">>>>>>>")
 _HUNK_RE = re.compile(r"^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@")
+_NO_NEWLINE = "\\ No newline at end of file"
 
 
 def _diff_files(diff_text: str) -> dict[str, str]:
@@ -32,7 +33,11 @@ def _diff_files(diff_text: str) -> dict[str, str]:
 
 
 def _apply_patch(content: str, patch: str) -> str:
-    """Apply a single-file unified patch to ``content``, returning the result."""
+    """Apply a single-file unified patch to ``content``, returning the result.
+
+    Raises ``ValueError`` if a hunk's old-side lines do not match the current
+    content at the expected position (stale/misnumbered diff).
+    """
     lines = content.split("\n")
     out: list[str] = []
     src = 1
@@ -40,6 +45,7 @@ def _apply_patch(content: str, patch: str) -> str:
         while src < start:
             out.append(lines[src - 1] if src <= len(lines) else "")
             src += 1
+        _verify_hunk(lines, start, body)
         for line in body:
             if line.startswith("-"):
                 src += 1
@@ -54,6 +60,20 @@ def _apply_patch(content: str, patch: str) -> str:
     return "\n".join(out)
 
 
+def _verify_hunk(lines: list[str], start: int, body: list[str]) -> None:
+    """Fail fast when a hunk's context/removed lines mismatch the file."""
+    pos = start
+    for line in body:
+        if line.startswith(("-", " ")):
+            expected = lines[pos - 1] if pos <= len(lines) else ""
+            if line[1:] != expected:
+                raise ValueError(
+                    f"hunk context mismatch at line {pos}: "
+                    f"patch has {line[1:]!r}, file has {expected!r}"
+                )
+            pos += 1
+
+
 def _parse_hunks(patch: str) -> list[tuple[int, list[str]]]:
     hunks: list[tuple[int, list[str]]] = []
     body: list[str] | None = None
@@ -63,16 +83,25 @@ def _parse_hunks(patch: str) -> list[tuple[int, list[str]]]:
             body = []
             hunks.append((int(match.group(1)), body))
             continue
+        if line.startswith(_NO_NEWLINE):
+            continue
         if body is not None and line.startswith((" ", "+", "-")):
             body.append(line)
     return hunks
 
 
 def _modified_paths(status_text: str) -> set[str]:
-    """Extract worktree-modified paths from ``git status --porcelain`` output."""
+    """Extract worktree-modified paths from ``git status --porcelain`` output.
+
+    Only the worktree column (Y, index 1) counts. A cleanly-applied cherry-pick
+    stages files in the index column (X, index 0), which must not be treated as
+    worktree modifications.
+    """
     paths: set[str] = set()
     for line in status_text.splitlines():
         if len(line) < 4:
+            continue
+        if line[1] == " ":
             continue
         path = line[3:]
         if " -> " in path:
@@ -146,9 +175,12 @@ class ConflictAgent:
         resolution = self._llm.solve_conflict(ctx)
         if not self._apply(resolution, conflict_files):
             return None
-        if not self._verified(conflict_files):
+        try:
+            if not self._verified(conflict_files):
+                return None
+            self._git.stage(conflict_files)
+        except InfrastructureError:
             return None
-        self._git.stage(conflict_files)
         return resolution
 
     def _apply(
