@@ -251,7 +251,17 @@ def _execute(
         write_decisions_json(final, report)
         subject = f"Branch Sync Agent 周期报告 {cycle_id} [{final_status}]"
         body = build_email_body(report, final)
-        result = MailService(settings).send_report(
+        sender = None
+        if not settings.mail_dry_run:
+            from bsa.mail.bridge_sender import make_bridge_sender
+
+            sender = make_bridge_sender(
+                workspace_root=Path(settings.log_dir),
+                output_dir=cycle_dir,
+                mail_phase="test",
+                mail_to=list(settings.mail_recipients),
+            )
+        result = MailService(settings, sender=sender).send_report(
             subject, body, report_path, _patch_attachments(final)
         )
         mail_status = result.status
