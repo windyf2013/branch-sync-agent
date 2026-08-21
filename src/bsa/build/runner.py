@@ -1,3 +1,4 @@
+import shlex
 from collections.abc import Callable
 from pathlib import Path
 
@@ -55,8 +56,15 @@ class BuildRunner:
         *,
         clean: bool,
         module: str | None,
+        log_path: Path | None = None,
     ) -> BuildResult:
-        """Build one model in docker: run -d, exec build script, rm -f."""
+        """Build one model in docker: run -d (kept alive), exec build script, rm -f.
+
+        ``log_path`` when provided is the per-commit log destination; the graph
+        layer must pass ``{log_dir}/build/<branch>/<commit>/build.log`` to
+        preserve the decision-26 audit trail. Otherwise a flat
+        ``{log_dir}/build_{model}.log`` is used.
+        """
         container = self._container_name()
         prefix = self._docker_prefix()
 
@@ -73,28 +81,30 @@ class BuildRunner:
                 "-v",
                 "/usr/local:/usr/local",
                 self.settings.docker_image,
-                "bash",
+                "sleep",
+                "infinity",
             ]
         )
 
         script_dir = self.settings.build_script_dir.rstrip("/")
-        steps = [f"cd {script_dir}", "code_update.sh -d"]
+        steps = [f"cd {shlex.quote(script_dir)}", "code_update.sh -d"]
         if clean:
             steps.append("RTL9617C_build.sh clean")
-        build_cmd = f"RTL9617C_build.sh {model}"
+        build_cmd = f"RTL9617C_build.sh {shlex.quote(model)}"
         if module:
-            build_cmd = f"{build_cmd} {module}"
+            build_cmd = f"{build_cmd} {shlex.quote(module)}"
         steps.append(build_cmd)
 
-        proc: CompletedProcess = self.executor.run(
-            [*prefix, "docker", "exec", container, "bash", "-c", " && ".join(steps)],
-            timeout_sec=_BUILD_EXEC_TIMEOUT_SEC,
-        )
-
-        self.executor.run([*prefix, "docker", "rm", "-f", container])
+        try:
+            proc: CompletedProcess = self.executor.run(
+                [*prefix, "docker", "exec", container, "bash", "-c", " && ".join(steps)],
+                timeout_sec=_BUILD_EXEC_TIMEOUT_SEC,
+            )
+        finally:
+            self.executor.run([*prefix, "docker", "rm", "-f", container])
 
         log = proc.stdout + ("\n" if proc.stderr else "") + proc.stderr
-        log_path = Path(self.settings.log_dir) / f"build_{model}.log"
+        log_path = log_path or Path(self.settings.log_dir) / f"build_{model}.log"
         log_path.parent.mkdir(parents=True, exist_ok=True)
         log_path.write_text(log, encoding="utf-8", errors="replace")
 

@@ -1,9 +1,12 @@
 from pathlib import Path
 
+import pytest
+
 from bsa.build.log_parser import extract_errors, has_success_marker
 from bsa.build.runner import BuildResult, BuildRunner
 from bsa.config.settings import Settings
 from bsa.executor import CompletedProcess, FakeExecutor
+from bsa.executor.exceptions import InfrastructureError
 
 SPEC_LOG = (
     Path(__file__).resolve().parent.parent / "spec" / "rcios-compiling-log-info.md"
@@ -87,6 +90,10 @@ class TestHasSuccessMarker:
         assert has_success_marker(log, "5200") is True
         assert has_success_marker(log, "9999") is False
 
+    def test_convert_line_without_middle_segment_is_success(self):
+        log = "convert file rcios.bin to MSG5200_SYSTEM_4.33.204_20260820.bin success!\n"
+        assert has_success_marker(log, "5200") is True
+
     def test_success_bang_convert_marker(self):
         log = "convert file a.bin to MSG5200_DECRYPT_SYSTEM_4.33.204_20260820.bin success!\n"
         assert has_success_marker(log, "5200") is True
@@ -136,7 +143,8 @@ class TestBuildCommit:
             "-v",
             "/usr/local:/usr/local",
             "rcios-build:latest",
-            "bash",
+            "sleep",
+            "infinity",
         ]
         assert executor.calls[1][0] == [
             "sudo",
@@ -199,6 +207,36 @@ class TestBuildCommit:
         assert result.returncode == 2
         assert result.succeeded is False
         assert len(executor.calls) == 3
+
+    def test_exec_timeout_always_cleans_up_container(self, tmp_path):
+        def raise_timeout(args, kwargs):
+            raise InfrastructureError("docker exec timed out")
+
+        executor = FakeExecutor([ok(), raise_timeout])
+        runner = BuildRunner(executor, make_settings(tmp_path), cycle_id="c1")
+        with pytest.raises(InfrastructureError):
+            runner.build_commit(tmp_path / "wt", "5200", clean=False, module=None)
+        assert len(executor.calls) == 3
+        assert executor.calls[-1][0] == ["docker", "rm", "-f", "rcios-sync-c1"]
+
+    def test_custom_log_path_written(self, tmp_path):
+        log = "Make rootfs success\n"
+        executor = FakeExecutor([ok(), ok(stdout=log), ok()])
+        runner = BuildRunner(executor, make_settings(tmp_path), cycle_id="c1")
+        target = tmp_path / "logs" / "c1" / "build" / "main" / "abc123" / "build.log"
+        result = runner.build_commit(
+            tmp_path / "wt", "5200", clean=False, module=None, log_path=target
+        )
+        assert result.log_path == target
+        assert target.read_text() == log
+
+    def test_model_and_module_are_shell_quoted(self, tmp_path):
+        executor = FakeExecutor([ok(), ok(), ok()])
+        runner = BuildRunner(executor, make_settings(tmp_path), cycle_id="c1")
+        runner.build_commit(tmp_path / "wt", "5200; echo pwned", clean=False, module="x$(id)")
+        inner = executor.calls[1][0][-1]
+        assert "'5200; echo pwned'" in inner
+        assert "'x$(id)'" in inner
 
     def test_public_file_injection(self, tmp_path):
         seen = []

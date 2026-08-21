@@ -10,10 +10,6 @@ def _artifact_pattern(model: str) -> re.Pattern[str]:
     return re.compile(rf"MSG{re.escape(model)}_(?:[^\s]*_)?SYSTEM_[^\s]*\.bin")
 
 
-def _convert_success_pattern(model: str) -> re.Pattern[str]:
-    return re.compile(rf"convert file .* to MSG{re.escape(model)}_[^\s]*_SYSTEM_[^\s]*\.bin success!")
-
-
 def extract_errors(
     log: str, *, max_chars: int = 3000, context_lines: int = 20
 ) -> list[str]:
@@ -57,10 +53,7 @@ def has_success_marker(log: str, model: str) -> bool:
     """
     if _ROOTFS_MARKER in log:
         return True
-    artifact = _artifact_pattern(model)
-    if artifact.search(log) is not None:
-        return True
-    return _convert_success_pattern(model).search(log) is not None
+    return _artifact_pattern(model).search(log) is not None
 
 
 def artifact_success_marker(log: str, model: str) -> bool:
