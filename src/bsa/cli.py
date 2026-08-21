@@ -38,8 +38,17 @@ def _build_parser() -> argparse.ArgumentParser:
 
 def _cmd_run_cycle(args: argparse.Namespace) -> int:
     try:
+        # --since/--until = 手动指定窗口，语义等同 manual-scan（独立扫描），
+        # 强制新建 checkpoint 避免撞每日周期旧状态（真机测试: 撞旧 checkpoint
+        # 只 resume 不执行同步链路）
+        manual = bool(args.since or args.until)
         return run_cycle(
-            args.date, since=args.since, until=args.until, dry_run=args.dry_run
+            args.date,
+            since=args.since,
+            until=args.until,
+            dry_run=args.dry_run,
+            manual=manual,
+            force_new=manual,
         )
     except Exception as exc:
         print(f"运行失败: {exc}", file=sys.stderr)
