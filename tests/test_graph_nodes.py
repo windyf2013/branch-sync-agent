@@ -696,8 +696,8 @@ def test_prepare_worktree_adds_worktree_and_records_path(tmp_path):
     assert update["branch_results"][TARGET].worktree_path == str(worktree_path)
     assert update["branch_results"][TARGET].status == "PARTIAL"
     assert ctx.worktree_path == worktree_path
-    assert ctx.worktree_git is not None
-    assert ctx.worktree_git.repo_path == worktree_path
+    assert ctx.worktree_gits[str(worktree_path)] is not None
+    assert ctx.worktree_gits[str(worktree_path)].repo_path == worktree_path
     assert update["status"] == "PREPARED"
 
 
@@ -708,7 +708,7 @@ def test_cherry_pick_ok_records_commit_result(tmp_path):
     ctx = make_ctx(tmp_path)
     wg = FakeGit()
     wg.cherry_pick_result = CherryPickResult(status="OK")
-    ctx.worktree_git = wg
+    ctx.worktree_gits[str(Path("/wt"))] = wg
     state = base_state(
         current_target=TARGET,
         current_commit="a1",
@@ -726,7 +726,7 @@ def test_cherry_pick_conflict_records_conflict_files(tmp_path):
     ctx = make_ctx(tmp_path)
     wg = FakeGit()
     wg.cherry_pick_result = CherryPickResult(status="CONFLICT", conflict_files=["plat/demo.c"])
-    ctx.worktree_git = wg
+    ctx.worktree_gits[str(Path("/wt"))] = wg
     state = base_state(
         current_target=TARGET,
         current_commit="a1",
@@ -746,7 +746,7 @@ def test_resolve_conflict_resolution_recorded(tmp_path):
     ctx = make_ctx(tmp_path)
     wg = FakeGit()
     wg.unmerged_files_result = ["plat/demo.c"]
-    ctx.worktree_git = wg
+    ctx.worktree_gits[str(Path("/wt"))] = wg
     resolution = ConflictResolution(files=["plat/demo.c"], diff="+fixed", agent_reason="merged")
     ctx.conflict_agent.resolution = resolution
     state = base_state(
@@ -772,7 +772,7 @@ def test_resolve_conflict_fail_fast(tmp_path):
     ctx = make_ctx(tmp_path)
     wg = FakeGit()
     wg.unmerged_files_result = ["plat/demo.c"]
-    ctx.worktree_git = wg
+    ctx.worktree_gits[str(Path("/wt"))] = wg
     ctx.conflict_agent.resolution = None
     state = base_state(
         current_target=TARGET,
@@ -969,7 +969,7 @@ def test_generate_patch_writes_patch_path(tmp_path):
     ctx = make_ctx(tmp_path)
     wg = FakeGit()
     wg.tips = {TARGET: ("origin/" + TARGET, "base-tip")}
-    ctx.worktree_git = wg
+    ctx.worktree_gits[str(Path("/wt"))] = wg
     state = base_state(
         current_target=TARGET,
         branch_results={

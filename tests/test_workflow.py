@@ -60,12 +60,30 @@ def _classify(ctx: GraphContext, sha: str) -> None:
     )
 
 
+def worktree_path_for(ctx: GraphContext, target: str, cycle_id: str = "cycle-20260101") -> Path:
+    return Path(ctx.settings.worktree_root) / f"{target}-{cycle_id}"
+
+
+def inject_worktree_git(
+    ctx: GraphContext, fake: FakeWorktreeGit, target: str, cycle_id: str = "cycle-20260101"
+) -> FakeWorktreeGit:
+    ctx.worktree_gits[str(worktree_path_for(ctx, target, cycle_id))] = fake
+    return fake
+
+
+def worktree_git_for(
+    ctx: GraphContext, target: str, cycle_id: str = "cycle-20260101"
+) -> FakeWorktreeGit:
+    return ctx.worktree_gits[str(worktree_path_for(ctx, target, cycle_id))]
+
+
 def batch_ctx(
     tmp_path: Path,
     *,
     shas: list[str],
     target: str = TARGET,
     models: tuple[str, ...] = ("RTL9617C",),
+    targets: list[str] | None = None,
 ) -> GraphContext:
     ctx = make_ctx(tmp_path)
     ctx.llm = FakeLLM()
@@ -80,8 +98,8 @@ def batch_ctx(
         ctx.conclude.results[(sha, target)] = Conclusion4(
             kind="NeedSync", evidence=[], confidence="high"
         )
-    ctx.worktree_git = FakeWorktreeGit()
-    ctx.worktree_path = Path("/wt")
+    for t in (targets or [target]):
+        inject_worktree_git(ctx, FakeWorktreeGit(), t)
     return ctx
 
 
@@ -136,7 +154,7 @@ def test_multi_commit_order_per_branch(tmp_path):
 
     out = run(build_workflow(ctx), base_state())
 
-    assert cherry_picked(ctx.worktree_git) == ["a1", "a2"]
+    assert cherry_picked(worktree_git_for(ctx, TARGET)) == ["a1", "a2"]
     assert out["report"] is not None
     assert out["branch_results"][TARGET].status == "SUCCESS"
 
@@ -154,17 +172,19 @@ def test_per_model_serial_loop(tmp_path):
     assert build["RTL9607F"].status == "OK"
 
 
-def test_multi_branch_loop(tmp_path):
+def test_multi_branch_loop_uses_per_branch_worktree_git(tmp_path):
     path = tmp_path / "branch.md"
     path.write_text(BRANCH_MD_TWO, encoding="utf-8")
-    ctx = batch_ctx(tmp_path, shas=["a1"])
+    ctx = batch_ctx(tmp_path, shas=["a1"], targets=[TARGET, TARGET2])
     ctx.conclude.results[("a1", TARGET2)] = Conclusion4(
         kind="NeedSync", evidence=[], confidence="high"
     )
 
     out = run(build_workflow(ctx), base_state())
 
-    assert cherry_picked(ctx.worktree_git) == ["a1", "a1"]
+    assert cherry_picked(worktree_git_for(ctx, TARGET)) == ["a1"]
+    assert cherry_picked(worktree_git_for(ctx, TARGET2)) == ["a1"]
+    assert ctx.worktree_path == worktree_path_for(ctx, TARGET2)
     assert out["branch_results"][TARGET].patch_path is not None
     assert out["branch_results"][TARGET2].patch_path is not None
     assert out["report"].summary["branches"] == sorted([TARGET, TARGET2])
@@ -175,13 +195,17 @@ def test_failfast_related_stops_batch(tmp_path):
     ctx = batch_ctx(tmp_path, shas=["a1", "a2"])
     ctx.llm = FakeLLM(related=True)
     ctx.conflict_agent.resolution = None
-    ctx.worktree_git = FakeWorktreeGit(
-        results={"a1": CherryPickResult(status="CONFLICT")}, unmerged=["plat/demo.c"]
+    inject_worktree_git(
+        ctx,
+        FakeWorktreeGit(
+            results={"a1": CherryPickResult(status="CONFLICT")}, unmerged=["plat/demo.c"]
+        ),
+        TARGET,
     )
 
     out = run(build_workflow(ctx), base_state())
 
-    assert cherry_picked(ctx.worktree_git) == ["a1"]
+    assert cherry_picked(worktree_git_for(ctx, TARGET)) == ["a1"]
     assert len(ctx.llm.calls) == 1
     assert out["branch_results"][TARGET].stop_reason is not None
     assert out["report"] is not None
@@ -192,20 +216,41 @@ def test_failfast_not_related_continues(tmp_path):
     ctx = batch_ctx(tmp_path, shas=["a1", "a2"])
     ctx.llm = FakeLLM(related=False)
     ctx.conflict_agent.resolution = None
-    ctx.worktree_git = FakeWorktreeGit(
-        results={
-            "a1": CherryPickResult(status="CONFLICT"),
-            "a2": CherryPickResult(status="OK"),
-        },
-        unmerged=["plat/demo.c"],
+    inject_worktree_git(
+        ctx,
+        FakeWorktreeGit(
+            results={
+                "a1": CherryPickResult(status="CONFLICT"),
+                "a2": CherryPickResult(status="OK"),
+            },
+            unmerged=["plat/demo.c"],
+        ),
+        TARGET,
     )
 
     out = run(build_workflow(ctx), base_state())
 
-    assert cherry_picked(ctx.worktree_git) == ["a1", "a2"]
+    assert cherry_picked(worktree_git_for(ctx, TARGET)) == ["a1", "a2"]
     assert len(ctx.llm.calls) == 1
     assert out["branch_results"][TARGET].stop_reason is None
     assert out["report"] is not None
+
+
+def test_cherry_pick_failed_routes_to_report_not_failfast(tmp_path):
+    write_branch_md(tmp_path)
+    ctx = batch_ctx(tmp_path, shas=["a1"])
+    inject_worktree_git(
+        ctx,
+        FakeWorktreeGit(results={"a1": CherryPickResult(status="FAILED")}),
+        TARGET,
+    )
+
+    out = run(build_workflow(ctx), base_state())
+
+    assert ctx.llm.calls == []
+    assert out["status"] == "REPORTED"
+    assert out["branch_results"][TARGET].stop_reason is None
+    assert out["branch_results"][TARGET].commits[0].cherry_pick == "FAILED"
 
 
 def test_fix_build_fails_after_max_attempts_then_failfast(tmp_path):

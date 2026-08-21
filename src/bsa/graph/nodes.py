@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import hashlib
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta, timezone
 from functools import partial
 from pathlib import Path
@@ -50,9 +50,11 @@ class GraphContext:
     """All lower-layer services injected into the graph (workflow-built in batch 3.2).
 
     ``matrix`` is populated by ``detect_commits`` and cached per cycle; the
-    worktree-scoped ``worktree_git``/``worktree_path`` are set once the
-    current target worktree exists. Rules functions are injectable so tests
-    can mock the service layer without real LLM/git/build calls.
+    worktree-scoped git services are cached per worktree path in
+    ``worktree_gits`` (one GitService per target worktree), with
+    ``worktree_path`` tracking the current target's path. Rules functions are
+    injectable so tests can mock the service layer without real LLM/git/build
+    calls.
     """
 
     settings: Settings
@@ -70,8 +72,8 @@ class GraphContext:
     build_snapshot: Callable = build_target_snapshot
     is_public_file: Callable[[str], bool] | None = None
     matrix: list[HomologousSet] | None = None
-    worktree_git: GitService | None = None
     worktree_path: Path | None = None
+    worktree_gits: dict[str, GitService] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         if self.is_public_file is None:
@@ -273,25 +275,26 @@ def sync_decision(state: dict, ctx: GraphContext) -> dict:
 
 
 def _worktree_git(state: dict, ctx: GraphContext) -> GitService:
-    if ctx.worktree_git is not None:
-        return ctx.worktree_git
-    target = state.get("current_target")
-    branch = (state.get("branch_results") or {}).get(target)
-    if branch is not None and branch.worktree_path:
-        ctx.worktree_git = GitService(executor=ctx.executor, repo_path=Path(branch.worktree_path))
-        return ctx.worktree_git
-    raise InfrastructureError(
-        f"no worktree prepared for target {target!r}; refusing to operate on the main repo"
-    )
+    """Resolve the GitService scoped to the current target's worktree path.
+
+    One service per worktree path (keyed off the path, never shared across
+    branches), so a branch never operates on another branch's repo.
+    """
+    path = _worktree_path(state, ctx)
+    git = ctx.worktree_gits.get(str(path))
+    if git is None:
+        git = GitService(executor=ctx.executor, repo_path=path)
+        ctx.worktree_gits[str(path)] = git
+    return git
 
 
 def _worktree_path(state: dict, ctx: GraphContext) -> Path:
-    if ctx.worktree_path is not None:
-        return ctx.worktree_path
     target = state.get("current_target")
     branch = (state.get("branch_results") or {}).get(target)
     if branch is not None and branch.worktree_path:
         return Path(branch.worktree_path)
+    if ctx.worktree_path is not None:
+        return ctx.worktree_path
     raise InfrastructureError(
         f"no worktree prepared for target {target!r}; refusing to operate on the main repo"
     )
@@ -377,8 +380,10 @@ def prepare_worktree(state: dict, ctx: GraphContext) -> dict:
     worktree_path = Path(ctx.settings.worktree_root) / f"{target}-{state['cycle_id']}"
     ctx.git.add_worktree(resolved, worktree_path)
     ctx.worktree_path = worktree_path
-    if ctx.worktree_git is None:
-        ctx.worktree_git = GitService(executor=ctx.executor, repo_path=worktree_path)
+    if str(worktree_path) not in ctx.worktree_gits:
+        ctx.worktree_gits[str(worktree_path)] = GitService(
+            executor=ctx.executor, repo_path=worktree_path
+        )
 
     results = dict(state.get("branch_results") or {})
     results[target] = BranchResult(

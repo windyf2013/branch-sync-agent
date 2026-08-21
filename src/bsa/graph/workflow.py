@@ -198,7 +198,9 @@ def _route_after_cherry_pick(state: dict) -> str:
     if status == "CHERRY_PICK_EMPTY":
         return "next_commit"
     if status == "CHERRY_PICK_FAILED":
-        return "fail_fast"
+        # 决策 18 node boundary: a non-conflict cherry-pick failure is an
+        # infrastructure error → report path, NOT fail-fast (决策 32).
+        return _END_NODE
     return "build"
 
 
@@ -311,7 +313,6 @@ def build_workflow(
         {
             "build": "build",
             "resolve_conflict": "resolve_conflict",
-            "fail_fast": "fail_fast",
             "next_commit": "next_commit",
             _END_NODE: _END_NODE,
         },
