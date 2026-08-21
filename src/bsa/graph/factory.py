@@ -52,7 +52,13 @@ def build_graph_context(
     git.fetch_retry_base_sec = settings.fetch_retry_base_sec
 
     llm = LLMClient(settings)
-    runner = BuildRunner(executor=executor, settings=settings, cycle_id=cycle_id)
+    # BuildRunner 用裸 SubprocessExecutor：docker 命令不经 git 白名单
+    # （WhitelistExecutor 只拦截 git；真机测试暴露 docker 被 git 白名单
+    # 误拦 "git command not whitelisted: 'docker'"）。docker 由 BuildRunner
+    # 独立管控，不属 git 白名单范畴。
+    runner = BuildRunner(
+        executor=SubprocessExecutor(), settings=settings, cycle_id=cycle_id
+    )
     sync_decision_agent = SyncDecisionAgent(
         llm=llm,
         judgments_path=Path(settings.log_dir) / "judgments.json",
