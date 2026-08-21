@@ -170,20 +170,32 @@ def run_cycle(
     until: str | None = None,
     dry_run: bool = False,
     context: GraphContext | None = None,
+    force_new: bool = False,
+    manual: bool = False,
 ) -> int:
     """Run one full sync cycle: build graph, invoke (resume-aware), produce artifacts.
 
     ``context`` is injectable so tests can mock the whole service layer
     (验收标准 #4). ``--since/--until`` override the default 22:00~22:00 scan
     window (决策 38, manual-scan semantics); ``dry_run`` forces mail_dry_run.
+    ``manual`` (manual-scan) uses an independent cycle_id derived from the scan
+    window and forces a fresh checkpoint, so a re-scan is never short-circuited
+    by an existing daily-cycle checkpoint (真机测试发现: manual-scan 撞旧
+    checkpoint 只 resume 不重扫).
     """
     if context is None:
         settings = load_settings()
         cycle_id = _derive_cycle_id(date)
+        if manual and since and until:
+            cycle_id = f"scan-{since}-{until}"
+        elif manual:
+            cycle_id = f"scan-{datetime.now().strftime('%Y%m%d-%H%M%S')}"
         context = build_graph_context(settings, cycle_id=cycle_id)
     else:
         cycle_id = _derive_cycle_id(date)
-    return _execute(context, cycle_id, since=since, until=until, dry_run=dry_run)
+    return _execute(
+        context, cycle_id, since=since, until=until, dry_run=dry_run, force_new=force_new
+    )
 
 
 def _execute(
@@ -193,6 +205,7 @@ def _execute(
     since: str | None,
     until: str | None,
     dry_run: bool,
+    force_new: bool = False,
 ) -> int:
     settings = context.settings
     if since or until:
@@ -221,7 +234,7 @@ def _execute(
     with open_checkpointer(str(db_path)) as checkpointer:
         graph = build_workflow(context, checkpointer=checkpointer)
         config = thread_config(cycle_id)
-        resume = checkpointer.get_tuple(config) is not None
+        resume = (not force_new) and checkpointer.get_tuple(config) is not None
         try:
             if resume:
                 logger.info("resume existing checkpoint for %s", cycle_id)

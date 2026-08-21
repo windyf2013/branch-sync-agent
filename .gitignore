@@ -13,3 +13,4 @@ bsa-venv/
 # Git worktrees
 .worktrees/
 
+.env

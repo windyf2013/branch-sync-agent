@@ -9,6 +9,7 @@ from bsa.mail import MailResult, MailService
 
 def make_settings(tmp_path: Path, *, dry_run: bool = True) -> Settings:
     return Settings(
+        _env_file=None,
         repo_path="/srv/rcios",
         branch_file="/srv/rcios/branch.md",
         worktree_root="/srv/wt",

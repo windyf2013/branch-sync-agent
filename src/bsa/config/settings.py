@@ -67,10 +67,12 @@ class Settings(BaseSettings):
     # authoritative source is safety_rules.yaml, loaded by the rules module.
 
 
-def load_settings() -> Settings:
+def load_settings(*, env_file: str | None = ".env") -> Settings:
     """Load settings from the environment, validating required fields.
 
     A missing required field raises pydantic ValidationError. Optional fields
     fall back to their defaults (or None for the scan window).
+    ``env_file=None`` disables the .env file so callers (e.g. tests) can
+    isolate from a working-directory .env (真机测试: .env 污染测试环境).
     """
-    return Settings()
+    return Settings(_env_file=env_file)

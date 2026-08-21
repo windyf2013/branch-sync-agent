@@ -63,6 +63,7 @@ def test_mailservice_dry_run_short_circuits_before_sender(tmp_path: Path) -> Non
     from bsa.mail.service import MailService
 
     settings = Settings(
+        _env_file=None,
         repo_path=str(tmp_path),
         branch_file="branch.md",
         worktree_root=str(tmp_path / "wt"),
@@ -76,6 +77,7 @@ def test_mailservice_dry_run_short_circuits_before_sender(tmp_path: Path) -> Non
         mail_sender="s@x.com",
         mail_recipients=["yangfu@raisecom.com"],
         log_dir=str(tmp_path),
+        mail_dry_run=True,
     )
     called = []
     svc = MailService(settings, sender=lambda p: called.append(p) or {"status": "ok"})

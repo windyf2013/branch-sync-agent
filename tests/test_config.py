@@ -59,7 +59,7 @@ def valid_env() -> dict[str, str]:
 
 def make(monkeypatch, env: dict[str, str] | None = None) -> Settings:
     monkeypatch.setattr("bsa.config.settings.os.environ", {**env} if env else {})
-    return load_settings()
+    return load_settings(env_file=None)
 
 
 class TestRequiredFields:
@@ -69,7 +69,7 @@ class TestRequiredFields:
             env.pop(field.upper(), None)
             monkeypatch.setattr("bsa.config.settings.os.environ", env)
             with pytest.raises(ValidationError):
-                load_settings()
+                load_settings(env_file=None)
 
     def test_all_required_present_ok(self, monkeypatch):
         s = make(monkeypatch, valid_env())
@@ -85,6 +85,7 @@ class TestDefaults:
     def test_defaults_need_no_env_vars(self, monkeypatch):
         monkeypatch.setattr("bsa.config.settings.os.environ", {})
         s = Settings(
+            _env_file=None,
             repo_path="r",
             branch_file="b",
             worktree_root="w",
@@ -147,14 +148,14 @@ class TestListField:
         env["MAIL_RECIPIENTS"] = "not-a-list"
         monkeypatch.setattr("bsa.config.settings.os.environ", env)
         with pytest.raises(SettingsError):
-            load_settings()
+            load_settings(env_file=None)
 
 
 class TestEnvMapping:
     def test_field_name_to_env_uppercase(self, monkeypatch):
         env = valid_env()
         monkeypatch.setattr("bsa.config.settings.os.environ", env)
-        s = load_settings()
+        s = load_settings(env_file=None)
         for field in REQUIRED:
             if field == "mail_recipients":
                 assert s.mail_recipients == json.loads(env["MAIL_RECIPIENTS"])

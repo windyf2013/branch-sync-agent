@@ -35,7 +35,7 @@ def make_settings(tmp_path: Path, **overrides) -> Settings:
         log_dir=str(tmp_path / "logs"),
     )
     values.update(overrides)
-    return Settings(**values)
+    return Settings(**values, _env_file=None)
 
 
 def make_commit(**overrides) -> CommitInfo:

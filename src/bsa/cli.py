@@ -49,7 +49,12 @@ def _cmd_run_cycle(args: argparse.Namespace) -> int:
 def _cmd_manual_scan(args: argparse.Namespace) -> int:
     try:
         return run_cycle(
-            args.date, since=args.since, until=args.until, dry_run=args.dry_run
+            args.date,
+            since=args.since,
+            until=args.until,
+            dry_run=args.dry_run,
+            manual=True,
+            force_new=True,
         )
     except Exception as exc:
         print(f"运行失败: {exc}", file=sys.stderr)

@@ -109,7 +109,7 @@ def make_settings(tmp_path: Path, **overrides: object):
     base.update(overrides)
     from bsa.config.settings import Settings
 
-    return Settings(**base)
+    return Settings(**base, _env_file=None)
 
 
 class FakeGit:
