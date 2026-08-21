@@ -180,8 +180,11 @@ def test_file_similarity_missing_side_none():
     assert _file_similarity("abc", None) is None
 
 
-def test_file_similarity_caps_long_inputs():
-    assert _file_similarity("a" * 25000, "b" * 25000) == 0.0
+def test_file_similarity_caps_long_inputs_returns_none():
+    # 大文件截断后 ratio 不可靠（真机测试 zebra_cli.c 虚高 1.0 误判），返回 None
+    assert _file_similarity("a" * 25000, "b" * 25000) is None
+    assert _file_similarity("a" * 25000, "a" * 25000) is None
+    assert _file_similarity("a" * 100, "b" * 100) == 0.0
 
 
 # --- fix_clearly_missing ---
