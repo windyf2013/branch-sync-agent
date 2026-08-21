@@ -275,7 +275,14 @@ def sync_decision(state: dict, ctx: GraphContext) -> dict:
         if (entry := classifications.get(commit.sha)) is not None and entry.needs_agent
     ]
     if pending:
-        classifications.update(ctx.sync_decision_agent.run(pending))
+        prior_risks = {
+            commit.sha: classifications[commit.sha].risk
+            for commit in pending
+            if classifications[commit.sha].risk is not None
+        }
+        classifications.update(
+            ctx.sync_decision_agent.run(pending, prior_risks=prior_risks)
+        )
 
     risk_pending = [
         commit

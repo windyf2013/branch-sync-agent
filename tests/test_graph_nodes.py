@@ -237,11 +237,15 @@ class FakeSyncDecisionAgent:
         self.results: dict[str, SyncDecision] = {}
         self.risk_results: dict[str, str | None] = {}
 
-    def run(self, pending: list[CommitInfo]) -> dict[str, SyncDecision]:
+    def run(
+        self,
+        pending: list[CommitInfo],
+        prior_risks: dict[str, str | None] | None = None,
+    ) -> dict[str, SyncDecision]:
         self.calls.append(list(pending))
         out: dict[str, SyncDecision] = {}
         for commit in pending:
-            out[commit.sha] = self.results.get(
+            decision = self.results.get(
                 commit.sha,
                 SyncDecision(
                     sha=commit.sha,
@@ -251,6 +255,10 @@ class FakeSyncDecisionAgent:
                     needs_agent=False,
                 ),
             )
+            rule_risk = (prior_risks or {}).get(commit.sha)
+            if rule_risk is not None:
+                decision = decision.model_copy(update={"risk": rule_risk})
+            out[commit.sha] = decision
         return out
 
     def resolve_risks(self, commits: list[CommitInfo]) -> dict[str, str | None]:
@@ -817,6 +825,45 @@ def test_sync_decision_resolves_risk_and_threads_into_analysis(tmp_path):
     assert ctx.conclude.calls[0][0].risk == "high"
     assert update["decisions"]["a1"][TARGET].kind == "NeedSync"
     assert update["batches"] == {TARGET: ["a1"]}
+
+
+def test_sync_decision_preserves_rule_layer_high_over_llm(tmp_path):
+    write_branch_md(tmp_path)
+    ctx = make_ctx(tmp_path)
+    c1 = commit("a1")
+    state = base_state(
+        detected_commits=[c1],
+        classifications={
+            "a1": SyncDecision(
+                sha="a1",
+                is_bug_fix=True,
+                reason=None,
+                recognition_source="pending:claude-agent",
+                needs_agent=True,
+                risk="high",
+            )
+        },
+    )
+    ctx.sync_decision_agent.results = {
+        "a1": SyncDecision(
+            sha="a1",
+            is_bug_fix=True,
+            reason="llm says low",
+            recognition_source="agent:bug-fix",
+            needs_agent=False,
+            risk="low",
+        )
+    }
+    ctx.conclude.results = {
+        ("a1", TARGET): Conclusion4(kind="NeedSync", evidence=["x"], confidence="high")
+    }
+
+    update = sync_decision(state, ctx)
+
+    assert [c.sha for c in ctx.sync_decision_agent.calls[0]] == ["a1"]
+    assert update["classifications"]["a1"].risk == "high"
+    assert ctx.conclude.calls[0][0].risk == "high"
+    assert update["decisions"]["a1"][TARGET].kind == "NeedSync"
 
 
 # --- sync_decision with real conclude_pair (four-state fidelity, task 3.2a) ---

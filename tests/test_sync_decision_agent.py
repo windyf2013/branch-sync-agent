@@ -326,6 +326,78 @@ def test_minimal_human_entry_defaults_source(tmp_path: Path) -> None:
     assert llm.calls == []
 
 
+def test_run_preserves_rule_layer_high_over_llm(tmp_path: Path) -> None:
+    sha = "5eed00000000000000000000000000000000000"
+    path = tmp_path / "judgments.json"
+    llm = FakeLLM(
+        SyncDecision(
+            sha=sha,
+            is_bug_fix=True,
+            reason="llm said bug",
+            recognition_source="agent:bug-fix",
+            needs_agent=False,
+            risk="low",
+        )
+    )
+    agent = SyncDecisionAgent(llm, path)
+
+    result = agent.run([make_commit(sha=sha)], prior_risks={sha: "high"})
+
+    assert result[sha].is_bug_fix is True
+    assert result[sha].risk == "high"
+    saved = json.loads(path.read_text(encoding="utf-8"))
+    assert saved[sha]["risk"] == "high"
+
+
+def test_run_llm_fills_risk_when_rule_unknown(tmp_path: Path) -> None:
+    sha = "6eed00000000000000000000000000000000000"
+    path = tmp_path / "judgments.json"
+    llm = FakeLLM(
+        SyncDecision(
+            sha=sha,
+            is_bug_fix=True,
+            reason="llm said bug",
+            recognition_source="agent:bug-fix",
+            needs_agent=False,
+            risk="medium",
+        )
+    )
+    agent = SyncDecisionAgent(llm, path)
+
+    result = agent.run([make_commit(sha=sha)])
+
+    assert result[sha].risk == "medium"
+    saved = json.loads(path.read_text(encoding="utf-8"))
+    assert saved[sha]["risk"] == "medium"
+
+
+def test_run_prior_risk_from_cache_still_preserves_rule_layer(tmp_path: Path) -> None:
+    sha = "7eed00000000000000000000000000000000000"
+    path = tmp_path / "judgments.json"
+    path.write_text(
+        json.dumps(
+            {
+                sha: {
+                    "is_bug_fix": True,
+                    "reason": "cached",
+                    "recognition_source": "agent:bug-fix",
+                    "risk": "low",
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    llm = FakeLLM()
+    agent = SyncDecisionAgent(llm, path)
+
+    result = agent.run([make_commit(sha=sha)], prior_risks={sha: "high"})
+
+    assert result[sha].risk == "high"
+    assert llm.calls == []
+    saved = json.loads(path.read_text(encoding="utf-8"))
+    assert saved[sha]["risk"] == "high"
+
+
 def test_resolve_risks_calls_llm_and_caches(tmp_path: Path) -> None:
     sha = "5eed00000000000000000000000000000000000"
     path = tmp_path / "judgments.json"

@@ -23,15 +23,32 @@ class SyncDecisionAgent:
         self._llm = llm
         self._judgments_path = judgments_path
 
-    def run(self, pending: list[CommitInfo]) -> dict[str, SyncDecision]:
+    def run(
+        self,
+        pending: list[CommitInfo],
+        prior_risks: dict[str, Literal["low", "medium", "high"]] | None = None,
+    ) -> dict[str, SyncDecision]:
+        """子图：判 is_bug_fix（决策 6 缓存 + 人工覆盖优先）+ 严重性 risk 兜底（决策 41）。
+
+        ``prior_risks`` 携带规则层已判定的风险（决策 41 规则层先行）；
+        对这类 commit，无论 LLM 判定（或缓存）给出什么 risk，规则层结果
+        一律保留，LLM 只补 is_bug_fix，不得覆盖规则层 risk。
+        """
         judgments = self._load()
         decisions: dict[str, SyncDecision] = {}
         for commit in pending:
+            rule_risk = (prior_risks or {}).get(commit.sha)
             entry = lookup_agent_judgment(commit.sha, judgments)
             if entry is not None:
-                decisions[commit.sha] = self._from_entry(commit.sha, entry)
+                decision = self._from_entry(commit.sha, entry)
+                if rule_risk is not None and decision.risk != rule_risk:
+                    decision = decision.model_copy(update={"risk": rule_risk})
+                    judgments[commit.sha]["risk"] = rule_risk
+                decisions[commit.sha] = decision
                 continue
             decision = self._llm.judge_bug_fix(commit)
+            if rule_risk is not None and decision.risk != rule_risk:
+                decision = decision.model_copy(update={"risk": rule_risk})
             decisions[commit.sha] = decision
             if not decision.needs_agent:
                 judgments[commit.sha] = {
