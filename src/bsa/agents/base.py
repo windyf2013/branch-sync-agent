@@ -44,6 +44,12 @@ class BuildAttribution(BaseModel):
     files_to_fix: list[str]
 
 
+class BuildFix(BaseModel):
+    files: list[str]
+    diff: str
+    agent_reason: str
+
+
 class FailedCommit(BaseModel):
     sha: str
     failure_summary: str
@@ -65,6 +71,12 @@ class _BuildAttributionOutput(BaseModel):
     category: Literal["introduced_by_commit", "pre_existing", "environment", "unresolvable"]
     reason: str
     files_to_fix: list[str]
+
+
+class _BuildFixOutput(BaseModel):
+    files: list[str]
+    diff: str
+    agent_reason: str
 
 
 class _FailfastJudgment(BaseModel):
@@ -244,6 +256,21 @@ class LLMClient:
             raise exc
         return BuildAttribution(
             category=out.category, reason=out.reason, files_to_fix=out.files_to_fix
+        )
+
+    def fix_build_error(self, ctx: BuildErrorContext) -> BuildFix:
+        prompt = (
+            "你是嵌入式编译修复专家。针对下列编译错误，给出最小改动 diff 修复。\n"
+            f"commit: {ctx.commit.sha} {ctx.commit.message}\n"
+            f"model: {ctx.model}\n"
+            f"errors:\n{chr(10).join(ctx.errors)}\n"
+            '只输出 JSON，格式：{"files": ["..."], "diff": '
+            '"统一格式 diff（--- a/.. b/.. + hunk）", '
+            '"agent_reason": "为何如此修复"}'
+        )
+        result = self._complete("fix_build_error", prompt, _BuildFixOutput)
+        return BuildFix(
+            files=result.files, diff=result.diff, agent_reason=result.agent_reason
         )
 
     def judge_failfast_related(self, failed: FailedCommit, subsequent: list[CommitInfo]) -> bool:
