@@ -30,12 +30,13 @@ class SyncDecisionAgent:
                 decisions[commit.sha] = self._from_entry(commit.sha, entry)
                 continue
             decision = self._llm.judge_bug_fix(commit)
-            judgments[commit.sha] = {
-                "is_bug_fix": decision.is_bug_fix,
-                "reason": decision.reason,
-                "recognition_source": decision.recognition_source,
-            }
             decisions[commit.sha] = decision
+            if not decision.needs_agent:
+                judgments[commit.sha] = {
+                    "is_bug_fix": decision.is_bug_fix,
+                    "reason": decision.reason,
+                    "recognition_source": decision.recognition_source,
+                }
         self._save(judgments)
         return decisions
 

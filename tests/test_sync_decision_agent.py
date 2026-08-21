@@ -231,7 +231,7 @@ def test_empty_pending_returns_empty(tmp_path: Path) -> None:
     assert path.exists()
 
 
-def test_degrade_passthrough_and_cached(tmp_path: Path) -> None:
+def test_degrade_passthrough_returned_but_not_cached(tmp_path: Path) -> None:
     sha = "c0a1d00000000000000000000000000000000000"
     path = tmp_path / "judgments.json"
     pending = SyncDecision(
@@ -249,11 +249,59 @@ def test_degrade_passthrough_and_cached(tmp_path: Path) -> None:
     assert result[sha].needs_agent is True
     assert result[sha].recognition_source == "pending:claude-agent"
     saved = json.loads(path.read_text(encoding="utf-8"))
-    assert saved[sha]["recognition_source"] == "pending:claude-agent"
+    assert sha not in saved
 
-    result2 = agent.run([make_commit(sha=sha)])
-    assert result2[sha].needs_agent is True
-    assert len(llm.calls) == 1
+
+def test_degraded_run_retries_llm_next_cycle(tmp_path: Path) -> None:
+    sha = "c0a1d00000000000000000000000000000000000"
+    path = tmp_path / "judgments.json"
+    pending = SyncDecision(
+        sha=sha,
+        is_bug_fix=False,
+        reason="LLM 不可用，降级人工审核",
+        recognition_source="pending:claude-agent",
+        needs_agent=True,
+    )
+    llm = FakeLLM(pending)
+    agent = SyncDecisionAgent(llm, path)
+
+    agent.run([make_commit(sha=sha)])
+    result = agent.run([make_commit(sha=sha)])
+
+    assert result[sha].needs_agent is True
+    assert len(llm.calls) == 2
+
+
+def test_degraded_run_retried_when_llm_available(tmp_path: Path) -> None:
+    sha = "c0a1d00000000000000000000000000000000000"
+    path = tmp_path / "judgments.json"
+    pending = SyncDecision(
+        sha=sha,
+        is_bug_fix=False,
+        reason="LLM 不可用，降级人工审核",
+        recognition_source="pending:claude-agent",
+        needs_agent=True,
+    )
+    llm = FakeLLM(pending)
+    agent = SyncDecisionAgent(llm, path)
+
+    first = agent.run([make_commit(sha=sha)])
+    assert first[sha].needs_agent is True
+
+    llm.result = SyncDecision(
+        sha=sha,
+        is_bug_fix=True,
+        reason="llm said bug",
+        recognition_source="agent:bug-fix",
+        needs_agent=False,
+    )
+    second = agent.run([make_commit(sha=sha)])
+
+    assert second[sha].needs_agent is False
+    assert second[sha].is_bug_fix is True
+    assert len(llm.calls) == 2
+    saved = json.loads(path.read_text(encoding="utf-8"))
+    assert saved[sha]["recognition_source"] == "agent:bug-fix"
 
 
 def test_minimal_human_entry_defaults_source(tmp_path: Path) -> None:
