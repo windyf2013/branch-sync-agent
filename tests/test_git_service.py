@@ -28,6 +28,13 @@ FIXTURE_DIFF = (
     "+\tdcfc\t\taf \n"
 )
 FIXTURE_PATCH_ID = "a0b371bb1d8c1d0a42e35fd0a15f1902aeb436f6"
+BINARY_DIFF = (
+    "diff --git a/img.bin b/img.bin\n"
+    "new file mode 100644\n"
+    "index 0000000..339cf73\n"
+    "Binary files /dev/null and b/img.bin differ\n"
+)
+BINARY_PATCH_ID = "85de7519499e364399b06b9bd6e3918abdd2524d"
 
 
 def ok(stdout: str = "", rc: int = 0) -> CompletedProcess:
@@ -163,6 +170,11 @@ class TestPatchId:
         result = GitService(executor, tmp_path).patch_id("abc")
         assert result == FIXTURE_PATCH_ID
 
+    def test_binary_commit_patch_id(self, tmp_path):
+        executor = FakeExecutor([ok("parentsha"), ok("1\t0\timg.bin"), ok(BINARY_DIFF)])
+        result = GitService(executor, tmp_path).patch_id("abc")
+        assert result == BINARY_PATCH_ID
+
     def test_root_commit_is_none(self, tmp_path):
         executor = FakeExecutor([ok("")])
         assert GitService(executor, tmp_path).patch_id("root") is None
@@ -233,10 +245,21 @@ class TestCherryPick:
         empty_stderr = CompletedProcess(
             returncode=1, stdout="", stderr="The previous cherry-pick is now empty"
         )
-        executor = FakeExecutor([empty_stderr])
+        executor = FakeExecutor([empty_stderr, ok()])
         result = GitService(executor, tmp_path).cherry_pick("abc")
         assert result == CherryPickResult(status="EMPTY")
-        assert len(executor.calls) == 1
+        assert executor.calls[1][0] == ["cherry-pick", "--skip"]
+        assert len(executor.calls) == 2
+
+    def test_empty_skip_failure_raises(self, tmp_path):
+        empty_stderr = CompletedProcess(
+            returncode=1, stdout="", stderr="The previous cherry-pick is now empty"
+        )
+        executor = FakeExecutor(
+            [empty_stderr, CompletedProcess(returncode=128, stdout="", stderr="fatal")]
+        )
+        with pytest.raises(InfrastructureError):
+            GitService(executor, tmp_path).cherry_pick("abc")
 
     def test_conflict_reports_unmerged_files(self, tmp_path):
         executor = FakeExecutor(

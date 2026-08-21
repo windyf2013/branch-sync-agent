@@ -173,7 +173,11 @@ class GitService:
             return CherryPickResult(status="OK")
         combined = f"{result.stdout}\n{result.stderr}"
         if "empty" in combined or "nothing to commit" in combined:
-            return CherryPickResult(status="EMPTY")
+            self._run(
+                ["cherry-pick", "--skip"],
+                error_msg="cannot clear stuck cherry-pick sequencer",
+            )
+            return CherryPickResult(status="EMPTY", conflict_files=[])
         conflicts = self.unmerged_files()
         if conflicts:
             return CherryPickResult(status="CONFLICT", conflict_files=conflicts)
@@ -278,7 +282,9 @@ def _stable_patch_id(diff_text: str) -> str:
                 continue
             if raw.startswith("index "):
                 oid1_end = raw.find("..")
-                oid2_end = raw.find(" ", 6)
+                oid2_end = raw.find(" ", oid1_end + 2) if oid1_end != -1 else -1
+                if oid2_end == -1:
+                    oid2_end = len(raw) - 1
                 if oid1_end != -1 and oid2_end != -1:
                     pre_oid = raw[6:oid1_end]
                     post_oid = raw[oid1_end + 2 : oid2_end]
