@@ -8,8 +8,6 @@ from bsa.domain.models import Conclusion4
 from bsa.executor.exceptions import SafetyViolation
 from bsa.rules import (
     BranchMdDocument,
-    BranchRef,
-    Classification,
     CommitAnalysis,
     ConcludeThresholds,
     DecisionRules,
