@@ -48,8 +48,10 @@ def extract_errors(
 def has_success_marker(log: str, model: str) -> bool:
     """True when the log shows a compile-success marker (decision 26).
 
-    Success markers: ``Make rootfs success``, an artifact ``convert ...`` line
-    ending in ``success!``, or a ``MSG<model>_*_SYSTEM_*.bin`` artifact name.
+    Matches ``Make rootfs success`` or an artifact name
+    ``MSG<model>_*_SYSTEM_*.bin`` in a convert line. Multi-segment artifact
+    names (e.g. ``MSG<model>_<X>_SYSTEM_*``) are not currently matched; extend
+    `_artifact_pattern` if real logs need them.
     """
     if _ROOTFS_MARKER in log:
         return True
