@@ -151,6 +151,8 @@ class TestBuildCommit:
             "sudo",
             "docker",
             "exec",
+            "-w",
+            "/workspace/rcios",
             "rcios-sync-20260821",
             "bash",
             "-c",

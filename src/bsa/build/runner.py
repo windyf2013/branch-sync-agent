@@ -87,6 +87,9 @@ class BuildRunner:
         )
 
         script_dir = self.settings.build_script_dir.rstrip("/")
+        # docker exec 默认工作目录是容器启动目录(/)；必须显式 -w 到挂载点，
+        # 否则 cd build/platform/RTL9617C 在 / 下失败 (真机测试: No such file or directory)
+        mount = self.settings.docker_mount_workspace.rstrip("/")
         steps = [f"cd {shlex.quote(script_dir)}", "code_update.sh -d"]
         if clean:
             steps.append("RTL9617C_build.sh clean")
@@ -97,7 +100,17 @@ class BuildRunner:
 
         try:
             proc: CompletedProcess = self.executor.run(
-                [*prefix, "docker", "exec", container, "bash", "-c", " && ".join(steps)],
+                [
+                    *prefix,
+                    "docker",
+                    "exec",
+                    "-w",
+                    mount,
+                    container,
+                    "bash",
+                    "-c",
+                    " && ".join(steps),
+                ],
                 timeout_sec=_BUILD_EXEC_TIMEOUT_SEC,
             )
         finally:
