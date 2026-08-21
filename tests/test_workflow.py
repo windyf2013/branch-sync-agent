@@ -148,6 +148,24 @@ def test_single_branch_success_patch_and_report(tmp_path):
     assert branch.commits[0].build["RTL9617C"].status == "OK"
 
 
+def test_empty_cherry_pick_still_builds(tmp_path):
+    # 真机测试: worktree 复用导致 cherry_pick 判 EMPTY（内容已应用），
+    # 但当前 worktree 是否编译通过从未验证。EMPTY 也必须走 build 验证。
+    write_branch_md(tmp_path)
+    ctx = batch_ctx(tmp_path, shas=["a1"])
+    wg = worktree_git_for(ctx, TARGET)
+    wg.cherry_pick_results = {"a1": CherryPickResult(status="EMPTY")}
+
+    out = run(build_workflow(ctx), base_state())
+
+    assert out["status"] == "REPORTED"
+    branch = out["branch_results"][TARGET]
+    assert branch.commits[0].cherry_pick == "EMPTY"
+    assert "RTL9617C" in branch.commits[0].build
+    assert branch.commits[0].build["RTL9617C"].status == "OK"
+    assert branch.patch_path is not None
+
+
 def test_multi_commit_order_per_branch(tmp_path):
     write_branch_md(tmp_path)
     ctx = batch_ctx(tmp_path, shas=["a1", "a2"])
