@@ -52,17 +52,18 @@ def _file_similarity(source_text: str | None, target_text: str | None) -> float 
         return 1.0
     if source_text == target_text:
         return 1.0
-    left = (
-        source_text
-        if len(source_text) <= _MAX_SIMILARITY_CHARS
-        else source_text[:_MAX_SIMILARITY_CHARS]
-    )
-    right = (
-        target_text
-        if len(target_text) <= _MAX_SIMILARITY_CHARS
-        else target_text[:_MAX_SIMILARITY_CHARS]
-    )
-    return difflib.SequenceMatcher(None, left, right).ratio()
+    # SequenceMatcher is O(n^2); cap inputs to keep target scans responsive.
+    # When EITHER side exceeds the cap, the prefix-truncated ratio is unreliable
+    # (a large file's difference beyond the cap is invisible, falsely yielding
+    # ~1.0) — return None so conclude falls back to authoritative evidence
+    # (SHA ancestry / patch-id / issue-id) instead of a false "already included"
+    # (真机测试: 118KB zebra_cli.c 差异被截断, 相似度虚高 1.0 误判 AlreadyIncluded).
+    if (
+        len(source_text) > _MAX_SIMILARITY_CHARS
+        or len(target_text) > _MAX_SIMILARITY_CHARS
+    ):
+        return None
+    return difflib.SequenceMatcher(None, source_text, target_text).ratio()
 
 
 def _fix_clearly_missing(source_text: str | None, target_text: str | None) -> bool:
