@@ -6,6 +6,7 @@ from bsa.agents.base import (
     LLMClient,
     LLMUnavailable,
 )
+from bsa.agents.sync_decision import SyncDecisionAgent
 
 __all__ = [
     "BuildAttribution",
@@ -14,4 +15,5 @@ __all__ = [
     "FailedCommit",
     "LLMClient",
     "LLMUnavailable",
+    "SyncDecisionAgent",
 ]
