@@ -182,9 +182,11 @@ class Settings(BaseSettings):
     repo_path: str               # 宿主机仓库路径（REPO_PATH）
     branch_file: str             # branch.md 路径
     worktree_root: str           # worktree 父目录
-    llm_model: str               # LLM_MODEL
-    llm_api_key: str             # LLM_API_KEY
-    llm_base_url: str            # LLM_BASE_URL
+    llm_backend: Literal["api","claude_cli"] = "api"  # 决策 39：可选后端，二选一（api=langchain-openai 默认 / claude_cli=claude -p），同一时间只启用一个
+    llm_model: str               # LLM_MODEL（api 后端用；claude_cli 后端忽略，用宿主配置）
+    llm_api_key: str             # LLM_API_KEY（api 后端用）
+    llm_base_url: str            # LLM_BASE_URL（api 后端用，DeepSeek 走此）
+    claude_cli_path: str = "claude"  # claude CLI 路径（claude_cli 后端用）
     llm_timeout_sec: int = 60
     llm_max_retries: int = 3
     llm_degrade_to_manual: bool = True
@@ -468,8 +470,17 @@ class BuildResult(BaseModel):
 ```
 
 ```python
-# agents/base.py（统一 LLM 封装：timeout/重试/降级安全默认）
+# agents/base.py（统一 LLM 封装：timeout/重试/降级安全默认；决策 39 可选后端）
 class LLMClient:
+    """单一后端，按 settings.llm_backend 选择（二选一，互斥，同一时间只启用一个）：
+    - api（默认）：langchain-openai ChatOpenAI（DeepSeek 走 base_url），schema 强制 + token 观测，
+      per-agent 模型覆盖生效。
+    - claude_cli：封装 `claude -p "<强约束 prompt>"` 子进程（用宿主配置的 DeepSeek 模型），
+      结构化输出靠 prompt 强约束 + 健壮解析器（json.loads → 提取重试 → 降级安全默认），
+      记录调用耗时 + 输入/输出摘要补偿观测；忽略 per-agent 模型覆盖。
+    实现要点：构造时按 llm_backend 只实例化所选后端，绝不两者同时执行。
+    接口 4 方法不变，后端实现隔离在内部；未来加新后端不破坏接口。
+    """
     def __init__(self, settings: Settings): ...
     def judge_bug_fix(self, commit: CommitInfo) -> SyncDecision        # 失败 → degrade ManualReview
     def solve_conflict(self, ctx: ConflictContext) -> ConflictResolution  # 失败 → 转人工

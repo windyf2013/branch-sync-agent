@@ -408,4 +408,21 @@ Agent 具备真实世界的写权限（git worktree、代码修改、docker 编�
 - **问题**：默认 22:00~22:00 窗口在哪计算？manual-scan 如何覆盖？
 - **结论**：**config 只管读配置**（`scan_since/scan_until` 默认 None = 未指定）；**detect_commits node 计算默认窗口**（上一完整日 22:00~22:00 +08:00，业务逻辑放 node）；manual-scan 传 `--since/--until` 时通过 Settings 传入覆盖默认窗口。
 
+### 决策 39：LLM 后端可选切换（二选一：自研 langchain-openai 或 claude CLI）
+
+- **问题**：交付 Agent（Sync Decision/Conflict/Build）的 LLM 后端用什么？
+- **用户最终决策**：**可选，不是同时执行**——自研 agent 按原计划实现（langchain-openai），同时提供可选 `claude -p "prompt"` 后端；**同一时间只启用一个后端，通过配置选择，二者互斥**。
+- **用户关键信息**：底层模型同为 DeepSeek API；claude harness 稳定（重试/超时/认证已处理好），自研封装是未知风险；宿主机 claude 已配置好可直接调用。
+- **技术事实**：当前 claude CLI（2.1.220）用 `claude -p "prompt"`（非 `-s`）；强约束 prompt 下 JSON 输出可靠（已验证 3/3）。
+- **结论**：
+  - **LLMClient 单一后端，配置切换（二选一，互斥）**：`llm.backend = "api" | "claude_cli"`，**每个进程/周期只实例化所选的那一个后端，绝不两者同时执行**。
+    - `api`（默认）：langchain-openai `ChatOpenAI`（决策 33 原方案，DeepSeek 走 base_url），schema 强制、token 观测、per-agent 模型覆盖。
+    - `claude_cli`（可选）：封装 `claude -p` 子进程，prompt 强约束 JSON + 健壮解析器（json.loads → 提取重试 → 降级安全默认）；用宿主配置模型，忽略 per-agent 模型覆盖。
+  - **LLMClient 接口 4 方法不变**，后端实现隔离在内部；未来加新后端不破坏接口。**切换只影响选用的实现，不产生双执行**。
+
+  - **配置**：Settings 增加 `llm_backend`（默认 "api"）+ `claude_cli_path`（默认 "claude"）；`llm_model/llm_api_key/llm_base_url` 保留（api 后端用）；`agents.<name>.model` 覆盖项保留（api 后端支持，claude_cli 后端忽略）。
+  - **观测**：api 后端用 token usage；claude_cli 后端记录耗时 + 输入/输出摘要（补偿）。
+  - **主图仍用 LangGraph 编排**（checkpoint/流程），节点内 LLM 调用走 LLMClient；LLM 不调工具（工具执行在 bsa 代码层）。
+
+
 

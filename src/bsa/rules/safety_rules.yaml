@@ -1,0 +1,15 @@
+# 安全红线（数据驱动，决策 19）。SafetyEnforcer 通用校验器强制执行，LLM 不可覆盖。
+# 型号（required_models）是编译型号的唯一权威源（问题 14 定案）。
+forbidden_paths:
+  - 'config/'
+  - 'secrets.yaml'
+  - '.env'
+required_models:
+  - 'RTL9617C'
+  - 'RTL9617C_DVB'
+forbidden_branches:
+  - 'master'
+  - 'main'
+  - 'br_qa'
+  - 'br_production'
+max_single_edit_lines: 200

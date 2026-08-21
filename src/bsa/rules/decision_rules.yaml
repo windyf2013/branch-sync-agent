@@ -1,0 +1,58 @@
+# 决策规则（数据驱动，决策 2/21）。classify 规则完整移植参考实现（RCIOS 代码库习惯），
+# 带 golden-set 测试（tests/test_rules.py）。conclude 阈值为决策 27 定案的默认值。
+# 注意：classify 默认规则由本文件驱动（bsa.rules.classify 打包加载本文件作为唯一规则源）。
+classify:
+  # 机器判定为 bug-fix 的标记，按顺序求值（命中即返回）
+  bugfix_markers:
+    - pattern: '\[BUG\]'
+      source: 'machine:[BUG]'
+    - pattern: ':bug:'
+      source: 'machine::bug:'
+    - pattern: '\bfix\s*[:(]'
+      source: 'machine:fix:'
+    - pattern: '(修复|缺陷|故障|空指针|内存泄漏|宕机|崩溃|挂死|重启|段错误|踩内存|非法内存|segmentation\s*fault|segfault)'
+      source: 'machine:zh-fix'
+  # issue-id 识别（CQ/ISSUE/BUG/JIRA/RT + 数字）
+  issue_id_pattern: '\b(?:CQ|ISSUE|BUG|JIRA|RT)[-# ]?(\d+)\b'
+  issue_prefixes: ['CQ', 'ISSUE', 'BUG', 'JIRA', 'RT']
+  cherry_pick_pattern: '\(cherry picked from commit ([0-9a-f]{6,40})\)'
+  # 机器判定为"非 bug-fix"的规则，按顺序求值（命中即返回）。mode:
+  #   regex        = pattern 正则搜索消息
+  #   version-file = 仅当 changed_files 单文件且后缀为 version_file_suffix
+  #   docs-only    = 仅当全部 changed_files 命中 docs_only_paths
+  not_bugfix_markers:
+    - pattern: '^build version'
+      source: 'machine:version-bump'
+      reason: '版本号升级。'
+    - pattern: null
+      mode: 'version-file'
+      source: 'machine:version-file'
+      reason: '仅修改版本文件 ios_version.h。'
+    - pattern: '^(chore|docs)\('
+      source: 'machine:chore-docs'
+      reason: '工程/文档类提交（chore/docs 前缀）。'
+    - pattern: 'AI\s+IGNOR'
+      source: 'machine:ai-ignor'
+      reason: 'AI IGNOR 标记。'
+    - pattern: null
+      mode: 'docs-only'
+      source: 'machine:docs-only'
+      reason: '仅涉及 openspec/ 或 .gitignore 文件。'
+  version_file_suffix: 'ios_version.h'
+  docs_only_paths: ['openspec/', '.gitignore']
+  pending_source: 'pending:claude-agent'
+  not_included_source: 'not-included'
+  agent_bug_fix_source: 'agent:bug-fix'
+  agent_not_bug_fix_source: 'agent:not-bug-fix'
+  path_rules:
+    # 公共目录：命中 → 该 commit 编译降级全量编译（决策 2）
+    public_dirs:
+      - 'component/'
+      - 'plat/'
+conclude:
+  similarity_high: 0.90
+  similarity_low: 0.50
+  need_sync_target_types:
+    - release
+    - fix
+branch_mapping: {}
