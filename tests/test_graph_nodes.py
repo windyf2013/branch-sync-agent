@@ -1,0 +1,909 @@
+from __future__ import annotations
+
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+from types import SimpleNamespace
+
+from bsa.build.runner import BuildResult
+from bsa.domain.models import (
+    BranchResult,
+    BuildOutcome,
+    CherryPickResult,
+    CommitInfo,
+    CommitResult,
+    Conclusion4,
+    ConflictResolution,
+    ErrorRecord,
+    SyncDecision,
+)
+from bsa.graph.nodes import (
+    GraphContext,
+    build,
+    cherry_pick,
+    default_window,
+    detect_commits,
+    fix_build,
+    generate_patch,
+    node_wrapper,
+    prepare_worktree,
+    report,
+    resolve_conflict,
+    sync_decision,
+)
+from bsa.rules import (
+    Classification,
+    ConcludeThresholds,
+    DecisionRules,
+)
+from bsa.rules.conclude import CommitAnalysis
+
+CST = timezone(timedelta(hours=8))
+DEVELOP = "br_v4.33_5200_CU_develop_20260518"
+TARGET = "br_v4.33_5200_CU_develop_release_p360_20260625"
+
+BRANCH_MD = f"""# 分支清单
+
+## 组网
+- {DEVELOP}
+- {TARGET}
+"""
+
+
+def write_branch_md(tmp_path: Path) -> Path:
+    path = tmp_path / "branch.md"
+    path.write_text(BRANCH_MD, encoding="utf-8")
+    return path
+
+
+def make_settings(tmp_path: Path, **overrides: object):
+    base = {
+        "repo_path": str(tmp_path),
+        "branch_file": str(tmp_path / "branch.md"),
+        "worktree_root": str(tmp_path / "wt"),
+        "llm_model": "model",
+        "llm_api_key": "key",
+        "llm_base_url": "url",
+        "docker_image": "img",
+        "docker_mount_workspace": "/workspace/rcios",
+        "build_script_dir": "build/platform/RTL9617C",
+        "mail_sender": "sender",
+        "mail_recipients": ["recv"],
+        "log_dir": str(tmp_path / "logs"),
+    }
+    base.update(overrides)
+    from bsa.config.settings import Settings
+
+    return Settings(**base)
+
+
+class FakeGit:
+    def __init__(self, repo_path: str | None = None) -> None:
+        self.repo_path = Path(repo_path) if repo_path else Path("/repo")
+        self.calls: list[tuple] = []
+        self.tips: dict[str, tuple[str, str]] = {}
+        self.window_shas: dict[str, list[str]] = {}
+        self.changed: dict[str, list[str]] = {}
+        self.patches: dict[str, str] = {}
+        self.patch_ids: dict[str, str] = {}
+        self.is_ancestor_results: dict[tuple[str, str], bool] = {}
+        self.file_exists_results: dict[tuple[str, str], bool] = {}
+        self.cherry_pick_result: CherryPickResult | None = None
+        self.unmerged_files_result: list[str] = []
+        self.format_patch_result: Path | None = None
+
+    def _record(self, name: str, args: tuple) -> None:
+        self.calls.append((name, args))
+
+    def fetch_all(self) -> None:
+        self._record("fetch_all", ())
+
+    def branch_tip(self, branch: str) -> tuple[str, str]:
+        self._record("branch_tip", (branch,))
+        return self.tips.get(branch, (f"origin/{branch}", f"tip-{branch}"))
+
+    def commits_in_window(self, since: str, until: str, ref: str) -> list[str]:
+        self._record("commits_in_window", (since, until, ref))
+        return list(self.window_shas.get(ref, self.window_shas.get("default", [])))
+
+    def commit_metadata(self, sha: str) -> tuple[str, str, str]:
+        self._record("commit_metadata", (sha,))
+        return ("dev", "2026-01-01T10:00:00+08:00", f"msg-{sha}")
+
+    def changed_files(self, sha: str) -> list[str]:
+        self._record("changed_files", (sha,))
+        return list(self.changed.get(sha, []))
+
+    def commit_patch(self, sha: str) -> str:
+        self._record("commit_patch", (sha,))
+        return self.patches.get(sha, "")
+
+    def patch_id(self, sha: str) -> str | None:
+        self._record("patch_id", (sha,))
+        return self.patch_ids.get(sha)
+
+    def is_ancestor(self, sha: str, ref: str) -> bool:
+        self._record("is_ancestor", (sha, ref))
+        return self.is_ancestor_results.get((sha, ref), False)
+
+    def file_exists(self, ref: str, path: str) -> bool:
+        self._record("file_exists", (ref, path))
+        return self.file_exists_results.get((ref, path), True)
+
+    def add_worktree(self, branch: str, path: Path) -> None:
+        self._record("add_worktree", (branch, path))
+
+    def cherry_pick(self, sha: str) -> CherryPickResult:
+        self._record("cherry_pick", (sha,))
+        return self.cherry_pick_result
+
+    def unmerged_files(self) -> list[str]:
+        self._record("unmerged_files", ())
+        return list(self.unmerged_files_result)
+
+    def format_patch(self, base: str, head: str, out_dir: Path, prefix: str) -> Path:
+        self._record("format_patch", (base, head, out_dir, prefix))
+        return self.format_patch_result or (out_dir / prefix)
+
+
+class FakeClassify:
+    def __init__(self) -> None:
+        self.calls: list[str] = []
+        self.results: dict[str, Classification] = {}
+
+    def __call__(
+        self, message, changed_files, symbols, patch_text, *, sha=None, agent_judgments=None
+    ):
+        self.calls.append(sha)
+        return self.results.get(
+            sha,
+            Classification(is_bug_fix=False, recognition_source="fake", needs_agent=False),
+        )
+
+
+class FakeConclude:
+    def __init__(self) -> None:
+        self.calls: list[tuple[CommitAnalysis, object]] = []
+        self.results: dict[tuple[str, str], Conclusion4] = {}
+
+    def __call__(self, analysis, snapshot, *, similarity_high=0.90, similarity_low=0.50):
+        self.calls.append((analysis, snapshot))
+        return self.results.get(
+            (analysis.sha, snapshot.branch_name),
+            Conclusion4(kind="AlreadyIncluded", evidence=[], confidence="high"),
+        )
+
+
+class FakeSyncDecisionAgent:
+    def __init__(self) -> None:
+        self.calls: list[list[CommitInfo]] = []
+        self.results: dict[str, SyncDecision] = {}
+
+    def run(self, pending: list[CommitInfo]) -> dict[str, SyncDecision]:
+        self.calls.append(list(pending))
+        out: dict[str, SyncDecision] = {}
+        for commit in pending:
+            out[commit.sha] = self.results.get(
+                commit.sha,
+                SyncDecision(
+                    sha=commit.sha,
+                    is_bug_fix=True,
+                    reason=None,
+                    recognition_source="agent:bug-fix",
+                    needs_agent=False,
+                ),
+            )
+        return out
+
+
+class FakeRunner:
+    def __init__(self, success: bool = True) -> None:
+        self.success = success
+        self.build_calls: list[dict] = []
+
+    def build_commit(self, worktree, model, *, clean, module=None, log_path=None):
+        self.build_calls.append(
+            {
+                "worktree": worktree,
+                "model": model,
+                "clean": clean,
+                "module": module,
+                "log_path": log_path,
+            }
+        )
+        return BuildResult(
+            model=model,
+            returncode=0 if self.success else 1,
+            log_path=log_path or Path("build.log"),
+            succeeded=self.success,
+            errors=[] if self.success else ["compile error"],
+        )
+
+    def is_success(self, result: BuildResult) -> bool:
+        return result.succeeded
+
+
+class FakeSafety:
+    def __init__(self, models: tuple[str, ...] = ("RTL9617C",)) -> None:
+        self.models = list(models)
+
+    def required_models(self) -> list[str]:
+        return list(self.models)
+
+    def check_editable(self, paths: list[str]) -> None:
+        pass
+
+    def check_sync_branch(self, branch: str) -> bool:
+        return True
+
+
+class FakeConflictAgent:
+    def __init__(self, resolution: ConflictResolution | None = None) -> None:
+        self.resolution = resolution
+        self.calls: list[tuple] = []
+
+    def resolve(self, commit, conflict_files):
+        self.calls.append((commit, list(conflict_files)))
+        return self.resolution
+
+
+class FakeBuildAgent:
+    def __init__(self, category: str = "introduced_by_commit") -> None:
+        self.calls: list[tuple] = []
+        from bsa.agents.base import BuildAttribution
+
+        self.attribution = BuildAttribution(
+            category=category, reason="fixed", files_to_fix=[]
+        )
+
+    def fix(self, commit, errors, model):
+        self.calls.append((commit, errors, model))
+        return self.attribution
+
+
+def make_ctx(
+    tmp_path: Path, *, settings_overrides: dict | None = None, **kw: object
+) -> GraphContext:
+    settings = make_settings(tmp_path, **(settings_overrides or {}))
+    ctx = GraphContext(
+        settings=settings,
+        executor=SimpleNamespace(),
+        git=FakeGit(),
+        runner=FakeRunner(),
+        sync_decision_agent=FakeSyncDecisionAgent(),
+        conflict_agent=FakeConflictAgent(),
+        build_agent=FakeBuildAgent(),
+        safety=FakeSafety(),
+        decision_rules=DecisionRules(classify={}, conclude=ConcludeThresholds(), branch_mapping={}),
+        classify=FakeClassify(),
+        conclude=FakeConclude(),
+    )
+    for key, value in kw.items():
+        setattr(ctx, key, value)
+    return ctx
+
+
+def base_state(**overrides: object) -> dict:
+    state = {
+        "cycle_id": "cycle-20260101",
+        "scan_window": ("2026-01-01T22:00:00+08:00", "2026-01-02T22:00:00+08:00"),
+        "branch_md_version": "v1",
+        "detected_commits": [],
+        "classifications": {},
+        "decisions": {},
+        "batches": {},
+        "current_target": None,
+        "current_commit": None,
+        "branch_results": {},
+        "status": "NEW",
+        "errors": {},
+        "report": None,
+    }
+    state.update(overrides)
+    return state
+
+
+def commit(sha: str, **overrides: object) -> CommitInfo:
+    base = CommitInfo(
+        sha=sha,
+        message=f"msg-{sha}",
+        author="dev",
+        committed_at="2026-01-02T10:00:00+08:00",
+        changed_files=["plat/demo.c"],
+        patch_text="+x",
+        symbols=[],
+        patch_id=f"pid-{sha}",
+        issue_ids=[],
+        source_branch=DEVELOP,
+        homologous_section="组网",
+    )
+    return base.model_copy(update=overrides)
+
+
+def branch_result(target: str, *, commits: list[CommitResult] | None = None) -> BranchResult:
+    return BranchResult(
+        target_branch=target,
+        worktree_path="/wt",
+        status="PARTIAL",
+        commits=commits or [],
+        patch_path=None,
+        stop_reason=None,
+    )
+
+
+def commit_result(sha: str, cherry_pick_status: str = "OK") -> CommitResult:
+    return CommitResult(
+        sha=sha,
+        cherry_pick=cherry_pick_status,
+        conflict_resolution=None,
+        build={},
+    )
+
+
+def failed_outcome() -> BuildOutcome:
+    return BuildOutcome(
+        model="RTL9617C",
+        status="FAILED",
+        log_path="/l",
+        errors=["compile error"],
+        agent_attempts=0,
+        fix_diff=None,
+    )
+
+
+# --- node_wrapper ---
+
+
+def test_node_wrapper_catches_exception_into_errors():
+    def boom(state):
+        raise RuntimeError("kaboom")
+
+    update = node_wrapper(boom)({"cycle_id": "c", "errors": {}})
+    assert update["status"] == "FAILED"
+    assert update["errors"]["boom"].node == "boom"
+    assert update["errors"]["boom"].error == "kaboom"
+
+
+def test_node_wrapper_preserves_successful_update():
+    def ok(state):
+        return {"status": "OK"}
+
+    assert node_wrapper(ok)({"cycle_id": "c"}) == {"status": "OK"}
+
+
+def test_node_wrapper_merges_existing_errors():
+    def boom(state):
+        raise ValueError("x")
+
+    existing = ErrorRecord(node="detect_commits", error="old", ts="t")
+    update = node_wrapper(boom)({"errors": {"detect_commits": existing}})
+    assert update["errors"]["detect_commits"] is existing
+    assert update["errors"]["boom"].error == "x"
+
+
+def test_node_wrapper_binds_context_and_records_node_name():
+    def node(state, *, ctx):
+        raise RuntimeError("nope")
+
+    wrapped = node_wrapper(node, ctx=SimpleNamespace())
+    update = wrapped({})
+    assert update["errors"]["node"].error == "nope"
+    assert update["status"] == "FAILED"
+
+
+def test_node_wrapper_ctx_success():
+    def node(state, *, ctx):
+        return {"marker": ctx.marker}
+
+    wrapped = node_wrapper(node, ctx=SimpleNamespace(marker="yes"))
+    assert wrapped({})["marker"] == "yes"
+
+
+# --- default window (决策 38) ---
+
+
+def test_default_window_previous_complete_day_before_2200():
+    now = datetime(2026, 8, 21, 12, 0, tzinfo=CST)
+    since, until = default_window(now)
+    assert since == "2026-08-19T22:00:00+08:00"
+    assert until == "2026-08-20T22:00:00+08:00"
+
+
+def test_default_window_after_2200_uses_today():
+    now = datetime(2026, 8, 21, 23, 0, tzinfo=CST)
+    since, until = default_window(now)
+    assert since == "2026-08-20T22:00:00+08:00"
+    assert until == "2026-08-21T22:00:00+08:00"
+
+
+# --- detect_commits ---
+
+
+def test_detect_commits_computes_default_window_when_scan_since_none(tmp_path, monkeypatch):
+    write_branch_md(tmp_path)
+    ctx = make_ctx(tmp_path)
+    monkeypatch.setattr("bsa.graph.nodes.default_window", lambda: ("SINCE", "UNTIL"))
+    update = detect_commits(base_state(), ctx)
+    assert update["scan_window"] == ("SINCE", "UNTIL")
+    assert update["status"] == "DETECTED"
+
+
+def test_detect_commits_uses_settings_window_when_provided(tmp_path, monkeypatch):
+    write_branch_md(tmp_path)
+    ctx = make_ctx(
+        tmp_path,
+        settings_overrides={
+            "scan_since": "2026-01-01T22:00:00+08:00",
+            "scan_until": "2026-01-02T22:00:00+08:00",
+        },
+    )
+    monkeypatch.setattr("bsa.graph.nodes.default_window", lambda: ("SINCE", "UNTIL"))
+    update = detect_commits(base_state(), ctx)
+    assert update["scan_window"] == ("2026-01-01T22:00:00+08:00", "2026-01-02T22:00:00+08:00")
+
+
+def test_detect_commits_populates_commits_and_classifications(tmp_path):
+    write_branch_md(tmp_path)
+    ctx = make_ctx(tmp_path)
+    git = ctx.git
+    git.window_shas = {f"origin/{DEVELOP}": ["a1", "a2"]}
+    git.changed = {"a1": ["plat/demo.c"], "a2": ["plat/other.c"]}
+    git.patches = {"a1": "+p1", "a2": "+p2"}
+    git.patch_ids = {"a1": "pid1", "a2": "pid2"}
+    ctx.classify.results = {
+        "a1": Classification(
+            is_bug_fix=True,
+            recognition_source="machine:[BUG]",
+            issue_ids=["CQ1"],
+            needs_agent=False,
+        ),
+        "a2": Classification(
+            is_bug_fix=False,
+            recognition_source="pending:claude-agent",
+            needs_agent=True,
+        ),
+    }
+
+    update = detect_commits(base_state(), ctx)
+
+    assert git.calls[0][0] == "fetch_all"
+    assert [c.sha for c in update["detected_commits"]] == ["a1", "a2"]
+    first = update["detected_commits"][0]
+    assert first.source_branch == DEVELOP
+    assert first.homologous_section == "组网"
+    assert first.issue_ids == ["CQ1"]
+    assert first.patch_id == "pid1"
+    assert update["classifications"]["a1"].is_bug_fix is True
+    assert update["classifications"]["a1"].needs_agent is False
+    assert update["classifications"]["a2"].needs_agent is True
+    assert update["branch_md_version"]
+    assert ctx.matrix is not None
+
+
+# --- sync_decision ---
+
+
+def test_sync_decision_resolves_pending_and_builds_batches(tmp_path):
+    write_branch_md(tmp_path)
+    ctx = make_ctx(tmp_path)
+    c1 = commit("a1", issue_ids=["CQ1"])
+    c2 = commit("a2")
+    state = base_state(
+        detected_commits=[c1, c2],
+        classifications={
+            "a1": SyncDecision(
+                sha="a1",
+                is_bug_fix=True,
+                reason=None,
+                recognition_source="machine:[BUG]",
+                needs_agent=False,
+            ),
+            "a2": SyncDecision(
+                sha="a2",
+                is_bug_fix=False,
+                reason=None,
+                recognition_source="pending:claude-agent",
+                needs_agent=True,
+            ),
+        },
+    )
+    ctx.sync_decision_agent.results = {
+        "a2": SyncDecision(
+            sha="a2",
+            is_bug_fix=True,
+            reason=None,
+            recognition_source="agent:bug-fix",
+            needs_agent=False,
+        )
+    }
+    ctx.conclude.results = {
+        ("a1", TARGET): Conclusion4(kind="NeedSync", evidence=["x"], confidence="high"),
+        ("a2", TARGET): Conclusion4(kind="AlreadyIncluded", evidence=["y"], confidence="high"),
+    }
+
+    update = sync_decision(state, ctx)
+
+    assert [c.sha for c in ctx.sync_decision_agent.calls[0]] == ["a2"]
+    assert update["classifications"]["a2"].is_bug_fix is True
+    assert update["classifications"]["a2"].needs_agent is False
+    assert update["decisions"]["a1"][TARGET].kind == "NeedSync"
+    assert update["decisions"]["a2"][TARGET].kind == "AlreadyIncluded"
+    assert update["batches"] == {TARGET: ["a1"]}
+    assert update["status"] == "DECIDED"
+
+
+def test_sync_decision_no_pending_skips_agent(tmp_path):
+    write_branch_md(tmp_path)
+    ctx = make_ctx(tmp_path)
+    c1 = commit("a1")
+    state = base_state(
+        detected_commits=[c1],
+        classifications={
+            "a1": SyncDecision(
+                sha="a1",
+                is_bug_fix=True,
+                reason=None,
+                recognition_source="machine:[BUG]",
+                needs_agent=False,
+            )
+        },
+    )
+    ctx.conclude.results = {
+        ("a1", TARGET): Conclusion4(kind="ManualReview", evidence=["z"], confidence="low")
+    }
+    update = sync_decision(state, ctx)
+    assert ctx.sync_decision_agent.calls == []
+    assert update["decisions"]["a1"][TARGET].kind == "ManualReview"
+    assert update["batches"] == {}
+
+
+# --- prepare_worktree ---
+
+
+def test_prepare_worktree_adds_worktree_and_records_path(tmp_path):
+    ctx = make_ctx(tmp_path)
+    git = ctx.git
+    git.tips = {TARGET: ("origin/" + TARGET, "tip1")}
+    state = base_state(current_target=TARGET)
+
+    update = prepare_worktree(state, ctx)
+
+    assert ("branch_tip", (TARGET,)) in git.calls
+    worktree_path = Path(ctx.settings.worktree_root) / f"{TARGET}-cycle-20260101"
+    assert ("add_worktree", ("origin/" + TARGET, worktree_path)) in git.calls
+    assert update["branch_results"][TARGET].worktree_path == str(worktree_path)
+    assert update["branch_results"][TARGET].status == "PARTIAL"
+    assert ctx.worktree_path == worktree_path
+    assert ctx.worktree_git is not None
+    assert ctx.worktree_git.repo_path == worktree_path
+    assert update["status"] == "PREPARED"
+
+
+# --- cherry_pick ---
+
+
+def test_cherry_pick_ok_records_commit_result(tmp_path):
+    ctx = make_ctx(tmp_path)
+    wg = FakeGit()
+    wg.cherry_pick_result = CherryPickResult(status="OK")
+    ctx.worktree_git = wg
+    state = base_state(
+        current_target=TARGET,
+        current_commit="a1",
+        branch_results={TARGET: branch_result(TARGET)},
+    )
+
+    update = cherry_pick(state, ctx)
+
+    assert ("cherry_pick", ("a1",)) in wg.calls
+    assert update["branch_results"][TARGET].commits[0].cherry_pick == "OK"
+    assert update["status"] == "CHERRY_PICK_OK"
+
+
+def test_cherry_pick_conflict_records_conflict_files(tmp_path):
+    ctx = make_ctx(tmp_path)
+    wg = FakeGit()
+    wg.cherry_pick_result = CherryPickResult(status="CONFLICT", conflict_files=["plat/demo.c"])
+    ctx.worktree_git = wg
+    state = base_state(
+        current_target=TARGET,
+        current_commit="a1",
+        branch_results={TARGET: branch_result(TARGET)},
+    )
+
+    update = cherry_pick(state, ctx)
+
+    assert update["branch_results"][TARGET].commits[0].cherry_pick == "CONFLICT"
+    assert update["status"] == "CHERRY_PICK_CONFLICT"
+
+
+# --- resolve_conflict ---
+
+
+def test_resolve_conflict_resolution_recorded(tmp_path):
+    ctx = make_ctx(tmp_path)
+    wg = FakeGit()
+    wg.unmerged_files_result = ["plat/demo.c"]
+    ctx.worktree_git = wg
+    resolution = ConflictResolution(files=["plat/demo.c"], diff="+fixed", agent_reason="merged")
+    ctx.conflict_agent.resolution = resolution
+    state = base_state(
+        current_target=TARGET,
+        current_commit="a1",
+        detected_commits=[commit("a1")],
+        branch_results={
+            TARGET: branch_result(
+                TARGET,
+                commits=[commit_result("a1", cherry_pick_status="CONFLICT")],
+            )
+        },
+    )
+
+    update = resolve_conflict(state, ctx)
+
+    assert ctx.conflict_agent.calls == [(commit("a1"), ["plat/demo.c"])]
+    assert update["branch_results"][TARGET].commits[0].conflict_resolution == resolution
+    assert update["status"] == "RESOLVED"
+
+
+def test_resolve_conflict_fail_fast(tmp_path):
+    ctx = make_ctx(tmp_path)
+    wg = FakeGit()
+    wg.unmerged_files_result = ["plat/demo.c"]
+    ctx.worktree_git = wg
+    ctx.conflict_agent.resolution = None
+    state = base_state(
+        current_target=TARGET,
+        current_commit="a1",
+        detected_commits=[commit("a1")],
+        branch_results={
+            TARGET: branch_result(
+                TARGET,
+                commits=[commit_result("a1", cherry_pick_status="CONFLICT")],
+            )
+        },
+    )
+
+    update = resolve_conflict(state, ctx)
+
+    assert update["status"] == "RESOLUTION_FAILED"
+    assert update["branch_results"][TARGET].commits[0].conflict_resolution is None
+
+
+# --- build ---
+
+
+def test_build_success_records_outcome_and_clean_first_in_batch(tmp_path):
+    ctx = make_ctx(tmp_path)
+    ctx.runner = FakeRunner(success=True)
+    ctx.worktree_path = Path("/wt")
+    state = base_state(
+        current_target=TARGET,
+        current_commit="a1",
+        detected_commits=[commit("a1")],
+        batches={TARGET: ["a1", "a2"]},
+        branch_results={
+            TARGET: branch_result(
+                TARGET,
+                commits=[commit_result("a1")],
+            )
+        },
+    )
+
+    update = build(state, ctx)
+
+    call = ctx.runner.build_calls[0]
+    assert call["clean"] is True
+    assert call["worktree"] == Path("/wt")
+    assert call["model"] == "RTL9617C"
+    outcome = update["branch_results"][TARGET].commits[0].build["RTL9617C"]
+    assert outcome.status == "OK"
+    assert update["status"] == "BUILD_OK"
+
+
+def test_build_incremental_when_not_first_in_batch(tmp_path):
+    ctx = make_ctx(tmp_path)
+    ctx.runner = FakeRunner(success=True)
+    ctx.worktree_path = Path("/wt")
+    ctx.is_public_file = lambda path: False
+    state = base_state(
+        current_target=TARGET,
+        current_commit="a2",
+        detected_commits=[commit("a2")],
+        batches={TARGET: ["a1", "a2"]},
+        branch_results={
+            TARGET: branch_result(
+                TARGET,
+                commits=[commit_result("a2")],
+            )
+        },
+    )
+
+    build(state, ctx)
+
+    assert ctx.runner.build_calls[0]["clean"] is False
+
+
+def test_build_clean_for_public_file(tmp_path):
+    ctx = make_ctx(tmp_path)
+    ctx.runner = FakeRunner(success=True)
+    ctx.worktree_path = Path("/wt")
+    ctx.is_public_file = lambda path: path == "plat/public.c"
+    state = base_state(
+        current_target=TARGET,
+        current_commit="a2",
+        detected_commits=[commit("a2", changed_files=["plat/public.c"])],
+        batches={TARGET: ["a1", "a2"]},
+        branch_results={
+            TARGET: branch_result(
+                TARGET,
+                commits=[commit_result("a2")],
+            )
+        },
+    )
+
+    build(state, ctx)
+
+    assert ctx.runner.build_calls[0]["clean"] is True
+
+
+def test_build_failed_status(tmp_path):
+    ctx = make_ctx(tmp_path)
+    ctx.runner = FakeRunner(success=False)
+    ctx.worktree_path = Path("/wt")
+    state = base_state(
+        current_target=TARGET,
+        current_commit="a1",
+        detected_commits=[commit("a1")],
+        batches={TARGET: ["a1"]},
+        branch_results={
+            TARGET: branch_result(
+                TARGET,
+                commits=[commit_result("a1")],
+            )
+        },
+    )
+
+    update = build(state, ctx)
+
+    outcome = update["branch_results"][TARGET].commits[0].build["RTL9617C"]
+    assert outcome.status == "FAILED"
+    assert outcome.errors == ["compile error"]
+    assert update["status"] == "BUILD_FAILED"
+
+
+# --- fix_build ---
+
+
+def test_fix_build_calls_agent_and_rebuilds(tmp_path):
+    ctx = make_ctx(tmp_path)
+    ctx.runner = FakeRunner(success=False)
+    ctx.worktree_path = Path("/wt")
+    state = base_state(
+        current_target=TARGET,
+        current_commit="a1",
+        detected_commits=[commit("a1")],
+        branch_results={
+            TARGET: branch_result(
+                TARGET,
+                commits=[
+                    CommitResult(
+                        sha="a1",
+                        cherry_pick="OK",
+                        conflict_resolution=None,
+                        build={"RTL9617C": failed_outcome()},
+                    )
+                ],
+            )
+        },
+    )
+
+    ctx.runner.success = True
+    update = fix_build(state, ctx)
+
+    assert ctx.build_agent.calls[0][0] == commit("a1")
+    assert ctx.build_agent.calls[0][1] == ["compile error"]
+    outcome = update["branch_results"][TARGET].commits[0].build["RTL9617C"]
+    assert outcome.status == "OK"
+    assert outcome.agent_attempts == 1
+    assert update["status"] == "BUILD_OK"
+
+
+def test_fix_build_still_failed_after_attempts(tmp_path):
+    ctx = make_ctx(tmp_path)
+    ctx.runner = FakeRunner(success=False)
+    ctx.worktree_path = Path("/wt")
+    state = base_state(
+        current_target=TARGET,
+        current_commit="a1",
+        detected_commits=[commit("a1")],
+        branch_results={
+            TARGET: branch_result(
+                TARGET,
+                commits=[
+                    CommitResult(
+                        sha="a1",
+                        cherry_pick="OK",
+                        conflict_resolution=None,
+                        build={"RTL9617C": failed_outcome()},
+                    )
+                ],
+            )
+        },
+    )
+
+    update = fix_build(state, ctx)
+
+    outcome = update["branch_results"][TARGET].commits[0].build["RTL9617C"]
+    assert outcome.status == "FAILED"
+    assert outcome.agent_attempts == 1
+    assert update["status"] == "BUILD_FAILED"
+
+
+# --- generate_patch ---
+
+
+def test_generate_patch_writes_patch_path(tmp_path):
+    ctx = make_ctx(tmp_path)
+    wg = FakeGit()
+    wg.tips = {TARGET: ("origin/" + TARGET, "base-tip")}
+    ctx.worktree_git = wg
+    state = base_state(
+        current_target=TARGET,
+        branch_results={
+            TARGET: branch_result(
+                TARGET,
+                commits=[commit_result("a1")],
+            )
+        },
+    )
+
+    update = generate_patch(state, ctx)
+
+    expected = (
+        "format_patch",
+        (
+            "base-tip",
+            "HEAD",
+            Path(ctx.settings.log_dir) / "patch",
+            f"cycle-20260101_{TARGET}.patch",
+        ),
+    )
+    assert expected in wg.calls
+    assert update["branch_results"][TARGET].patch_path is not None
+    assert update["status"] == "PATCHED"
+
+
+# --- report ---
+
+
+def test_report_assembles_basic_report(tmp_path):
+    ctx = make_ctx(tmp_path)
+    state = base_state(
+        status="DECIDED",
+        detected_commits=[commit("a1")],
+        branch_results={TARGET: branch_result(TARGET)},
+        decisions={
+            "a1": {TARGET: Conclusion4(kind="ManualReview", evidence=["z"], confidence="low")}
+        },
+    )
+
+    update = report(state, ctx)
+
+    rep = update["report"]
+    assert rep.cycle_id == "cycle-20260101"
+    assert rep.html_path == Path(ctx.settings.log_dir) / "cycle-20260101" / "report.html"
+    decisions_path = Path(ctx.settings.log_dir) / "cycle-20260101" / "decisions.json"
+    assert rep.decisions_json_path == decisions_path
+    assert rep.summary["commits_detected"] == 1
+    assert len(rep.action_required) == 1
+    assert rep.action_required[0]["sha"] == "a1"
+    assert update["status"] == "REPORTED"
+
+
+def test_report_includes_errors_in_action_required(tmp_path):
+    ctx = make_ctx(tmp_path)
+    state = base_state(
+        errors={"detect_commits": ErrorRecord(node="detect_commits", error="boom", ts="t")}
+    )
+    update = report(state, ctx)
+    assert update["report"].action_required[0]["node"] == "detect_commits"
