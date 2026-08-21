@@ -8,6 +8,7 @@ from functools import partial
 from pathlib import Path
 from typing import Any
 
+from bsa.agents.base import LLMClient
 from bsa.agents.build_agent import BuildAgent
 from bsa.agents.conflict import ConflictAgent
 from bsa.agents.sync_decision import SyncDecisionAgent
@@ -63,6 +64,7 @@ class GraphContext:
     build_agent: BuildAgent
     safety: SafetyEnforcer
     decision_rules: DecisionRules
+    llm: LLMClient | None = None
     classify: Callable = classify_commit
     conclude: Callable = conclude_pair
     build_snapshot: Callable = build_target_snapshot
@@ -359,6 +361,9 @@ def _current_build(state: dict, ctx: GraphContext) -> tuple[str, BuildOutcome] |
     build = branch.commits[index].build
     if not build:
         return None
+    for model in ctx.safety.required_models():
+        if model in build and build[model].status == "FAILED":
+            return model, build[model]
     model = next(iter(build))
     return model, build[model]
 
@@ -372,7 +377,8 @@ def prepare_worktree(state: dict, ctx: GraphContext) -> dict:
     worktree_path = Path(ctx.settings.worktree_root) / f"{target}-{state['cycle_id']}"
     ctx.git.add_worktree(resolved, worktree_path)
     ctx.worktree_path = worktree_path
-    ctx.worktree_git = GitService(executor=ctx.executor, repo_path=worktree_path)
+    if ctx.worktree_git is None:
+        ctx.worktree_git = GitService(executor=ctx.executor, repo_path=worktree_path)
 
     results = dict(state.get("branch_results") or {})
     results[target] = BranchResult(
@@ -434,11 +440,26 @@ def resolve_conflict(state: dict, ctx: GraphContext) -> dict:
     }
 
 
-def _required_model(ctx: GraphContext) -> str:
+def _next_model(state: dict, ctx: GraphContext) -> str | None:
+    """Next required model not yet built for current_commit (决策 14 serial)."""
     models = ctx.safety.required_models()
     if not models:
         raise ValueError("safety_rules defines no required_models")
-    return models[0]
+    built: set[str] = set()
+    target = state.get("current_target")
+    sha = state.get("current_commit")
+    if target is not None and sha is not None:
+        _, branch = _branch_results(state, ctx, target)
+        try:
+            index = _commit_result_index(branch, sha)
+        except KeyError:
+            index = -1
+        if index >= 0:
+            built = set(branch.commits[index].build)
+    for model in models:
+        if model not in built:
+            return model
+    return None
 
 
 def _log_path(ctx: GraphContext, target: str, sha: str) -> Path:
@@ -450,7 +471,9 @@ def build(state: dict, ctx: GraphContext) -> dict:
     target = state["current_target"]
     sha = state["current_commit"]
     commit = _find_commit(state, sha)
-    model = _required_model(ctx)
+    model = _next_model(state, ctx)
+    if model is None:
+        return {"status": "BUILD_OK"}
     batch = (state.get("batches") or {}).get(target, [])
     clean = batch[:1] == [sha] or bool(
         ctx.is_public_file is not None and any(ctx.is_public_file(f) for f in commit.changed_files)
@@ -499,6 +522,26 @@ def fix_build(state: dict, ctx: GraphContext) -> dict:
     return {"branch_results": results, "status": "BUILD_OK" if ok else "BUILD_FAILED"}
 
 
+def _commit_ok(commit: CommitResult) -> bool:
+    """A commit counts as synced when cherry-picked (or empty) and fully built."""
+    if commit.cherry_pick not in ("OK", "EMPTY"):
+        return False
+    if commit.cherry_pick == "EMPTY":
+        return True
+    return bool(commit.build) and all(o.status == "OK" for o in commit.build.values())
+
+
+def _final_branch_status(commits: list[CommitResult]) -> str:
+    if not commits:
+        return "FAILED"
+    oks = [_commit_ok(commit) for commit in commits]
+    if all(oks):
+        return "SUCCESS"
+    if not any(oks):
+        return "FAILED"
+    return "PARTIAL"
+
+
 def generate_patch(state: dict, ctx: GraphContext) -> dict:
     """Export the current branch's sync patch (决策 27): origin tip..HEAD."""
     target = state["current_target"]
@@ -508,7 +551,12 @@ def generate_patch(state: dict, ctx: GraphContext) -> dict:
     prefix = f"{state['cycle_id']}_{target}.patch"
     patch_path = wg.format_patch(base_tip, "HEAD", out_dir, prefix)
     results, branch = _branch_results(state, ctx, target)
-    results[target] = branch.model_copy(update={"patch_path": str(patch_path)})
+    results[target] = branch.model_copy(
+        update={
+            "patch_path": str(patch_path),
+            "status": _final_branch_status(branch.commits),
+        }
+    )
     return {"branch_results": results, "status": "PATCHED"}
 
 
