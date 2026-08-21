@@ -14,7 +14,12 @@ from bsa.graph.nodes import (
     sync_decision,
 )
 from bsa.graph.state import TaskState
-from bsa.graph.workflow import build_workflow, make_checkpointer, thread_config
+from bsa.graph.workflow import (
+    build_workflow,
+    make_checkpointer,
+    open_checkpointer,
+    thread_config,
+)
 
 __all__ = [
     "GraphContext",
@@ -29,6 +34,7 @@ __all__ = [
     "generate_patch",
     "make_checkpointer",
     "node_wrapper",
+    "open_checkpointer",
     "prepare_worktree",
     "report",
     "resolve_conflict",

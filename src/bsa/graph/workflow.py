@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 import sqlite3
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 
 from langgraph.checkpoint.serde.jsonplus import JsonPlusSerializer
 from langgraph.checkpoint.sqlite import SqliteSaver
@@ -42,11 +43,31 @@ def _state_model_types() -> tuple[type[BaseModel], ...]:
     return tuple(types)
 
 
+def _new_saver(conn: sqlite3.Connection) -> SqliteSaver:
+    """SqliteSaver whose serde allowlists bsa domain types (future-proof)."""
+    serde = JsonPlusSerializer(allowed_msgpack_modules=_state_model_types())
+    return SqliteSaver(conn, serde=serde)
+
+
 def make_checkpointer(conn_string: str = ":memory:") -> SqliteSaver:
     """SqliteSaver whose serde allowlists bsa domain types (future-proof)."""
     conn = sqlite3.connect(conn_string, check_same_thread=False)
-    serde = JsonPlusSerializer(allowed_msgpack_modules=_state_model_types())
-    return SqliteSaver(conn, serde=serde)
+    return _new_saver(conn)
+
+
+@contextmanager
+def open_checkpointer(conn_string: str) -> Iterator[SqliteSaver]:
+    """Context-managed persistent checkpointer; closes the connection on exit.
+
+    Production lifecycle (3.2b concern): the scheduler wraps an entire cycle
+    in ``with open_checkpointer(db_path) as cp:`` so the sqlite connection is
+    owned and released exactly once.
+    """
+    conn = sqlite3.connect(conn_string, check_same_thread=False)
+    try:
+        yield _new_saver(conn)
+    finally:
+        conn.close()
 
 
 _DEFAULT_CHECKPOINTER: SqliteSaver | None = None
