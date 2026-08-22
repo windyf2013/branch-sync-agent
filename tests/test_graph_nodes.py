@@ -964,6 +964,10 @@ def test_prepare_worktree_reuses_existing_worktree(tmp_path):
     git.tips = {TARGET: ("origin/" + TARGET, "tip1")}
     worktree_path = Path(ctx.settings.worktree_root) / f"{TARGET}-cycle-20260101"
     worktree_path.mkdir(parents=True)
+    # 有效 worktree 需 .git 文件指向存在的 gitdir（否则 prepare 判残缺重建）
+    gitdir = worktree_path / ".gitdir"
+    gitdir.mkdir()
+    (worktree_path / ".git").write_text(f"gitdir: {gitdir}\n", encoding="utf-8")
     state = base_state(current_target=TARGET)
 
     update = prepare_worktree(state, ctx)
@@ -971,6 +975,26 @@ def test_prepare_worktree_reuses_existing_worktree(tmp_path):
     assert not any(name == "add_worktree" for name, args in git.calls)
     assert update["branch_results"][TARGET].worktree_path == str(worktree_path)
     assert ctx.worktree_path == worktree_path
+
+
+def test_prepare_worktree_rebuilds_invalid_existing_worktree(tmp_path):
+    # 残缺 worktree（.git 指向不存在的 gitdir）→ 删除重建（真机测试:
+    # 残留目录复用后 cherry_pick 报 "not a git repository"）
+    ctx = make_ctx(tmp_path)
+    git = ctx.git
+    git.tips = {TARGET: ("origin/" + TARGET, "tip1")}
+    worktree_path = Path(ctx.settings.worktree_root) / f"{TARGET}-cycle-20260101"
+    worktree_path.mkdir(parents=True)
+    (worktree_path / ".git").write_text(
+        "gitdir: /nonexistent/gitdir\n", encoding="utf-8"
+    )
+    state = base_state(current_target=TARGET)
+
+    update = prepare_worktree(state, ctx)
+
+    assert any(name == "add_worktree" for name, args in git.calls)
+    assert not worktree_path.exists()
+    assert update["branch_results"][TARGET].worktree_path == str(worktree_path)
     assert update["status"] == "PREPARED"
 
 

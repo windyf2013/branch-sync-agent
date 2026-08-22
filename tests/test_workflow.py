@@ -195,6 +195,10 @@ def test_cycle_rerun_prepare_reuses_existing_worktree(tmp_path):
     ctx = batch_ctx(tmp_path, shas=["a1"])
     wt = worktree_path_for(ctx, TARGET)
     wt.mkdir(parents=True)
+    # 有效 worktree：.git 指向存在的 gitdir
+    gitdir = wt / ".gitdir"
+    gitdir.mkdir()
+    (wt / ".git").write_text(f"gitdir: {gitdir}\n", encoding="utf-8")
 
     out = run(build_workflow(ctx), base_state())
 

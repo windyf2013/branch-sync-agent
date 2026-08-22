@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import shutil
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta, timezone
@@ -442,6 +443,26 @@ def _current_build(state: dict, ctx: GraphContext) -> tuple[str, BuildOutcome] |
     return model, build[model]
 
 
+def _is_valid_worktree(path: Path) -> bool:
+    """True when path is a usable git worktree.
+
+    A valid worktree has a ``.git`` file pointing to an existing gitdir
+    (``.git/worktrees/<name>`` or ``.git`` dir). A leftover dir from a removed
+    worktree has a dangling gitdir → invalid (真机测试: cherry_pick 报
+    "not a git repository").
+    """
+    dot_git = path / ".git"
+    if not dot_git.exists():
+        return False
+    if dot_git.is_dir():
+        return True
+    text = dot_git.read_text(encoding="utf-8", errors="replace").strip()
+    if not text.startswith("gitdir:"):
+        return False
+    gitdir = text[len("gitdir:") :].strip()
+    return Path(gitdir).is_dir()
+
+
 def prepare_worktree(state: dict, ctx: GraphContext) -> dict:
     """Add a worktree for current_target from its remote tip (决策 24).
 
@@ -454,7 +475,14 @@ def prepare_worktree(state: dict, ctx: GraphContext) -> dict:
         raise ValueError("current_target is not set")
     resolved, _ = ctx.git.branch_tip(target)
     worktree_path = Path(ctx.settings.worktree_root) / f"{target}-{state['cycle_id']}"
-    if not worktree_path.exists():
+    if worktree_path.exists():
+        # 路径存在但可能是残缺 worktree（.git 指向的 gitdir 已删/无效）——
+        # 真机测试: git worktree remove 后残留目录, prepare 复用后
+        # cherry_pick 报 "not a git repository"。有效校验后重建。
+        if not _is_valid_worktree(worktree_path):
+            shutil.rmtree(worktree_path, ignore_errors=True)
+            ctx.git.add_worktree(resolved, worktree_path)
+    else:
         ctx.git.add_worktree(resolved, worktree_path)
     ctx.worktree_path = worktree_path
     if str(worktree_path) not in ctx.worktree_gits:
