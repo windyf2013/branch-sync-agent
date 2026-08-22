@@ -615,7 +615,7 @@ def test_classify_severity_no_rule_unknown():
 def _enforcer(**overrides: object) -> SafetyEnforcer:
     base = {
         "forbidden_paths": ["config/", "secrets.yaml"],
-        "required_models": ["2600"],
+        "required_models": ["2600_CMCC"],
         "forbidden_branches": ["br_qa", "br_production"],
         "max_single_edit_lines": 200,
     }
@@ -657,7 +657,7 @@ def test_safety_enforcer_check_sync_branch():
 
 def test_safety_enforcer_models_and_lines():
     enforcer = _enforcer()
-    assert enforcer.required_models() == ["2600"]
+    assert enforcer.required_models() == ["2600_CMCC"]
     assert enforcer.max_single_edit_lines() == 200
 
 

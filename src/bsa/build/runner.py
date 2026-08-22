@@ -11,6 +11,24 @@ from bsa.executor.base import CommandExecutor, CompletedProcess
 _BUILD_EXEC_TIMEOUT_SEC = 3600
 
 
+def _resolve_build_script(model: str) -> tuple[str, str]:
+    """Resolve a required-model id to (build script, product arg).
+
+    Model format ``2600`` (no customer) or ``2600_CMCC`` (customer suffix).
+    Customer selects the operator script (RTL9617C_build_cmcc.sh etc.) which
+    exports CUSTOMER; without customer the generic script is used. 真机测试:
+    config 文件是 2600_CMCC.config 等, 必须指定 customer 才能生成配置.
+    """
+    parts = model.split("_", 1)
+    product = parts[0]
+    if len(parts) > 1 and parts[1].strip():
+        customer = parts[1].strip()
+        script = f"RTL9617C_build_{customer.lower()}.sh"
+    else:
+        script = "RTL9617C_build.sh"
+    return script, product
+
+
 def _docker_user_args(settings: Settings) -> list[str]:
     """Compute docker --user args.
 
@@ -137,9 +155,10 @@ class BuildRunner:
             "./code_update.sh -d",
             f"cd {shlex.quote(f'{mount}/{script_dir}')}",
         ]
+        build_script, product = _resolve_build_script(model)
         if clean:
-            steps.append("./RTL9617C_build.sh clean")
-        build_cmd = f"./RTL9617C_build.sh {shlex.quote(model)}"
+            steps.append(f"./{build_script} {shlex.quote(product)} clean")
+        build_cmd = f"./{build_script} {shlex.quote(product)}"
         if module:
             build_cmd = f"{build_cmd} {shlex.quote(module)}"
         steps.append(build_cmd)

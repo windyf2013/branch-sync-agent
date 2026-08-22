@@ -5,9 +5,10 @@ forbidden_paths:
   - 'secrets.yaml'
   - '.env'
 required_models:
-  # 编译型号（RTL9617C_build.sh 的有效参数，真机测试校准：脚本只认 2600/2600m，
-  # 不是平台名 RTL9617C）
-  - '2600'
+  # 编译型号（RTL9617C_build.sh 的有效参数，真机测试校准）。
+  # 格式 <型号>_<运营商>：如 2600_CMCC（移动）→ RTL9617C_build_cmcc.sh。
+  # config 文件为 2600_CMCC.config 等，必须指定运营商才能生成配置。
+  - '2600_CMCC'
 forbidden_branches:
   - 'master'
   - 'main'

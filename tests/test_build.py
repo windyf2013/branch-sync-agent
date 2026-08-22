@@ -183,8 +183,18 @@ class TestBuildCommit:
         assert inner == (
             "cd /workspace/rcios/build && ./code_update.sh -d "
             "&& cd /workspace/rcios/build/platform/RTL9617C "
-            "&& ./RTL9617C_build.sh clean && ./RTL9617C_build.sh 5200"
+            "&& ./RTL9617C_build.sh 5200 clean && ./RTL9617C_build.sh 5200"
         )
+
+    def test_customer_model_selects_operator_script(self, tmp_path):
+        executor = FakeExecutor([ok(), ok(), ok()])
+        runner = BuildRunner(executor, make_settings(tmp_path), cycle_id="c1")
+        runner.build_commit(tmp_path / "wt", "2600_CMCC", clean=False, module=None)
+        inner = executor.calls[1][0][-1]
+        assert (
+            "cd /workspace/rcios/build/platform/RTL9617C "
+            "&& ./RTL9617C_build_cmcc.sh 2600"
+        ) in inner
 
     def test_no_sudo_prefix(self, tmp_path):
         executor = FakeExecutor([ok(), ok(), ok()])
