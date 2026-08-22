@@ -37,6 +37,10 @@ class Settings(BaseSettings):
     docker_image: str
     docker_container_prefix: str = "rcios-sync"
     docker_mount_workspace: str
+    # docker 容器运行用户。空 = 自动用宿主机 uid:gid（避免容器 root 写宿主
+    # worktree 导致文件变 root 无法清理，真机测试 77805 个 root 文件）。
+    # 可设 "root" 强制 root，或 "1000:1000" 显式指定。
+    docker_user: str = ""
 
     # --- build ---
     build_script_dir: str

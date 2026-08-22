@@ -132,6 +132,8 @@ class TestBuildCommit:
         executor = FakeExecutor([ok(), ok(stdout="build log"), ok()])
         runner = BuildRunner(executor, settings, cycle_id="20260821")
         result = runner.build_commit(tmp_path / "wt", "5200", clean=False, module="rtk_api")
+        import os
+
         assert executor.calls[0][0] == [
             "sudo",
             "docker",
@@ -139,6 +141,8 @@ class TestBuildCommit:
             "-d",
             "--name",
             "rcios-sync-20260821",
+            "--user",
+            f"{os.getuid()}:{os.getgid()}",
             "-v",
             f"{tmp_path / 'wt'}:/workspace/rcios",
             "-v",

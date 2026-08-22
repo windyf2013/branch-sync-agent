@@ -11,6 +11,21 @@ from bsa.executor.base import CommandExecutor, CompletedProcess
 _BUILD_EXEC_TIMEOUT_SEC = 3600
 
 
+def _docker_user_args(settings: Settings) -> list[str]:
+    """Compute docker --user args.
+
+    Empty docker_user → host uid:gid (avoid container-root writing host files
+    as root; 真机测试 77805 root files blocked cleanup). Explicit "root" or
+    "uid:gid" overrides.
+    """
+    user = (settings.docker_user or "").strip()
+    if not user:
+        import os
+
+        user = f"{os.getuid()}:{os.getgid()}"
+    return ["--user", user]
+
+
 class BuildResult(BaseModel):
     model: str
     returncode: int
@@ -76,6 +91,7 @@ class BuildRunner:
                 "-d",
                 "--name",
                 container,
+                *_docker_user_args(self.settings),
                 "-v",
                 f"{worktree}:{self.settings.docker_mount_workspace}",
                 "-v",
