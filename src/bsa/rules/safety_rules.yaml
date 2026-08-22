@@ -5,8 +5,9 @@ forbidden_paths:
   - 'secrets.yaml'
   - '.env'
 required_models:
-  - 'RTL9617C'
-  - 'RTL9617C_DVB'
+  # 编译型号（RTL9617C_build.sh 的有效参数，真机测试校准：脚本只认 2600/2600m，
+  # 不是平台名 RTL9617C）
+  - '2600'
 forbidden_branches:
   - 'master'
   - 'main'

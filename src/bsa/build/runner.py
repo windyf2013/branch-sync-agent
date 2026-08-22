@@ -138,8 +138,8 @@ class BuildRunner:
             f"cd {shlex.quote(f'{mount}/{script_dir}')}",
         ]
         if clean:
-            steps.append("RTL9617C_build.sh clean")
-        build_cmd = f"RTL9617C_build.sh {shlex.quote(model)}"
+            steps.append("./RTL9617C_build.sh clean")
+        build_cmd = f"./RTL9617C_build.sh {shlex.quote(model)}"
         if module:
             build_cmd = f"{build_cmd} {shlex.quote(module)}"
         steps.append(build_cmd)

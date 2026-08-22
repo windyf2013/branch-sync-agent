@@ -21,7 +21,7 @@ def test_build_graph_context_constructs_real_services(tmp_path):
     assert ctx.sync_decision_agent is not None
     assert ctx.conflict_agent is not None
     assert ctx.build_agent is not None
-    assert ctx.safety.required_models() == ["RTL9617C", "RTL9617C_DVB"]
+    assert ctx.safety.required_models() == ["2600"]
     assert ctx.worktree_gits == {}
 
 
