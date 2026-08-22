@@ -26,6 +26,27 @@ def _docker_user_args(settings: Settings) -> list[str]:
     return ["--user", user]
 
 
+def _docker_ssh_args(settings: Settings) -> list[str]:
+    """Mount host ~/.ssh into the container so code_update.sh can git-clone
+    components via SSH.
+
+    真机测试: --user 后容器内用户无 .ssh, code_update 的 git clone 报
+    'Host key verification failed' → 组件拉不到 → 编译失败. 挂载宿主
+    SSH key + known_hosts (只读) 解决.
+    """
+    import os
+
+    ssh = Path(os.path.expanduser("~/.ssh"))
+    if not ssh.is_dir():
+        return []
+    user = (settings.docker_user or "").strip()
+    if user == "root":
+        container_home = "/root"
+    else:
+        container_home = "/home/ubuntu"
+    return ["-v", f"{ssh}:{container_home}/.ssh:ro"]
+
+
 class BuildResult(BaseModel):
     model: str
     returncode: int
@@ -92,6 +113,7 @@ class BuildRunner:
                 "--name",
                 container,
                 *_docker_user_args(self.settings),
+                *_docker_ssh_args(self.settings),
                 "-v",
                 f"{worktree}:{self.settings.docker_mount_workspace}",
                 "-v",

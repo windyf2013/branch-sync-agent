@@ -134,6 +134,13 @@ class TestBuildCommit:
         result = runner.build_commit(tmp_path / "wt", "5200", clean=False, module="rtk_api")
         import os
 
+        ssh_expected = []
+        ssh = Path(os.path.expanduser("~/.ssh"))
+        if ssh.is_dir():
+            ssh_expected = [
+                "-v",
+                f"{ssh}:/home/ubuntu/.ssh:ro",
+            ]
         assert executor.calls[0][0] == [
             "sudo",
             "docker",
@@ -143,6 +150,7 @@ class TestBuildCommit:
             "rcios-sync-20260821",
             "--user",
             f"{os.getuid()}:{os.getgid()}",
+            *ssh_expected,
             "-v",
             f"{tmp_path / 'wt'}:/workspace/rcios",
             "-v",
