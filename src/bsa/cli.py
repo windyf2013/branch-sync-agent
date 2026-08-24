@@ -13,6 +13,7 @@ from bsa.commands.sync import (
     run_sync_command,
 )
 from bsa.config.settings import load_settings
+from bsa.executor.exceptions import SafetyViolation
 from bsa.graph.factory import _bundled_rules_dir, build_graph_context
 from bsa.graph.workflow import open_checkpointer
 from bsa.report.projection import _cycle_status, projection_payload, read_cycle_state
@@ -233,10 +234,14 @@ def _cmd_sync(args: argparse.Namespace) -> int:
         return 0
     log_dir = Path(settings.log_dir)
     log_dir.mkdir(parents=True, exist_ok=True)
-    with open_checkpointer(str(log_dir / "state.sqlite3")) as checkpointer:
-        final = run_sync_command(
-            ctx, cycle_id=cycle_id, target=args.target, batch=batch, checkpointer=checkpointer
-        )
+    try:
+        with open_checkpointer(str(log_dir / "state.sqlite3")) as checkpointer:
+            final = run_sync_command(
+                ctx, cycle_id=cycle_id, target=args.target, batch=batch, checkpointer=checkpointer
+            )
+    except SafetyViolation as exc:
+        print(f"同步被拒绝: {exc}", file=sys.stderr)
+        return 1
     branch = (final.get("branch_results") or {}).get(args.target)
     status = branch.status if branch is not None else final.get("status", "UNKNOWN")
     patch_path = branch.patch_path if branch is not None else None

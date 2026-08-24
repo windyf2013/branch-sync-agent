@@ -3,10 +3,13 @@ from __future__ import annotations
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
 from bsa.cli import main
 from bsa.commands.sync import (
     build_sha_batch,
     build_source_target_batch,
+    manual_cycle_id,
     run_sync_command,
 )
 from bsa.domain.models import (
@@ -15,12 +18,14 @@ from bsa.domain.models import (
     Conclusion4,
     SyncDecision,
 )
+from bsa.executor.exceptions import SafetyViolation
 from bsa.rules import Classification, TargetSnapshot
 from tests.test_config import valid_env
 from tests.test_graph_nodes import (
     DEVELOP,
     TARGET,
     FakeGit,
+    FakeSafety,
     commit,
     make_ctx,
     write_branch_md,
@@ -133,6 +138,22 @@ def test_sha_mode_failfast_related_stops_batch(tmp_path):
     picked = [args[0] for name, args in wg.calls if name == "cherry_pick"]
     assert picked == ["a1"]
     assert final["branch_results"][TARGET].stop_reason is not None
+
+
+def test_sha_mode_forbidden_target_rejected(tmp_path):
+    ctx = make_ctx(tmp_path, safety=FakeSafety(forbidden_branches={TARGET}))
+    batch = build_sha_batch(ctx, DEVELOP, ["a1"])
+    assert len(batch) == 1
+
+    with pytest.raises(SafetyViolation):
+        run_sync_command(
+            ctx, cycle_id="manual-20260824-101010", target=TARGET, batch=batch, checkpointer=None
+        )
+
+
+def test_manual_cycle_id_is_unique(tmp_path):
+    ids = {manual_cycle_id() for _ in range(1000)}
+    assert len(ids) == 1000
 
 
 # --- 源+目标模式 ---
@@ -305,6 +326,27 @@ def test_sync_cli_sha_mode_wires_through(monkeypatch, tmp_path, capsys):
     assert seen["run"][1] == TARGET
     assert seen["run"][0].startswith("manual-")
     assert "SUCCESS" in capsys.readouterr().out
+
+
+def test_sync_cli_sha_mode_forbidden_target_refuses(monkeypatch, tmp_path, capsys):
+    env = valid_env()
+    env["LOG_DIR"] = str(tmp_path / "logs")
+    monkeypatch.setattr("bsa.config.settings.os.environ", env)
+    monkeypatch.setattr(
+        "bsa.cli.build_graph_context",
+        lambda settings, **kw: SimpleNamespace(
+            settings=settings, safety=FakeSafety(forbidden_branches={TARGET})
+        ),
+    )
+    monkeypatch.setattr(
+        "bsa.cli.build_sha_batch",
+        lambda ctx, src, shas: [commit("a1")],
+    )
+
+    code = main(["sync", DEVELOP, TARGET, "--sha", "a1"])
+
+    assert code == 1
+    assert "禁止" in capsys.readouterr().err
 
 
 def test_sync_cli_rejects_sha_with_window(monkeypatch, tmp_path):

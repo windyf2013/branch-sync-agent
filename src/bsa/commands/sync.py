@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import os
 from datetime import datetime
 from pathlib import Path
 
 from bsa.domain.models import CommitInfo, Conclusion4, SyncDecision
+from bsa.executor.exceptions import SafetyViolation
 from bsa.executor.lock import flock_acquire
 from bsa.graph.nodes import (
     GraphContext,
@@ -19,8 +21,9 @@ from bsa.scheduler.cycle import _initial_state
 
 
 def manual_cycle_id() -> str:
-    """手动同步周期 id：manual-<时间戳>，与每日周期隔离。"""
-    return f"manual-{datetime.now().strftime('%Y%m%d-%H%M%S')}"
+    """手动同步周期 id：manual-<时间戳(微秒)>-<pid>，每次调用唯一，与每日周期隔离。"""
+    ts = datetime.now().strftime("%Y%m%d-%H%M%S%f")
+    return f"manual-{ts}-{os.getpid()}"
 
 
 def _commit_info_from_git(ctx: GraphContext, source: str, sha: str) -> CommitInfo:
@@ -201,6 +204,8 @@ def run_sync_command(
     决策已在命令层完成（batch 内 commit 全部视为 NeedSync），子图只跑同步阶段。
     返回最终 state（含 branch_results[target]、patch 生成）。
     """
+    if not ctx.safety.check_sync_branch(target):
+        raise SafetyViolation(f"目标分支 {target} 命中禁止同步清单，拒绝同步。")
     initial = _initial_state(cycle_id)
     initial.update(
         {
