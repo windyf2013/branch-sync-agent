@@ -44,3 +44,16 @@ class SafetyEnforcer:
 
     def max_single_edit_lines(self) -> int:
         return self._rules.max_single_edit_lines
+
+    def check_edit_scale(self, diff: str) -> None:
+        """Reject edits whose total added/removed lines exceed max_single_edit_lines."""
+        added = removed = 0
+        for line in diff.splitlines():
+            if line.startswith("+") and not line.startswith("+++"):
+                added += 1
+            elif line.startswith("-") and not line.startswith("---"):
+                removed += 1
+        if added + removed > self._rules.max_single_edit_lines:
+            raise SafetyViolation(
+                f"单次修改 {added + removed} 行超过上限 {self._rules.max_single_edit_lines}"
+            )

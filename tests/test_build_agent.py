@@ -193,6 +193,22 @@ def write_file(tmp_path: Path, rel: str, content: str) -> None:
     path.write_text(content, encoding="utf-8")
 
 
+def _big_fix_diff(num: int = 250) -> str:
+    removed = "".join(f"-int x{i} = {i};\n" for i in range(num))
+    added = "".join(f"+int x{i} = 0;\n" for i in range(num))
+    return (
+        "diff --git a/src/dhcp.c b/src/dhcp.c\n"
+        "--- a/src/dhcp.c\n"
+        "+++ b/src/dhcp.c\n"
+        f"@@ -1,{num} +1,{num} @@\n"
+        f"{removed}{added}"
+    )
+
+
+def _big_fix_content(num: int = 250) -> str:
+    return "".join(f"int x{i} = {i};\n" for i in range(num))
+
+
 def test_error_files_extracts_source_paths() -> None:
     errors = [
         "src/dhcp.c:2:9: error: 'bad' undeclared\n",
@@ -430,6 +446,28 @@ def test_fix_loop_llm_unavailable_stops_without_retry(tmp_path: Path) -> None:
     assert len(git.snapshots) == 1
     assert len(git.restored) == 1
     assert runner.build_calls == []
+
+
+def test_oversized_fix_diff_is_invalid_attempt(tmp_path: Path) -> None:
+    content = _big_fix_content()
+    write_file(tmp_path, "src/dhcp.c", content)
+    git = FakeGit(tmp_path)
+    big = make_fix(files=["src/dhcp.c"], diff=_big_fix_diff())
+    llm = FakeLLM(
+        make_attribution("introduced_by_commit", ["src/dhcp.c"]),
+        fixes=[big, big, big],
+    )
+    runner = FakeRunner([])
+    agent = BuildAgent(llm, git, runner, make_safety())
+
+    result = agent.fix(make_commit(), [ERROR_BLOCK], "RTL9617C")
+
+    assert result.category == "introduced_by_commit"
+    assert len(llm.fix_calls) == 3
+    assert len(git.snapshots) == 3
+    assert len(git.restored) == 3
+    assert runner.build_calls == []
+    assert (tmp_path / "src/dhcp.c").read_text(encoding="utf-8") == content
 
 
 def test_error_files_normalizes_absolute_docker_path() -> None:

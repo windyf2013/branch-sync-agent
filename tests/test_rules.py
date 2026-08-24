@@ -694,6 +694,44 @@ def test_safety_enforcer_models_and_lines():
     assert enforcer.max_single_edit_lines() == 200
 
 
+def test_safety_enforcer_check_edit_scale_accepts_small_diff():
+    enforcer = _enforcer()
+    small = (
+        "diff --git a/src/net.c b/src/net.c\n"
+        "--- a/src/net.c\n"
+        "+++ b/src/net.c\n"
+        "@@ -1,2 +1,2 @@\n"
+        "-int value = bad;\n"
+        "+int value = 1;\n"
+    )
+    enforcer.check_edit_scale(small)
+
+
+def test_safety_enforcer_check_edit_scale_rejects_large_diff():
+    enforcer = _enforcer()
+    big = "".join(f"+line {i}\n" for i in range(201))
+    with pytest.raises(SafetyViolation, match="超过上限 200"):
+        enforcer.check_edit_scale(big)
+
+
+def test_safety_enforcer_check_edit_scale_counts_removed_lines():
+    enforcer = _enforcer()
+    diff = "".join(f"-gone {i}\n" for i in range(201))
+    with pytest.raises(SafetyViolation):
+        enforcer.check_edit_scale(diff)
+
+
+def test_safety_enforcer_check_edit_scale_ignores_hunk_headers():
+    enforcer = _enforcer()
+    diff = (
+        "--- a/x.c\n"
+        "+++ b/x.c\n"
+        "@@ -1,200 +1,200 @@\n"
+        + "".join(f"+x{i}\n" for i in range(200))
+    )
+    enforcer.check_edit_scale(diff)
+
+
 # --- paths: 公共目录判定（决策 2） ---
 
 

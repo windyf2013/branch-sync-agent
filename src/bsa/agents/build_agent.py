@@ -295,6 +295,10 @@ class BuildAgent:
         except Exception:
             return None
         try:
+            self._safety.check_edit_scale(fix.diff)
+        except SafetyViolation:
+            return None
+        try:
             result = self._runner.build_commit(
                 git.repo_path, model, clean=False, module=self._module
             )

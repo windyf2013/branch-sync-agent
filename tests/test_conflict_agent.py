@@ -145,6 +145,22 @@ def write_conflicted(tmp_path: Path, files: dict[str, str] | None = None) -> Non
         path.write_text(content, encoding="utf-8")
 
 
+def _big_diff(num: int = 250, path: str = "src/net.c") -> str:
+    removed = "".join(f"-line {i}\n" for i in range(num))
+    added = "".join(f"+replacement {i}\n" for i in range(num))
+    return (
+        f"diff --git a/{path} b/{path}\n"
+        f"--- a/{path}\n"
+        f"+++ b/{path}\n"
+        f"@@ -1,{num} +1,{num} @@\n"
+        f"{removed}{added}"
+    )
+
+
+def _big_content(num: int = 250) -> str:
+    return "".join(f"line {i}\n" for i in range(num))
+
+
 def test_apply_patch_removes_markers() -> None:
     assert _apply_patch(CONFLICT_TEXT, RESOLVED_DIFF) == "int value = 1;\n"
 
@@ -443,3 +459,21 @@ def test_infrastructure_error_during_stage_rolls_back(tmp_path: Path) -> None:
     assert len(git.restored) == 3
     assert git.staged == []
     assert (tmp_path / "src/net.c").read_text(encoding="utf-8") == CONFLICT_TEXT
+
+
+def test_oversized_resolution_diff_is_invalid_attempt(tmp_path: Path) -> None:
+    content = _big_content()
+    write_conflicted(tmp_path, {"src/net.c": content})
+    git = FakeGit(tmp_path, status_text="UU src/net.c\n")
+    big = ConflictResolution(
+        files=["src/net.c"], diff=_big_diff(), agent_reason="oversized"
+    )
+    llm = FakeLLM([big, big, big])
+    agent = ConflictAgent(llm, git, make_safety())
+
+    result = agent.resolve(make_commit(), CONFLICT_FILES)
+
+    assert result is None
+    assert git.staged == []
+    assert len(git.restored) == 3
+    assert (tmp_path / "src/net.c").read_text(encoding="utf-8") == content

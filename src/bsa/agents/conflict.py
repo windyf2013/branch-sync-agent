@@ -217,6 +217,10 @@ class ConflictAgent:
                 target.write_text(_apply_patch(current, patch), encoding="utf-8")
         except Exception:
             return False
+        try:
+            self._safety.check_edit_scale(resolution.diff)
+        except SafetyViolation:
+            return False
         return True
 
     def _verified(self, conflict_files: list[str], *, git: GitService) -> bool:
