@@ -259,7 +259,7 @@ class TestTargetDetail:
         monkeypatch.setattr("bsa_web.projection.load_cycle", lambda log_dir, cid: payload)
         monkeypatch.setattr(
             "bsa_web.views.detail._read_build_log",
-            lambda log_path: ("[LOG] compile error", True),
+            lambda log_dir, log_path: ("[LOG] compile error", True),
         )
         r = client.get("/cycle/cycle-2026-08-20/target/t")
         assert r.status_code == 200
@@ -288,6 +288,21 @@ class TestTargetDetail:
         assert r.status_code == 200
         assert r.text == "patch-content"
 
+    def test_target_patch_download_rejects_path_outside_log_dir(
+        self, tmp_path, monkeypatch
+    ):
+        client = _client(_make_app(tmp_path))
+        _login(client)
+        outside = tmp_path.parent / "outside.patch"
+        outside.write_text("secret", encoding="utf-8")
+        payload = _payload(
+            branch_results={"t": _branch("t", "SUCCESS", patch_path=str(outside))}
+        )
+        monkeypatch.setattr("bsa_web.projection.load_cycle", lambda log_dir, cid: payload)
+        r = client.get("/cycle/cycle-2026-08-20/target/t/patch")
+        assert r.status_code == 404
+        assert "secret" not in r.text
+
     def test_build_log_download_serves_file(self, tmp_path, monkeypatch):
         client = _client(_make_app(tmp_path))
         _login(client)
@@ -309,6 +324,30 @@ class TestTargetDetail:
         )
         assert r.status_code == 200
         assert r.text == "log-content"
+
+    def test_build_log_download_rejects_path_outside_log_dir(
+        self, tmp_path, monkeypatch
+    ):
+        client = _client(_make_app(tmp_path))
+        _login(client)
+        outside = tmp_path.parent / "build.log"
+        outside.write_text("secret", encoding="utf-8")
+        branch = _branch(
+            "t",
+            "SUCCESS",
+            commits=[
+                _commit_result(
+                    "a1", build={"RTL9617C": _build_outcome(log_path=str(outside))}
+                )
+            ],
+        )
+        payload = _payload(branch_results={"t": branch})
+        monkeypatch.setattr("bsa_web.projection.load_cycle", lambda log_dir, cid: payload)
+        r = client.get(
+            "/cycle/cycle-2026-08-20/target/t/commit/a1/build/RTL9617C/log"
+        )
+        assert r.status_code == 404
+        assert "secret" not in r.text
 
 
 class TestCommitDetail:
@@ -351,7 +390,7 @@ class TestBuildLogHelper:
 
         log = tmp_path / "build.log"
         log.write_text("\n".join(f"line {i}" for i in range(600)), encoding="utf-8")
-        text, truncated = _read_build_log(str(log), max_lines=500)
+        text, truncated = _read_build_log(str(tmp_path), str(log), max_lines=500)
         assert truncated is True
         assert text.splitlines()[0] == "line 0"
         assert text.splitlines()[-1] == "line 499"
@@ -359,5 +398,12 @@ class TestBuildLogHelper:
     def test_read_build_log_none_when_missing(self, tmp_path):
         from bsa_web.views.detail import _read_build_log
 
-        assert _read_build_log(str(tmp_path / "missing.log")) is None
-        assert _read_build_log(None) is None
+        assert _read_build_log(str(tmp_path), str(tmp_path / "missing.log")) is None
+        assert _read_build_log(str(tmp_path), None) is None
+
+    def test_read_build_log_rejects_path_outside_log_dir(self, tmp_path):
+        from bsa_web.views.detail import _read_build_log
+
+        outside = tmp_path.parent / "secret.log"
+        outside.write_text("secret", encoding="utf-8")
+        assert _read_build_log(str(tmp_path), str(outside)) is None

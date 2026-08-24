@@ -2,7 +2,8 @@
 
 数据全部来自 `bsa report <cycle> --json` 的投影 payload；patch/编译日志按需
 在详情页读取（不塞进列表页），超长内容截断展示并附原始下载链接。log_path /
-patch_path 是 V1 写死的绝对或相对路径，按投影里的值直接解析。
+patch_path 是 V1 写死的绝对或相对路径，解析前先做 log_dir 路径包含校验
+（纵深防御：V1 数据被篡改时禁止越权读取 log_dir 之外的服务器文件）。
 """
 
 from pathlib import Path
@@ -32,14 +33,27 @@ def _load_payload(log_dir: str, cycle_id: str) -> dict:
     return payload
 
 
-def _read_build_log(
-    log_path: str | None, max_lines: int = _LOG_PREVIEW_LINES
-) -> tuple[str, bool] | None:
-    """读 build 日志前 N 行；文件缺失 / 不可读返回 None。"""
-    if not log_path:
+def _resolve_within_log_dir(log_dir: str, candidate: str | None) -> Path | None:
+    """把投影里的候选路径解析成绝对路径，且必须落在 log_dir 内。
+
+    纵深防御：投影数据若被篡改（如 state.sqlite3），禁止借详情页越权读取
+    log_dir 之外的服务器文件。越界 / 空值一律返回 None。
+    """
+    if not candidate:
         return None
-    path = Path(log_path)
-    if not path.is_file():
+    root = Path(log_dir).resolve()
+    path = Path(candidate).resolve()
+    return path if path.is_relative_to(root) else None
+
+
+def _read_build_log(
+    log_dir: str,
+    log_path: str | None,
+    max_lines: int = _LOG_PREVIEW_LINES,
+) -> tuple[str, bool] | None:
+    """读 build 日志前 N 行；文件缺失 / 越界 / 不可读返回 None。"""
+    path = _resolve_within_log_dir(log_dir, log_path)
+    if path is None or not path.is_file():
         return None
     try:
         text = path.read_text(encoding="utf-8", errors="replace")
@@ -99,7 +113,7 @@ def target_detail(
     # 按需读取各 commit build 日志前 N 行（不塞进列表/概览页）
     for cr in branch.get("commits") or []:
         for outcome in (cr.get("build") or {}).values():
-            preview = _read_build_log(outcome.get("log_path"))
+            preview = _read_build_log(settings.log_dir, outcome.get("log_path"))
             outcome["log_preview"] = preview[0] if preview else None
             outcome["log_truncated"] = preview[1] if preview else False
     return _render(
@@ -163,8 +177,8 @@ def target_patch_download(
     patch_path = (branch or {}).get("patch_path")
     if branch is None or not patch_path:
         raise HTTPException(status_code=404, detail="patch 文件不存在")
-    path = Path(patch_path)
-    if not path.is_file():
+    path = _resolve_within_log_dir(request.app.state.settings.log_dir, patch_path)
+    if path is None or not path.is_file():
         raise HTTPException(status_code=404, detail="patch 文件不存在")
     return FileResponse(path, media_type="text/plain", filename=path.name)
 
@@ -189,8 +203,8 @@ def build_log_download(
     log_path = (outcome or {}).get("log_path")
     if not log_path:
         raise HTTPException(status_code=404, detail="build 日志不存在")
-    path = Path(log_path)
-    if not path.is_file():
+    path = _resolve_within_log_dir(request.app.state.settings.log_dir, log_path)
+    if path is None or not path.is_file():
         raise HTTPException(status_code=404, detail="build 日志不存在")
     return FileResponse(path, media_type="text/plain", filename=path.name)
 
