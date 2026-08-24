@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import re
 
 import pytest
@@ -471,3 +472,41 @@ class TestPushApi:
         _install_projection(monkeypatch, _payload())
         r = client.post("/api/push", json={"target": "feat/x", "shas": []})
         assert r.status_code == 403
+
+    def test_push_holds_global_flock_through_execute(self, tmp_path, monkeypatch):
+        # C1：闸预检与 git push 必须持全局 bsa.lock（与 V1 周期/清理互斥），
+        # 防并发 cron 在闸过与 push 之间删除/重建目标 worktree（TOCTOU）。
+        app = _make_app(tmp_path)
+        client = _client(app)
+        _login(client)
+        worktree = _fake_worktree(tmp_path, "feat/x")
+        payload = _payload(
+            {"feat/x": _branch("feat/x", worktree=worktree, shas=["abc123"])}
+        )
+        _install_projection(monkeypatch, payload)
+        monkeypatch.setattr("bsa_web.push.worktree_is_clean", lambda wt: True)
+        seen = {}
+
+        @contextlib.contextmanager
+        def spy_flock_acquire(path, timeout=1800.0):
+            seen["lock_path"] = str(path)
+            seen["in_lock"] = True
+            try:
+                yield
+            finally:
+                seen["in_lock"] = False
+
+        monkeypatch.setattr("bsa_web.api.push.flock_acquire", spy_flock_acquire)
+
+        def fake_execute(executor, wt, target):
+            seen["in_lock_at_execute"] = seen.get("in_lock")
+            return 0, "推送成功"
+
+        monkeypatch.setattr("bsa_web.push.execute_push", fake_execute)
+        r = client.post(
+            "/api/push",
+            json={"target": "feat/x", "shas": ["abc123"], "_csrf": _csrf(client)},
+        )
+        assert r.status_code == 200
+        assert seen["lock_path"] == str(tmp_path / "bsa.lock")
+        assert seen["in_lock_at_execute"] is True

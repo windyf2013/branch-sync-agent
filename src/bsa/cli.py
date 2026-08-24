@@ -259,6 +259,15 @@ def _cmd_sync(args: argparse.Namespace) -> int:
     branch = (final.get("branch_results") or {}).get(args.target)
     status = branch.status if branch is not None else final.get("status", "UNKNOWN")
     patch_path = branch.patch_path if branch is not None else None
+    # FAILED/PARTIAL/MANUAL 不是成功：平台任务 runner 依返回码映射终态，
+    # 必须非零退出并把最终状态打到 stderr，避免误报 succeeded。
+    if status in ("FAILED", "PARTIAL", "MANUAL"):
+        print(
+            f"同步完成: cycle={cycle_id} target={args.target} 状态={status} "
+            f"patch={patch_path}",
+            file=sys.stderr,
+        )
+        return 1
     print(
         f"同步完成: cycle={cycle_id} target={args.target} 状态={status} "
         f"patch={patch_path}"

@@ -146,10 +146,12 @@
           return;
         }
         pending = { target: res.json.target, shas: res.json.commits || [] };
-        bodyEl.innerHTML = "<pre>目标分支：" + res.json.target +
+        var pre = document.createElement("pre");
+        pre.textContent = "目标分支：" + res.json.target +
           "\n周期：" + (res.json.cycle_id || "-") +
           "\nCommit 范围：" + ((res.json.commits || []).join(", ") || "无") +
-          "\n补丁摘要：" + (res.json.patch_summary || "无") + "</pre>";
+          "\n补丁摘要：" + (res.json.patch_summary || "无");
+        bodyEl.replaceChildren(pre);
         result.textContent = "";
         dialog.showModal();
       });

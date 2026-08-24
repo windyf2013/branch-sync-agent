@@ -49,10 +49,24 @@ class TaskRunner:
         )
 
     def start(self) -> None:
-        """启动 daemon worker（幂等）。"""
+        """启动 daemon worker（幂等），并收敛平台重启遗留的 running/queued 任务。
+
+        上次进程在任务执行中崩溃时，tasks 表会残留 running/queued 行；部分唯一
+        索引（state IN queued/running 下 target 唯一）会让这些 target 永久不可再
+        提交。启动时把遗留任务标 failed（error="平台重启中断"），释放 target。
+        """
         if not self._started:
             self._started = True
+            self._recover_stale_tasks()
             self._worker.start()
+
+    def _recover_stale_tasks(self) -> None:
+        self.db.execute(
+            "UPDATE tasks SET state='failed', error=?, finished_at=? "
+            "WHERE state IN ('queued','running')",
+            ("平台重启中断", _now_iso()),
+        )
+        self.db.commit()
 
     def join(self, timeout: float | None = None) -> None:
         """等待已提交任务全部处理完（支持超时）。"""

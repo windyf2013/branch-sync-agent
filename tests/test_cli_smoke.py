@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import contextlib
 import json
 from datetime import datetime
 from pathlib import Path
+
+import pytest
 
 from bsa.cli import main
 from bsa.domain.models import (
@@ -352,3 +355,49 @@ def test_status_picks_latest_by_started_at(monkeypatch, tmp_path, capsys):
     captured = capsys.readouterr().out
     assert "cycle-2026-08-20" in captured
     assert "cycle-2026-08-21" not in captured
+
+
+def _sync_branch_result(status: str, target: str = "feat/x") -> BranchResult:
+    return BranchResult(
+        target_branch=target,
+        worktree_path="/wt",
+        status=status,
+        commits=[],
+        patch_path=None,
+        stop_reason=None,
+    )
+
+
+def _sync_env(monkeypatch, tmp_path, status: str):
+    """让 ``bsa sync`` 走到 run_sync_command 后按给定 status 收尾的 env。"""
+    env = valid_env()
+    env["LOG_DIR"] = str(tmp_path / "logs")
+    monkeypatch.setattr("bsa.config.settings.os.environ", env)
+    monkeypatch.setattr("bsa.cli.manual_cycle_id", lambda: "cycle-2026-08-24")
+    monkeypatch.setattr("bsa.cli.build_graph_context", lambda settings, cycle_id=None: object())
+    monkeypatch.setattr(
+        "bsa.cli.build_source_target_batch",
+        lambda ctx, src, target, since, until: (["abc123"], {}),
+    )
+    monkeypatch.setattr("bsa.cli.open_checkpointer", contextlib.nullcontext)
+    monkeypatch.setattr(
+        "bsa.cli.run_sync_command",
+        lambda ctx, cycle_id=None, target=None, batch=None, checkpointer=None: {
+            "branch_results": {"feat/x": _sync_branch_result(status)}
+        },
+    )
+
+
+def test_sync_success_returns_zero_on_stdout(monkeypatch, tmp_path, capsys):
+    _sync_env(monkeypatch, tmp_path, "SUCCESS")
+    assert main(["sync", "main", "feat/x"]) == 0
+    assert "SUCCESS" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("status", ["FAILED", "PARTIAL", "MANUAL"])
+def test_sync_bad_status_returns_nonzero_on_stderr(monkeypatch, tmp_path, capsys, status):
+    # I2：FAILED/PARTIAL/MANUAL 同步不得伪装成功，平台 runner 按非零返回码标记 failed
+    _sync_env(monkeypatch, tmp_path, status)
+    assert main(["sync", "main", "feat/x"]) == 1
+    captured = capsys.readouterr()
+    assert status in captured.err

@@ -12,12 +12,14 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
 
 from bsa.executor.exceptions import SafetyViolation
+from bsa.executor.lock import flock_acquire
 from bsa_web import audit, projection, push
 from bsa_web.auth import require_csrf, require_operator
 
@@ -93,42 +95,60 @@ def api_push(
 ):
     if not body.target:
         raise HTTPException(status_code=400, detail="缺少 target")
-    cycle_id, payload = _load_payload(request)
-    if payload is None:
-        raise HTTPException(status_code=400, detail="当前周期数据不可用")
-    branch = (payload.get("branch_results") or {}).get(body.target)
-    if branch is None:
-        raise HTTPException(status_code=400, detail=f"投影中不存在分支 {body.target}")
-    worktree = branch.get("worktree_path") or ""
+    # 推送全流程持全局 bsa.lock（与 V1 周期/清理/重跑共用同一把锁）：
+    # 闸预检通过后到 git push 执行之间不得被并发 cron 周期清理/重建目标
+    # worktree（TOCTOU），否则会从错误/已删除的 worktree 推送（违反硬不变式
+    # "推送也在持锁下执行"）。confirm 为只读回显不持锁。
+    with flock_acquire(Path(request.app.state.settings.log_dir) / "bsa.lock"):
+        cycle_id, payload = _load_payload(request)
+        if payload is None:
+            raise HTTPException(status_code=400, detail="当前周期数据不可用")
+        branch = (payload.get("branch_results") or {}).get(body.target)
+        if branch is None:
+            raise HTTPException(status_code=400, detail=f"投影中不存在分支 {body.target}")
+        worktree = branch.get("worktree_path") or ""
 
-    # 四道闸任一不过 → 400 + 原因
-    reasons = push.check_push_gates(
-        payload,
-        body.target,
-        forbidden=push.load_forbidden_branches(),
-        status_clean=push.worktree_is_clean(worktree),
-        cycle_id=cycle_id,
-    )
-    if reasons:
-        raise HTTPException(status_code=400, detail={"reasons": reasons})
-
-    # 确认参数校验：commit 范围须与投影一致（防确认后投影变动推送不同内容）
-    shas = _commits_of(branch)
-    if body.shas is not None and body.shas != shas:
-        raise HTTPException(status_code=400, detail="确认信息已过期，请重新确认")
-
-    audit_detail = {
-        "worktree": worktree,
-        "commits": shas,
-        "patch_path": branch.get("patch_path"),
-    }
-    try:
-        returncode, message = push.execute_push(
-            push.PushExecutor(), worktree, body.target
+        # 四道闸任一不过 → 400 + 原因
+        reasons = push.check_push_gates(
+            payload,
+            body.target,
+            forbidden=push.load_forbidden_branches(),
+            status_clean=push.worktree_is_clean(worktree),
+            cycle_id=cycle_id,
         )
-    except SafetyViolation as exc:
-        # 受限 executor 拒绝（合法 git 名但非安全 target 等）→ 400 + 留痕，
-        # 失败的推送尝试也必须写入审计（result=failed）。
+        if reasons:
+            raise HTTPException(status_code=400, detail={"reasons": reasons})
+
+        # 确认参数校验：commit 范围须与投影一致（防确认后投影变动推送不同内容）
+        shas = _commits_of(branch)
+        if body.shas is not None and body.shas != shas:
+            raise HTTPException(status_code=400, detail="确认信息已过期，请重新确认")
+
+        audit_detail = {
+            "worktree": worktree,
+            "commits": shas,
+            "patch_path": branch.get("patch_path"),
+        }
+        try:
+            returncode, message = push.execute_push(
+                push.PushExecutor(), worktree, body.target
+            )
+        except SafetyViolation as exc:
+            # 受限 executor 拒绝（合法 git 名但非安全 target 等）→ 400 + 留痕，
+            # 失败的推送尝试也必须写入审计（result=failed）。
+            audit.record(
+                request.app.state.db,
+                user["username"],
+                "push",
+                cycle_id=cycle_id,
+                target=body.target,
+                sha=",".join(shas) or None,
+                detail={**audit_detail, "safety_error": str(exc)},
+                result="failed",
+            )
+            raise HTTPException(
+                status_code=400, detail=f"推送被安全策略拦截：{exc}"
+            ) from exc
         audit.record(
             request.app.state.db,
             user["username"],
@@ -136,24 +156,11 @@ def api_push(
             cycle_id=cycle_id,
             target=body.target,
             sha=",".join(shas) or None,
-            detail={**audit_detail, "safety_error": str(exc)},
-            result="failed",
+            detail=audit_detail,
+            result="ok" if returncode == 0 else "failed",
         )
-        raise HTTPException(
-            status_code=400, detail=f"推送被安全策略拦截：{exc}"
-        ) from exc
-    audit.record(
-        request.app.state.db,
-        user["username"],
-        "push",
-        cycle_id=cycle_id,
-        target=body.target,
-        sha=",".join(shas) or None,
-        detail=audit_detail,
-        result="ok" if returncode == 0 else "failed",
-    )
-    return {
-        "target": body.target,
-        "message": message,
-        "returncode": returncode,
-    }
+        return {
+            "target": body.target,
+            "message": message,
+            "returncode": returncode,
+        }

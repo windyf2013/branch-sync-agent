@@ -57,7 +57,7 @@ curl -fsS https://<BSA_HOST>/healthz           # → {"status":"ok"}（nginx 层
 | 变量 | 必填 | 说明 |
 |---|---|---|
 | `SECRET_KEY` | 是 | 会话/CSRF 签名密钥，缺失则拒绝启动 |
-| `BSA_USERS` | 是 | 静态账号 `用户:bcrypt哈希:角色`，operator=操作者 / viewer=查看者 |
+| `BSA_USERS` | 是 | 静态账号 JSON 字典 `{username: "bcrypt哈希:角色"}`，operator=操作者 / viewer=查看者；生成示例见 `.env.example` |
 | `LOG_DIR` | 否 | 平台库与访问日志根目录，默认 `logs` |
 | `BSA_WEB_PORT` | 否 | 监听端口，默认 8888 |
 | `SESSION_TTL_SEC` | 否 | 会话有效期（秒），默认 28800 |

@@ -149,6 +149,45 @@ class TestConcurrency:
         assert len(rows) == 1
 
 
+class TestStaleRecovery:
+    def test_start_marks_stale_running_and_queued_failed(self, tmp_path):
+        # I3：平台重启后遗留 running/queued 任务必须收敛为 failed，否则
+        # 部分唯一索引使该 target 永久不可再提交。
+        db = init_db(tmp_path / "platform.sqlite3")
+        db.execute(
+            "INSERT INTO tasks(kind,user,target,state,created_at) "
+            "VALUES ('sync','alice','feat/x','running','t')"
+        )
+        db.execute(
+            "INSERT INTO tasks(kind,user,target,state,created_at) "
+            "VALUES ('sync','alice','feat/y','queued','t')"
+        )
+        db.commit()
+        runner = TaskRunner(db, str(tmp_path / "logs"), run_func=_ok_run)
+        runner.start()
+        rows = dict(
+            (row["target"], dict(row))
+            for row in db.execute("SELECT * FROM tasks").fetchall()
+        )
+        for target in ("feat/x", "feat/y"):
+            assert rows[target]["state"] == "failed"
+            assert "平台重启中断" in rows[target]["error"]
+            assert rows[target]["finished_at"] is not None
+
+    def test_stale_cleared_target_submittable_after_start(self, tmp_path):
+        db = init_db(tmp_path / "platform.sqlite3")
+        db.execute(
+            "INSERT INTO tasks(kind,user,target,state,created_at) "
+            "VALUES ('sync','alice','feat/x','running','t')"
+        )
+        db.commit()
+        runner = TaskRunner(db, str(tmp_path / "logs"), run_func=_ok_run)
+        assert runner.submit("sync", "alice", "feat/x", src="main") is None
+        runner.start()
+        assert runner.submit("sync", "alice", "feat/x", src="main") is not None
+        runner.join(timeout=5)
+
+
 class TestSubprocessLifecycle:
     def test_default_cli_kills_process_on_timeout(self, tmp_path, monkeypatch):
         created = []

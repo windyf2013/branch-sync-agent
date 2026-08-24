@@ -212,6 +212,27 @@ class TestWorkbenchView:
         assert "操作日志" in r.text
         assert "alice" in r.text
 
+    def test_push_confirm_dialog_uses_textcontent_not_innerhtml(self, tmp_path, monkeypatch):
+        # I4：确认框拼接来自 API 的 target/commit 值必须走 textContent，
+        # 禁止 innerHTML（存储型 XSS 向量）。
+        client = _client(_make_app(tmp_path))
+        _login(client)
+        payload = _payload(branch_results={"feat/x": _branch("feat/x", "SUCCESS")})
+        monkeypatch.setattr(
+            "bsa_web.projection.list_cycles",
+            lambda log_dir: [{"cycle_id": "cycle-2026-08-20", "status": "REPORTED"}],
+        )
+        monkeypatch.setattr(
+            "bsa_web.projection.latest_completed_cycle", lambda log_dir: "cycle-2026-08-20"
+        )
+        monkeypatch.setattr(
+            "bsa_web.projection.load_cycle", lambda log_dir, cycle_id: payload
+        )
+        r = client.get("/")
+        assert r.status_code == 200
+        assert "textContent" in r.text
+        assert "bodyEl.innerHTML" not in r.text
+
 
 class TestProjection:
     def test_latest_completed_cycle_picks_recent_non_running(self, tmp_path):
