@@ -66,15 +66,25 @@ def create_session(db, user: str, role: str, ttl_sec: int) -> str:
     return token
 
 
-def get_session_user(db, token: str) -> tuple[str, str] | None:
+def get_session_user(
+    db, token: str, ttl_sec: int | None = None
+) -> tuple[str, str] | None:
+    """查询会话；有效会话在 ttl_sec 给定后滑动续期（闲置过期）。"""
     row = db.execute(
         "SELECT user, role, expires_at FROM sessions WHERE token=?", (token,)
     ).fetchone()
     if row is None:
         return None
+    now = datetime.now(UTC)
     expires_at = datetime.fromisoformat(row["expires_at"])
-    if expires_at <= datetime.now(UTC):
+    if expires_at <= now:
         return None
+    if ttl_sec is not None:
+        new_expires = now + timedelta(seconds=ttl_sec)
+        db.execute(
+            "UPDATE sessions SET expires_at=? WHERE token=?", (new_expires.isoformat(), token)
+        )
+        db.commit()
     return row["user"], row["role"]
 
 
@@ -82,7 +92,9 @@ def _session_user(request: Request) -> tuple[str, str] | None:
     token = request.cookies.get(SESSION_COOKIE)
     if not token:
         return None
-    return get_session_user(request.app.state.db, token)
+    return get_session_user(
+        request.app.state.db, token, request.app.state.settings.session_ttl_sec
+    )
 
 
 def require_login(request: Request) -> dict:

@@ -5,8 +5,8 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 class WebSettings(BaseSettings):
     """Web 工作台配置，由环境变量 / .env 加载。
 
-    必填字段 secret_key 必须在生产环境显式配置（SECRET_KEY 或 .env），
-    缺失时由 create_app 生成随机密钥以支持开发/测试启动。
+    必填字段 secret_key 必须在生产环境显式配置（SECRET_KEY 或 .env 或
+    settings_override 注入）；缺失时 create_app 抛错，不再自动生成随机密钥。
     users 契约 env 为 BSA_USERS（JSON：username -> "bcrypt_hash:role"）。
     """
 

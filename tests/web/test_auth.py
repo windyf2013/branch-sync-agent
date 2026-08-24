@@ -1,4 +1,6 @@
 import re
+import time
+from datetime import UTC, datetime, timedelta
 
 import pytest
 from fastapi.testclient import TestClient
@@ -91,6 +93,33 @@ class TestLoginLogout:
         r = client.get("/")
         assert r.status_code == 302
         assert r.headers["location"].endswith("/login")
+
+    def test_unused_session_expires_after_ttl(self, tmp_path):
+        app = _make_app(tmp_path)
+        token = create_session(app.state.db, "alice", OPERATOR, ttl_sec=1)
+        time.sleep(1.1)
+        client = _client(app)
+        client.cookies.set(SESSION_COOKIE, token)
+        r = client.get("/")
+        assert r.status_code == 302
+        assert r.headers["location"].endswith("/login")
+
+    def test_active_session_slides_expiry(self, tmp_path):
+        app = _make_app(tmp_path)
+        token = create_session(app.state.db, "alice", OPERATOR, ttl_sec=1)
+        soon = (datetime.now(UTC) + timedelta(seconds=2)).isoformat()
+        app.state.db.execute(
+            "UPDATE sessions SET expires_at=? WHERE token=?", (soon, token)
+        )
+        app.state.db.commit()
+        client = _client(app)
+        client.cookies.set(SESSION_COOKIE, token)
+        r = client.get("/")
+        assert r.status_code == 200
+        new_expires = app.state.db.execute(
+            "SELECT expires_at FROM sessions WHERE token=?", (token,)
+        ).fetchone()["expires_at"]
+        assert datetime.fromisoformat(new_expires) > datetime.fromisoformat(soon)
 
 
 class TestCsrf:
