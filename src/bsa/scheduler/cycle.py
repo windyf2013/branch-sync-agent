@@ -8,6 +8,7 @@ from pathlib import Path
 
 from bsa.config.settings import load_settings
 from bsa.executor.exceptions import InfrastructureError
+from bsa.executor.lock import flock_acquire
 from bsa.graph import (
     GraphContext,
     build_graph_context,
@@ -224,6 +225,29 @@ def _execute(
 
     log_dir = Path(settings.log_dir)
     cycle_dir = log_dir / cycle_id
+    with flock_acquire(log_dir / "bsa.lock"):
+        return _execute_locked(
+            context,
+            cycle_id,
+            cycle_dir,
+            since=since,
+            until=until,
+            dry_run=dry_run,
+            force_new=force_new,
+        )
+
+
+def _execute_locked(
+    context: GraphContext,
+    cycle_id: str,
+    cycle_dir: Path,
+    *,
+    since: str | None,
+    until: str | None,
+    dry_run: bool,
+    force_new: bool = False,
+) -> int:
+    settings = context.settings
     cycle_dir.mkdir(parents=True, exist_ok=True)
     logger = _setup_run_logger(cycle_dir / "run.log")
 
@@ -234,6 +258,7 @@ def _execute(
         "cycle %s start since=%s until=%s dry_run=%s", cycle_id, since, until, dry_run
     )
 
+    log_dir = Path(settings.log_dir)
     db_path = log_dir / "state.sqlite3"
     final: dict = {}
     with open_checkpointer(str(db_path)) as checkpointer:
