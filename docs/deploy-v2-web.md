@@ -92,6 +92,9 @@ curl -fsS https://<BSA_HOST>/healthz           # → {"status":"ok"}（nginx 层
 
 ```conf
 # /etc/logrotate.d/bsa-web
+# 注意：不要用 copytruncate。平台用 WatchedFileHandler，靠 logrotate 先 rename
+# 当前文件、随后写入时按 inode 变化自动重开新文件；copytruncate 不换 inode，
+# 会导致 handler 在截断后从旧偏移继续写 NUL 字节。
 /srv/bsa/logs/access.log {
     daily
     rotate 14
@@ -99,7 +102,6 @@ curl -fsS https://<BSA_HOST>/healthz           # → {"status":"ok"}（nginx 层
     delaycompress
     missingok
     notifempty
-    copytruncate
 }
 ```
 

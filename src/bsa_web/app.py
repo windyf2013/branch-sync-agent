@@ -58,13 +58,20 @@ def _configure_access_logger(log_dir: str | Path) -> logging.Logger:
 
 
 def _request_username(request: Request) -> str:
-    """只读会话用户名（不做续期），供访问日志记录操作者。"""
+    """只读会话用户名（不做续期），供访问日志记录操作者。
+
+    best-effort：DB 故障时静默降级为 ""，避免在中间件 finally 中抛错
+    毁掉响应状态（如 /healthz 的 503）与请求日志行。
+    """
     token = request.cookies.get(SESSION_COOKIE)
     if not token:
         return ""
-    row = request.app.state.db.execute(
-        "SELECT user FROM sessions WHERE token=?", (token,)
-    ).fetchone()
+    try:
+        row = request.app.state.db.execute(
+            "SELECT user FROM sessions WHERE token=?", (token,)
+        ).fetchone()
+    except Exception:
+        return ""
     return row["user"] if row else ""
 
 
