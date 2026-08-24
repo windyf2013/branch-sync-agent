@@ -21,9 +21,16 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_tasks_active_target
 
 
 def init_db(path: str | Path) -> sqlite3.Connection:
+    """初始化平台库，返回供多线程共享的连接。
+
+    ``autocommit=True``：每条语句自成一个事务即时提交，避免 runner worker 与
+    请求线程共享同一连接时，跨语句隐式事务被另一线程抢占导致
+    ``OperationalError: not an error`` 等竞态（已实测压测消除）。现有写路径
+    均为单语句 execute+commit，语义等价。
+    """
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(str(path), check_same_thread=False)
+    conn = sqlite3.connect(str(path), check_same_thread=False, autocommit=True)
     conn.row_factory = sqlite3.Row
     conn.executescript(_SCHEMA)
     _migrate_tasks(conn)
