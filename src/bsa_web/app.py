@@ -17,6 +17,8 @@ from bsa_web.auth import (
 )
 from bsa_web.db import init_db
 from bsa_web.settings import WebSettings
+from bsa_web.views.detail import router as detail_router
+from bsa_web.views.history import router as history_router
 from bsa_web.views.workbench import router as workbench_router
 
 templates = Jinja2Templates(directory=str(Path(__file__).resolve().parent / "templates"))
@@ -100,6 +102,8 @@ def create_app(*, settings_override: dict | None = None) -> FastAPI:
         return resp
 
     app.include_router(workbench_router)
+    app.include_router(history_router)
+    app.include_router(detail_router)
     @app.get("/settings")
     def settings_page(
         request: Request, user: Annotated[dict, Depends(require_operator)]

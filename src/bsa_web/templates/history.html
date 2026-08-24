@@ -1,0 +1,41 @@
+{% extends "base.html" %}
+{% block title %}历史报告{% endblock %}
+{% block content %}
+<h1>历史报告</h1>
+
+<section>
+  <h2>按结论筛选</h2>
+  <p>
+    <a href="/history">全部</a>
+    {% for value, label in kind_filters %}
+    &nbsp;|&nbsp;<a href="/history?kind={{ value }}">{{ label }}</a>
+    {% endfor %}
+  </p>
+  {% if kind %}
+    <p>当前筛选：<span class="badge">{{ kind }}</span>（仅显示存在该结论的周期）</p>
+  {% endif %}
+</section>
+
+<section>
+  <h2>周期列表</h2>
+  {% if cycles %}
+  <table>
+    <thead>
+      <tr><th>周期</th><th>状态</th><th>开始时间</th>{% if kind %}<th>计数</th>{% endif %}</tr>
+    </thead>
+    <tbody>
+      {% for c in cycles %}
+      <tr>
+        <td><a href="/cycle/{{ c.cycle_id }}">{{ c.cycle_id }}</a></td>
+        <td><span class="badge">{{ c.status }}</span></td>
+        <td>{{ c.started_at }}</td>
+        {% if kind %}<td>{{ c.count }}</td>{% endif %}
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+    <p>暂无周期记录{% if kind %}（当前筛选下）{% endif %}。</p>
+  {% endif %}
+</section>
+{% endblock %}
