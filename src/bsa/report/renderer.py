@@ -156,6 +156,42 @@ def _action_body(report: Report) -> str:
     return "\n".join(parts)
 
 
+def _failure_stage(branch: Any) -> str | None:
+    """Which stage failed first on a branch: cherry_pick / conflict / build."""
+    for commit in branch.commits:
+        if commit.cherry_pick == "FAILED":
+            return "cherry_pick"
+    for commit in branch.commits:
+        if commit.cherry_pick == "CONFLICT":
+            return "conflict"
+    for commit in branch.commits:
+        if any(outcome.status == "FAILED" for outcome in commit.build.values()):
+            return "build"
+    return None
+
+
+def _agent_attempts(branch: Any) -> int:
+    return sum(
+        outcome.agent_attempts
+        for commit in branch.commits
+        for outcome in commit.build.values()
+    )
+
+
+def _recommendation(branch: Any, stage: str | None) -> str:
+    if branch.status == "SUCCESS":
+        return "人工推送"
+    if branch.status == "MANUAL":
+        return "人工处理"
+    if branch.status == "PARTIAL":
+        return "部分成功，剩余停批人工审核"
+    if stage == "conflict":
+        return "停批，人工解决冲突"
+    if stage == "cherry_pick":
+        return "停批，人工处理（基础设施失败）"
+    return "停批，人工审核"
+
+
 def _commit_status_badges(commit: Any) -> str:
     cherry = commit.cherry_pick
     cherry_class = {
@@ -191,11 +227,30 @@ def _sync_body(state: dict) -> str:
             if branch.patch_path
             else ""
         )
+        push = (
+            f'<div class="hint">git checkout {_esc(target)}'
+            f" && git am {_esc(branch.patch_path)}</div>"
+            if branch.patch_path and branch.status == "SUCCESS"
+            else ""
+        )
         stop = (
             f'<div class="callout">{_esc(branch.stop_reason)}</div>'
             if branch.stop_reason
             else ""
         )
+        failed = branch.status != "SUCCESS"
+        if failed:
+            stage = _failure_stage(branch)
+            detail = "".join(
+                [
+                    _info_item("失败阶段", stage or branch.stop_reason or branch.status),
+                    _info_item("Agent 尝试次数", str(_agent_attempts(branch))),
+                    _info_item("建议", _recommendation(branch, stage)),
+                ]
+            )
+            fail_detail = '<div class="info-grid">' + detail + "</div>"
+        else:
+            fail_detail = ""
         rows = []
         for commit in branch.commits:
             rows.append(
@@ -214,7 +269,7 @@ def _sync_body(state: dict) -> str:
             "<article class=\"target-card\">"
             f"<h3>{_esc(target)} <span class=\"badge {status_class}\">{branch.status}</span></h3>"
             '<div class="panel-body">'
-            f"{patch}{stop}{table}"
+            f"{patch}{push}{stop}{fail_detail}{table}"
             "</div></article>"
         )
     return "\n".join(parts)
@@ -257,6 +312,27 @@ def write_decisions_json(state: dict, report: Report) -> Path:
         json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8"
     )
     return report.decisions_json_path
+
+
+def write_agent_diffs(state: dict, report: Report) -> list[Path]:
+    """Persist agent-produced diffs for audit (决策 18 闸门5) under
+    ``<cycle>/audit/<branch>/<sha>_conflict.diff`` and ``<sha>_<model>_fix.diff``."""
+    audit_root = report.decisions_json_path.parent / "audit"
+    written: list[Path] = []
+    for target, branch in sorted((state.get("branch_results") or {}).items()):
+        for commit in branch.commits:
+            if commit.conflict_resolution is not None and commit.conflict_resolution.diff:
+                path = audit_root / target / f"{commit.sha}_conflict.diff"
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text(commit.conflict_resolution.diff, encoding="utf-8")
+                written.append(path)
+            for model, outcome in commit.build.items():
+                if outcome.fix_diff:
+                    path = audit_root / target / f"{commit.sha}_{model}_fix.diff"
+                    path.parent.mkdir(parents=True, exist_ok=True)
+                    path.write_text(outcome.fix_diff, encoding="utf-8")
+                    written.append(path)
+    return written
 
 
 def build_email_body(report: Report, state: dict) -> str:

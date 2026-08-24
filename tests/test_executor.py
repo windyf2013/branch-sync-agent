@@ -88,10 +88,11 @@ class TestSubprocessExecutor:
         assert "oops" in result.stderr
 
     def test_timeout_raises_infrastructure_error(self):
-        with pytest.raises(InfrastructureError):
+        with pytest.raises(InfrastructureError) as exc:
             SubprocessExecutor().run(
                 ["python3", "-c", "import time; time.sleep(30)"], timeout_sec=1
             )
+        assert "timeout" in str(exc.value)
 
     def test_cwd_passed_through(self, tmp_path):
         result = SubprocessExecutor().run(["pwd"], cwd=tmp_path)

@@ -32,7 +32,8 @@ class SubprocessExecutor:
             )
         except subprocess.TimeoutExpired as exc:
             raise InfrastructureError(
-                f"command timed out after {timeout_sec}s: {' '.join(args)}"
+                f"timeout: command exceeded {timeout_sec}s "
+                f"(tool timeout != 操作未发生, check real git state): {' '.join(args)}"
             ) from exc
         return CompletedProcess(
             returncode=result.returncode, stdout=result.stdout, stderr=result.stderr

@@ -121,7 +121,7 @@ def test_run_cycle_dry_run_full_cycle_produces_artifacts(tmp_path):
     html = (cycle_dir / "report.html").read_text(encoding="utf-8")
     assert "检测信息" in html
     assert "Action Required" in html
-    assert "已成功同步" in html
+    assert "同步执行结果" in html
 
 
 def test_run_cycle_window_override_honored(tmp_path):
@@ -262,7 +262,7 @@ def test_render_html_report_three_sections(tmp_path):
     html = path.read_text(encoding="utf-8")
     assert "检测信息" in html
     assert "Action Required" in html
-    assert "已成功同步" in html
+    assert "同步执行结果" in html
     assert "abc123" in html
     assert TARGET in html
 

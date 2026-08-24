@@ -392,8 +392,9 @@ class TestClaudeCliBackend:
         decision = client.judge_bug_fix(make_commit())
         assert decision.is_bug_fix is True
 
-    def test_timeout_then_retry_success(self, tmp_path):
+    def test_timeout_then_retry_success(self, tmp_path, monkeypatch):
         calls: list[int] = []
+        sleeps: list[float] = []
 
         def fake_run(args, timeout=None):
             calls.append(1)
@@ -401,25 +402,36 @@ class TestClaudeCliBackend:
                 raise subprocess.TimeoutExpired(args, timeout)
             return _completed('{"is_bug_fix": true, "reason": "ok"}')
 
+        def fake_sleep(seconds):
+            sleeps.append(seconds)
+
+        monkeypatch.setattr("bsa.agents.base.time.sleep", fake_sleep)
         client = LLMClient(make_settings(tmp_path, llm_backend="claude_cli"))
         client._backend._runner = fake_run
         decision = client.judge_bug_fix(make_commit())
         assert decision.is_bug_fix is True
         assert len(calls) == 2
+        assert sleeps == [1.0]
 
-    def test_all_timeout_degrades(self, tmp_path):
+    def test_all_timeout_degrades(self, tmp_path, monkeypatch):
         calls: list[int] = []
+        sleeps: list[float] = []
 
         def fake_run(args, timeout=None):
             calls.append(1)
             raise subprocess.TimeoutExpired(args, timeout)
 
+        def fake_sleep(seconds):
+            sleeps.append(seconds)
+
+        monkeypatch.setattr("bsa.agents.base.time.sleep", fake_sleep)
         client = LLMClient(make_settings(tmp_path, llm_backend="claude_cli", llm_max_retries=3))
         client._backend._runner = fake_run
         decision = client.judge_bug_fix(make_commit())
         assert decision.is_bug_fix is False
         assert decision.recognition_source == "pending:claude-agent"
         assert len(calls) == 3
+        assert sleeps == [1.0, 2.0]
 
     def test_non_json_output_degrades(self, tmp_path):
         def fake_run(args, timeout=None):

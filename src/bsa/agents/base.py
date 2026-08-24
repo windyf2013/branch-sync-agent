@@ -16,6 +16,9 @@ from bsa.executor.exceptions import InfrastructureError
 
 logger = logging.getLogger("bsa.agents")
 
+_CLI_RETRY_BASE_SEC = 1.0
+_CLI_RETRY_MAX_SEC = 16.0
+
 
 class LLMUnavailable(InfrastructureError):
     """LLM call failed after retries; callers degrade to safe defaults."""
@@ -155,26 +158,28 @@ class _ClaudeCliBackend:
 
     def complete(self, prompt: str, schema: type[BaseModel]) -> BaseModel:
         last_err: Exception | None = None
-        for _ in range(max(1, self._settings.llm_max_retries)):
+        retries = max(1, self._settings.llm_max_retries)
+        for attempt in range(retries):
             try:
                 proc = self._invoke(prompt)
             except subprocess.TimeoutExpired as exc:
                 last_err = exc
-                continue
-            if proc.returncode != 0:
-                last_err = LLMUnavailable(
-                    f"claude -p exited {proc.returncode}: {_truncate(proc.stderr)}"
-                )
-                continue
-            data = _extract_json(proc.stdout)
-            if data is None:
-                last_err = LLMUnavailable("claude -p output was not valid JSON")
-                continue
-            try:
-                return schema(**data)
-            except ValidationError as exc:
-                last_err = exc
-                continue
+            else:
+                if proc.returncode != 0:
+                    last_err = LLMUnavailable(
+                        f"claude -p exited {proc.returncode}: {_truncate(proc.stderr)}"
+                    )
+                else:
+                    data = _extract_json(proc.stdout)
+                    if data is None:
+                        last_err = LLMUnavailable("claude -p output was not valid JSON")
+                    else:
+                        try:
+                            return schema(**data)
+                        except ValidationError as exc:
+                            last_err = exc
+            if attempt + 1 < retries:
+                time.sleep(min(_CLI_RETRY_BASE_SEC * (2**attempt), _CLI_RETRY_MAX_SEC))
         raise LLMUnavailable(f"claude_cli backend failed after retries: {last_err}")
 
 

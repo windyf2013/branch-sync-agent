@@ -16,7 +16,12 @@ from bsa.graph import (
     thread_config,
 )
 from bsa.mail import MailService
-from bsa.report import build_email_body, render_html_report, write_decisions_json
+from bsa.report import (
+    build_email_body,
+    render_html_report,
+    write_agent_diffs,
+    write_decisions_json,
+)
 
 _RUN_LOGGER = logging.getLogger("bsa.cycle")
 
@@ -262,6 +267,7 @@ def _execute(
     if report is not None:
         report_path = render_html_report(final, report)
         write_decisions_json(final, report)
+        write_agent_diffs(final, report)
         subject = f"Branch Sync Agent 周期报告 {cycle_id} [{final_status}]"
         body = build_email_body(report, final)
         sender = None
