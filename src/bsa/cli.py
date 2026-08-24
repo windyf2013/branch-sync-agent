@@ -4,6 +4,7 @@ import argparse
 import json
 import sys
 
+from bsa.commands.override import apply_override
 from bsa.config.settings import load_settings
 from bsa.graph.factory import _bundled_rules_dir
 from bsa.report.projection import _cycle_status, projection_payload, read_cycle_state
@@ -39,6 +40,18 @@ def _build_parser() -> argparse.ArgumentParser:
     report_p.add_argument("cycle", help="cycle id, e.g. cycle-2026-08-20")
     report_p.add_argument("--json", action="store_true", help="emit JSON on stdout")
     report_p.set_defaults(handler=_cmd_report)
+
+    override_p = sub.add_parser(
+        "override", help="人工覆盖 commit 的 is_bug_fix/risk 判定（写 judgments.json）"
+    )
+    override_p.add_argument("sha", help="commit sha（完整或前 7+ 位）")
+    override_p.add_argument(
+        "--is-bug-fix", action="store_true", help="人工判定为 bug fix"
+    )
+    override_p.add_argument(
+        "--risk", choices=["low", "medium", "high"], help="人工判定严重性"
+    )
+    override_p.set_defaults(handler=_cmd_override)
 
     return parser
 
@@ -140,6 +153,22 @@ def _cmd_report(args: argparse.Namespace) -> int:
         print(f"周期不存在或未完成: {args.cycle}", file=sys.stderr)
         return 1
     print(json.dumps(projection_payload(state), ensure_ascii=False, indent=2))
+    return 0
+
+
+def _cmd_override(args: argparse.Namespace) -> int:
+    try:
+        settings = load_settings()
+    except Exception as exc:
+        print(f"配置错误: {exc}", file=sys.stderr)
+        return 2
+    entry = apply_override(
+        settings.log_dir,
+        args.sha,
+        is_bug_fix=args.is_bug_fix if args.is_bug_fix else None,
+        risk=args.risk,
+    )
+    print(json.dumps(entry, ensure_ascii=False, indent=2))
     return 0
 
 
