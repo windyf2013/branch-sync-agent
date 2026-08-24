@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import argparse
+import json
 import sys
 
 from bsa.config.settings import load_settings
 from bsa.graph.factory import _bundled_rules_dir
+from bsa.report.projection import _cycle_status, projection_payload, read_cycle_state
 from bsa.rules import load_decision_rules, load_safety_rules
 from bsa.scheduler.cycle import list_cycle_records, run_cycle
 
@@ -32,6 +34,11 @@ def _build_parser() -> argparse.ArgumentParser:
 
     validate_p = sub.add_parser("validate-config", help="validate settings and rules")
     validate_p.set_defaults(handler=_cmd_validate_config)
+
+    report_p = sub.add_parser("report", help="project a cycle's state as JSON (read-only)")
+    report_p.add_argument("cycle", help="cycle id, e.g. cycle-2026-08-20")
+    report_p.add_argument("--json", action="store_true", help="emit JSON on stdout")
+    report_p.set_defaults(handler=_cmd_report)
 
     return parser
 
@@ -115,6 +122,24 @@ def _cmd_validate_config(args: argparse.Namespace) -> int:
         "  similarity_high/low: "
         f"{decision_rules.conclude.similarity_high}/{decision_rules.conclude.similarity_low}"
     )
+    return 0
+
+
+def _cmd_report(args: argparse.Namespace) -> int:
+    try:
+        settings = load_settings()
+    except Exception as exc:
+        print(f"配置错误: {exc}", file=sys.stderr)
+        return 2
+    state = read_cycle_state(settings, args.cycle)
+    if state is None:
+        # 无 checkpoint 但周期仍在跑 → 平台侧据此轮询
+        if _cycle_status(settings, args.cycle) == "running":
+            print(json.dumps({"status": "running"}))
+            return 0
+        print(f"周期不存在或未完成: {args.cycle}", file=sys.stderr)
+        return 1
+    print(json.dumps(projection_payload(state), ensure_ascii=False, indent=2))
     return 0
 
 
