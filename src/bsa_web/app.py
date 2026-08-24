@@ -20,6 +20,7 @@ from bsa_web.auth import (
 from bsa_web.db import init_db
 from bsa_web.runner import TaskRunner
 from bsa_web.settings import WebSettings
+from bsa_web.views.audit_log import router as audit_log_router
 from bsa_web.views.detail import router as detail_router
 from bsa_web.views.history import router as history_router
 from bsa_web.views.operations import router as operations_view_router
@@ -110,6 +111,7 @@ def create_app(*, settings_override: dict | None = None) -> FastAPI:
         return resp
 
     app.include_router(workbench_router)
+    app.include_router(audit_log_router)
     app.include_router(history_router)
     app.include_router(detail_router)
     app.include_router(operations_view_router)

@@ -35,3 +35,15 @@ def record(
     )
     db.commit()
     return cur.lastrowid
+
+
+def list_records(
+    db: sqlite3.Connection, limit: int = 500
+) -> list[dict]:
+    """按时间倒序返回最近 ``limit`` 条审计记录（同秒记录以 id 倒序稳定）。"""
+    rows = db.execute(
+        "SELECT id, ts, user, action, cycle_id, target, sha, detail_json, result "
+        "FROM audit_log ORDER BY ts DESC, id DESC LIMIT ?",
+        (limit,),
+    ).fetchall()
+    return [dict(row) for row in rows]

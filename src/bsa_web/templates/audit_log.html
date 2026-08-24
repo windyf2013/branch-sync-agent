@@ -1,0 +1,50 @@
+{% extends "base.html" %}
+{% block title %}操作日志{% endblock %}
+{% block content %}
+<h1>操作日志</h1>
+<p>共 {{ records|length }} 条（最近 {{ records|length }} 条，时间倒序）。</p>
+
+<section>
+  {% if records %}
+  <table>
+    <thead>
+      <tr><th>时间</th><th>用户</th><th>动作</th><th>周期</th><th>目标</th><th>SHA</th><th>结果</th></tr>
+    </thead>
+    <tbody>
+      {% for r in records %}
+      <tr>
+        <td>{{ r.ts }}</td>
+        <td>{{ r.user }}</td>
+        <td>{{ r.action }}</td>
+        <td>
+          {%- if r.cycle_id -%}
+            <a href="/cycle/{{ r.cycle_id }}">{{ r.cycle_id }}</a>
+          {%- endif -%}
+        </td>
+        <td>
+          {%- if r.cycle_id and r.target -%}
+            <a href="/cycle/{{ r.cycle_id }}/target/{{ r.target }}">{{ r.target }}</a>
+          {%- else -%}
+            {{ r.target or "" }}
+          {%- endif -%}
+        </td>
+        <td>
+          {%- if r.cycle_id and r.sha -%}
+            <a href="/cycle/{{ r.cycle_id }}/commit/{{ r.sha }}">{{ r.sha }}</a>
+          {%- else -%}
+            {{ r.sha or "" }}
+          {%- endif -%}
+        </td>
+        <td>{{ r.result or "" }}</td>
+      </tr>
+      {% if r.detail_json %}
+      <tr><td colspan="7"><details><summary>detail</summary><pre>{{ r.detail_json }}</pre></details></td></tr>
+      {% endif %}
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+    <p>暂无操作记录。</p>
+  {% endif %}
+</section>
+{% endblock %}
