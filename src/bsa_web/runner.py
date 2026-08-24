@@ -13,6 +13,7 @@ from __future__ import annotations
 import json
 import os
 import queue
+import sqlite3
 import subprocess
 import sys
 import threading
@@ -67,17 +68,26 @@ class TaskRunner:
                 self._cond.wait(remaining)
 
     def submit(self, kind, user, target, shas=None, src=None, fresh=False) -> int | None:
-        """入队新任务；同 target 有 running/queued 任务则拒绝，返回 None。"""
+        """入队新任务；同 target 有 running/queued 任务则拒绝，返回 None。
+
+        ``_has_active`` 预检仅作快速路径；正确性由 tasks 表的部分唯一索引
+        （state IN queued/running 下 target 唯一）兜底，并发提交时 INSERT 命中
+        IntegrityError 同样返回 None。
+        """
         if kind not in SUPPORTED_KINDS:
             raise ValueError(f"未知任务类型: {kind}")
         if self._has_active(target):
             return None
         shas_json = json.dumps(shas) if shas else None
-        cur = self.db.execute(
-            "INSERT INTO tasks(kind, user, target, src, shas, fresh, state, created_at) "
-            "VALUES (?,?,?,?,?,?, 'queued', ?)",
-            (kind, user, target, src, shas_json, 1 if fresh else 0, _now_iso()),
-        )
+        try:
+            cur = self.db.execute(
+                "INSERT INTO tasks(kind, user, target, src, shas, fresh, state, created_at) "
+                "VALUES (?,?,?,?,?,?, 'queued', ?)",
+                (kind, user, target, src, shas_json, 1 if fresh else 0, _now_iso()),
+            )
+        except sqlite3.IntegrityError:
+            self.db.rollback()
+            return None
         self.db.commit()
         task_id = cur.lastrowid
         with self._cond:

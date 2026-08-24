@@ -8,6 +8,7 @@ from __future__ import annotations
 import subprocess
 import sys
 import threading
+import time
 
 import pytest
 
@@ -28,20 +29,30 @@ def _submit_sync(runner, target="feat/x", src="main", shas=None):
     return runner.submit("sync", "alice", target, shas=shas, src=src)
 
 
+def _wait_state(db, task_id: int, wanted: str, timeout: float = 5) -> bool:
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        row = db.execute("SELECT state FROM tasks WHERE id=?", (task_id,)).fetchone()
+        if row is not None and row["state"] == wanted:
+            return True
+        time.sleep(0.02)
+    return False
+
+
 class TestStateMachine:
     def test_submit_then_running_then_succeeded(self, tmp_path):
-        started = threading.Event()
+        release = threading.Event()
 
         def fake_run(cmd):
-            started.set()
+            release.wait(5)
             return 0, "同步完成", ""
 
         runner = _make_runner(tmp_path, run_func=fake_run)
         runner.start()
         task_id = _submit_sync(runner)
         assert task_id is not None
-        assert started.wait(5)
-        assert runner.get(task_id)["state"] == "running"
+        assert _wait_state(runner.db, task_id, "running")
+        release.set()
         runner.join(timeout=5)
         task = runner.get(task_id)
         assert task["state"] == "succeeded"
@@ -115,6 +126,27 @@ class TestConcurrency:
         db.commit()
         runner = TaskRunner(db, str(tmp_path / "logs"), run_func=_ok_run)
         assert runner.submit("sync", "alice", "feat/x", src="main") is None
+
+    def test_unique_index_blocks_submit_when_precheck_bypassed(self, tmp_path, monkeypatch):
+        """模拟 TOCTOU：预检通过后另一提交先插入，INSERT 命中唯一索引返回 None。"""
+        db = init_db(tmp_path / "platform.sqlite3")
+        db.execute(
+            "INSERT INTO tasks(kind, user, target, state, created_at) "
+            "VALUES ('sync', 'alice', 'feat/x', 'queued', 't')"
+        )
+        db.commit()
+        runner = TaskRunner(db, str(tmp_path / "logs"), run_func=_ok_run)
+        monkeypatch.setattr(runner, "_has_active", lambda target: False)
+        assert runner.submit("sync", "alice", "feat/x", src="main") is None
+        assert db.execute("SELECT COUNT(*) AS n FROM tasks").fetchone()["n"] == 1
+
+    def test_active_target_index_exists(self, tmp_path):
+        db = init_db(tmp_path / "platform.sqlite3")
+        rows = db.execute(
+            "SELECT name FROM sqlite_master WHERE type='index' AND name=?",
+            ("idx_tasks_active_target",),
+        ).fetchall()
+        assert len(rows) == 1
 
 
 class TestSubprocessLifecycle:

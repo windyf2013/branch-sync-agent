@@ -15,6 +15,8 @@ CREATE TABLE IF NOT EXISTS tasks(
   cycle_id TEXT, target TEXT, src TEXT, shas TEXT, fresh INTEGER NOT NULL DEFAULT 0,
   state TEXT NOT NULL, error TEXT, created_at TEXT NOT NULL,
   started_at TEXT, finished_at TEXT);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_tasks_active_target
+  ON tasks(target) WHERE state IN ('queued','running');
 """
 
 
@@ -25,6 +27,10 @@ def init_db(path: str | Path) -> sqlite3.Connection:
     conn.row_factory = sqlite3.Row
     conn.executescript(_SCHEMA)
     _migrate_tasks(conn)
+    conn.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_tasks_active_target "
+        "ON tasks(target) WHERE state IN ('queued','running')"
+    )
     conn.execute("INSERT OR IGNORE INTO meta(key,value) VALUES('schema_version','1')")
     conn.commit()
     return conn
