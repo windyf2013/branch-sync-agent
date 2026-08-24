@@ -68,6 +68,31 @@ class TestFetchAll:
             GitService(executor, tmp_path).fetch_all()
         assert len(executor.calls) == 3
 
+    def test_auth_failure_classified(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("bsa.git.service.time.sleep", lambda _: None)
+        auth = CompletedProcess(
+            returncode=128, stdout="", stderr="Permission denied (publickey)."
+        )
+        executor = FakeExecutor([auth, auth, auth])
+        with pytest.raises(InfrastructureError, match=r"\(auth\)"):
+            GitService(executor, tmp_path).fetch_all()
+
+    def test_network_failure_classified(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("bsa.git.service.time.sleep", lambda _: None)
+        net = CompletedProcess(
+            returncode=128, stdout="", stderr="Could not resolve host: git.example.com"
+        )
+        executor = FakeExecutor([net, net, net])
+        with pytest.raises(InfrastructureError, match=r"\(network\)"):
+            GitService(executor, tmp_path).fetch_all()
+
+    def test_unknown_failure_classified(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("bsa.git.service.time.sleep", lambda _: None)
+        other = CompletedProcess(returncode=128, stdout="", stderr="fatal: repo gone")
+        executor = FakeExecutor([other, other, other])
+        with pytest.raises(InfrastructureError, match=r"\(unknown\)"):
+            GitService(executor, tmp_path).fetch_all()
+
 
 class TestBranchTip:
     def test_prefers_origin_ref(self, tmp_path):

@@ -586,8 +586,10 @@ def _next_model(state: dict, ctx: GraphContext) -> str | None:
     return None
 
 
-def _log_path(ctx: GraphContext, target: str, sha: str) -> Path:
-    return Path(ctx.settings.log_dir) / "build" / target / sha / "build.log"
+def _log_path(ctx: GraphContext, state: dict, target: str, sha: str) -> Path:
+    return (
+        Path(ctx.settings.log_dir) / state["cycle_id"] / "build" / target / sha / "build.log"
+    )
 
 
 def build(state: dict, ctx: GraphContext) -> dict:
@@ -602,7 +604,7 @@ def build(state: dict, ctx: GraphContext) -> dict:
     clean = batch[:1] == [sha] or bool(
         ctx.is_public_file is not None and any(ctx.is_public_file(f) for f in commit.changed_files)
     )
-    log_path = _log_path(ctx, target, sha)
+    log_path = _log_path(ctx, state, target, sha)
     result = ctx.runner.build_commit(
         _worktree_path(state, ctx), model, clean=clean, module=None, log_path=log_path
     )
@@ -632,7 +634,7 @@ def fix_build(state: dict, ctx: GraphContext) -> dict:
     attribution = ctx.build_agent.fix(
         commit, failed.errors, model, git=wg, target_branch=target
     )
-    log_path = _log_path(ctx, target, sha)
+    log_path = _log_path(ctx, state, target, sha)
     result = ctx.runner.build_commit(
         _worktree_path(state, ctx), model, clean=False, module=None, log_path=log_path
     )

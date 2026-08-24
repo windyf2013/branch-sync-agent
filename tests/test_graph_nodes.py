@@ -1118,6 +1118,9 @@ def test_build_success_records_outcome_and_clean_first_in_batch(tmp_path):
     assert call["clean"] is True
     assert call["worktree"] == Path("/wt")
     assert call["model"] == "RTL9617C"
+    assert call["log_path"] == (
+        Path(ctx.settings.log_dir) / "cycle-20260101" / "build" / TARGET / "a1" / "build.log"
+    )
     outcome = update["branch_results"][TARGET].commits[0].build["RTL9617C"]
     assert outcome.status == "OK"
     assert update["status"] == "BUILD_OK"

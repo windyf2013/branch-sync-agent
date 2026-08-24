@@ -32,6 +32,7 @@ DEFAULTS = {
     "max_conflict_attempts": 3,
     "max_build_attempts": 3,
     "mail_dry_run": True,
+    "mail_bridge_path": "",
     "scan_since": None,
     "scan_until": None,
     "fetch_retry_count": 3,
@@ -130,6 +131,12 @@ class TestEnvInjection:
         s = make(monkeypatch, env)
         assert s.scan_since == "2026-08-18T22:00:00+08:00"
         assert s.scan_until == "2026-08-19T22:00:00+08:00"
+
+    def test_mail_bridge_path_env(self, monkeypatch):
+        env = valid_env()
+        env["MAIL_BRIDGE_PATH"] = "/srv/bsa/bridge-scripts"
+        s = make(monkeypatch, env)
+        assert s.mail_bridge_path == "/srv/bsa/bridge-scripts"
 
 
 class TestListField:

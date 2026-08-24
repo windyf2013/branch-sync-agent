@@ -10,6 +10,31 @@ MAX_CHANGED_FILES = 500
 MAX_PATCH_LINES = 20_000
 MAX_PATCH_CHARS = 120_000
 
+_AUTH_ERROR_MARKERS = (
+    "permission denied",
+    "authentication failed",
+    "could not read username",
+    "host key verification failed",
+)
+_NETWORK_ERROR_MARKERS = (
+    "could not resolve host",
+    "connection timed out",
+    "operation timed out",
+    "could not read from remote",
+    "network is unreachable",
+    "no route to host",
+)
+
+
+def _classify_fetch_failure(stderr: str) -> str:
+    """Classify a git fetch failure: ``auth``, ``network``, or ``unknown``."""
+    text = stderr.lower()
+    if any(marker in text for marker in _AUTH_ERROR_MARKERS):
+        return "auth"
+    if any(marker in text for marker in _NETWORK_ERROR_MARKERS):
+        return "network"
+    return "unknown"
+
 
 class GitService:
     """Git operations for the sync workflow, run through an injected executor.
@@ -43,9 +68,10 @@ class GitService:
                 return
             if attempt < self.fetch_retry_count:
                 time.sleep(self.fetch_retry_base_sec * (2 ** (attempt - 1)))
+        kind = _classify_fetch_failure(result.stderr)
         raise InfrastructureError(
-            f"git fetch --all --prune failed after {self.fetch_retry_count} attempts: "
-            f"{result.stderr.strip()}"
+            f"git fetch --all --prune failed after {self.fetch_retry_count} attempts "
+            f"({kind}): {result.stderr.strip()}"
         )
 
     def branch_tip(self, branch: str) -> tuple[str, str]:

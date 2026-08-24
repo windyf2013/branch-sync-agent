@@ -51,6 +51,7 @@ class Settings(BaseSettings):
     mail_dry_run: bool = True
     mail_sender: str
     mail_recipients: list[str]
+    mail_bridge_path: str = ""
 
     # --- logging ---
     log_dir: str

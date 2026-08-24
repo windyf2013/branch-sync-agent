@@ -273,6 +273,7 @@ def _execute(
                 output_dir=cycle_dir,
                 mail_phase="test",
                 mail_to=list(settings.mail_recipients),
+                bridge_path=Path(settings.mail_bridge_path) if settings.mail_bridge_path else None,
             )
         result = MailService(settings, sender=sender).send_report(
             subject, body, report_path, _patch_attachments(final)
