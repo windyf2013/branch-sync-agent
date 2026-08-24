@@ -249,11 +249,20 @@ def _execute_locked(
 ) -> int:
     settings = context.settings
     cycle_dir.mkdir(parents=True, exist_ok=True)
+    started_at = datetime.now().isoformat(timespec="seconds")
+    _write_cycle_record(
+        cycle_dir,
+        cycle_id,
+        status="running",
+        report_path=None,
+        mail_status=None,
+        started_at=started_at,
+        finished_at=started_at,
+    )
     logger = _setup_run_logger(cycle_dir / "run.log")
 
     cleanup_worktrees(context, cycle_id)
 
-    started_at = datetime.now().isoformat(timespec="seconds")
     logger.info(
         "cycle %s start since=%s until=%s dry_run=%s", cycle_id, since, until, dry_run
     )
