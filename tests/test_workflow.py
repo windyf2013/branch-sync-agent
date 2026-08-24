@@ -1,10 +1,11 @@
 from __future__ import annotations
 
+import sqlite3
 from pathlib import Path
 
 from bsa.domain.models import CherryPickResult, Conclusion4
 from bsa.graph.nodes import GraphContext
-from bsa.graph.workflow import build_workflow, make_checkpointer, thread_config
+from bsa.graph.workflow import build_workflow, make_checkpointer, open_checkpointer, thread_config
 from bsa.rules import Classification
 from tests.test_graph_nodes import (
     DEVELOP,
@@ -113,6 +114,17 @@ def cherry_picked(git: FakeGit) -> list[str]:
 
 def test_thread_config_binds_cycle_id():
     assert thread_config("cycle-x") == {"configurable": {"thread_id": "cycle-x"}}
+
+
+def test_checkpointer_db_uses_wal(tmp_path):
+    # 平台投影并发读与周期写入撞锁 → checkpoint 库开启 WAL（任务 3）
+    db = tmp_path / "state.sqlite3"
+    with open_checkpointer(str(db)) as cp:
+        pass
+    conn = sqlite3.connect(str(db))
+    journal = conn.execute("PRAGMA journal_mode").fetchone()[0]
+    conn.close()
+    assert journal == "wal"
 
 
 def test_empty_check_routes_to_report(tmp_path):

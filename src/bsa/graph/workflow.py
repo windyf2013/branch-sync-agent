@@ -66,6 +66,9 @@ def open_checkpointer(conn_string: str) -> Iterator[SqliteSaver]:
     """
     conn = sqlite3.connect(conn_string, check_same_thread=False)
     try:
+        # WAL + busy_timeout: 平台投影并发读与周期写入不撞锁（任务 3）
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA busy_timeout=5000")
         yield _new_saver(conn)
     finally:
         conn.close()
