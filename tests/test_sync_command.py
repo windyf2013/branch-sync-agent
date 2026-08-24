@@ -1,0 +1,327 @@
+from __future__ import annotations
+
+from pathlib import Path
+from types import SimpleNamespace
+
+from bsa.cli import main
+from bsa.commands.sync import (
+    build_sha_batch,
+    build_source_target_batch,
+    run_sync_command,
+)
+from bsa.domain.models import (
+    BranchResult,
+    CherryPickResult,
+    Conclusion4,
+    SyncDecision,
+)
+from bsa.rules import Classification, TargetSnapshot
+from tests.test_config import valid_env
+from tests.test_graph_nodes import (
+    DEVELOP,
+    TARGET,
+    FakeGit,
+    commit,
+    make_ctx,
+    write_branch_md,
+)
+from tests.test_workflow import FakeLLM
+
+
+def worktree_path_for(ctx, target: str, cycle_id: str) -> Path:
+    return Path(ctx.settings.worktree_root) / f"{target}-{cycle_id}"
+
+
+def inject_worktree_git(ctx, fake: FakeGit, target: str, cycle_id: str) -> FakeGit:
+    ctx.worktree_gits[str(worktree_path_for(ctx, target, cycle_id))] = fake
+    return fake
+
+
+def ok_worktree_git() -> FakeGit:
+    wg = FakeGit()
+    wg.cherry_pick_result = CherryPickResult(status="OK")
+    wg.tips = {TARGET: ("origin/" + TARGET, "base-tip")}
+    return wg
+
+
+def _target_snapshot(**kw) -> TargetSnapshot:
+    fields = {"branch_name": TARGET, "branch_type": "release"}
+    fields.update(kw)
+    return TargetSnapshot(**fields)
+
+
+def _setup_target_ctx(ctx) -> FakeGit:
+    ctx.git.tips = {TARGET: ("origin/" + TARGET, "tip1")}
+    wg = ok_worktree_git()
+    inject_worktree_git(ctx, wg, TARGET, "manual-20260824-101010")
+    return wg
+
+
+# --- --sha 直同步 ---
+
+
+def test_sha_mode_success_path(tmp_path):
+    ctx = make_ctx(tmp_path)
+    _setup_target_ctx(ctx)
+
+    batch = build_sha_batch(ctx, DEVELOP, ["a1"])
+    assert len(batch) == 1
+    assert batch[0].source_branch == DEVELOP
+    assert batch[0].sha == "a1"
+
+    final = run_sync_command(
+        ctx, cycle_id="manual-20260824-101010", target=TARGET, batch=batch, checkpointer=None
+    )
+
+    assert final["status"] == "REPORTED"
+    branch = final["branch_results"][TARGET]
+    assert branch.status == "SUCCESS"
+    assert branch.patch_path is not None
+    assert branch.commits[0].cherry_pick == "OK"
+    assert branch.commits[0].build["RTL9617C"].status == "OK"
+
+
+def test_sha_mode_conflict_resolved_builds_and_patches(tmp_path):
+    from bsa.domain.models import ConflictResolution
+
+    ctx = make_ctx(tmp_path)
+    _setup_target_ctx(ctx)
+    wg = ctx.worktree_gits[str(worktree_path_for(ctx, TARGET, "manual-20260824-101010"))]
+    wg.cherry_pick_result = CherryPickResult(
+        status="CONFLICT", conflict_files=["plat/demo.c"]
+    )
+    wg.unmerged_files_result = ["plat/demo.c"]
+    ctx.conflict_agent.resolution = ConflictResolution(
+        files=["plat/demo.c"], diff="+fixed", agent_reason="resolved"
+    )
+
+    batch = build_sha_batch(ctx, DEVELOP, ["a1"])
+    final = run_sync_command(
+        ctx, cycle_id="manual-20260824-101010", target=TARGET, batch=batch, checkpointer=None
+    )
+
+    branch = final["branch_results"][TARGET]
+    assert wg.cherry_pick_continue_calls == 1
+    assert branch.commits[0].cherry_pick == "OK"
+    assert branch.commits[0].conflict_resolution is not None
+    assert branch.commits[0].build["RTL9617C"].status == "OK"
+    assert branch.status == "SUCCESS"
+    assert branch.patch_path is not None
+
+
+def test_sha_mode_failfast_related_stops_batch(tmp_path):
+    ctx = make_ctx(tmp_path)
+    ctx.llm = FakeLLM(related=True)
+    _setup_target_ctx(ctx)
+    wg = ctx.worktree_gits[str(worktree_path_for(ctx, TARGET, "manual-20260824-101010"))]
+    wg.cherry_pick_result = CherryPickResult(
+        status="CONFLICT", conflict_files=["plat/demo.c"]
+    )
+    wg.unmerged_files_result = ["plat/demo.c"]
+    ctx.conflict_agent.resolution = None
+    ctx.git.changed = {"a1": ["plat/demo.c"], "a2": ["plat/demo.c"]}
+    ctx.git.patches = {
+        "a1": "diff --git a/plat/demo.c b/plat/demo.c\n@@ -1,3 +1,3 @@\n- x\n+ y\n",
+        "a2": "diff --git a/plat/demo.c b/plat/demo.c\n@@ -5,3 +5,3 @@\n- x\n+ y\n",
+    }
+
+    batch = build_sha_batch(ctx, DEVELOP, ["a1", "a2"])
+    final = run_sync_command(
+        ctx, cycle_id="manual-20260824-101010", target=TARGET, batch=batch, checkpointer=None
+    )
+
+    picked = [args[0] for name, args in wg.calls if name == "cherry_pick"]
+    assert picked == ["a1"]
+    assert final["branch_results"][TARGET].stop_reason is not None
+
+
+# --- 源+目标模式 ---
+
+
+def test_source_target_mode_only_need_sync_in_batch(tmp_path):
+    write_branch_md(tmp_path)
+    ctx = make_ctx(tmp_path)
+    ctx.git.window_shas = {f"origin/{DEVELOP}": ["a1", "a2"]}
+    ctx.git.changed = {"a1": ["plat/demo.c"], "a2": ["plat/demo.c"]}
+    ctx.git.patches = {"a1": "+x", "a2": "+y"}
+    ctx.git.patch_ids = {"a1": "pid1", "a2": "pid2"}
+    ctx.classify.results = {
+        "a1": Classification(
+            is_bug_fix=True, recognition_source="machine:[BUG]", needs_agent=False
+        ),
+        "a2": Classification(
+            is_bug_fix=True, recognition_source="machine:[BUG]", needs_agent=False
+        ),
+    }
+    ctx.build_snapshot = lambda **kw: _target_snapshot()
+    ctx.conclude.results = {
+        ("a1", TARGET): Conclusion4(kind="NeedSync", evidence=[], confidence="high"),
+        ("a2", TARGET): Conclusion4(
+            kind="AlreadyIncluded", evidence=[], confidence="high"
+        ),
+    }
+
+    batch, conclusions = build_source_target_batch(
+        ctx, DEVELOP, TARGET, "2026-01-01T00:00:00+08:00", "2026-01-02T00:00:00+08:00"
+    )
+
+    assert [c.sha for c in batch] == ["a1"]
+    assert conclusions["a1"].kind == "NeedSync"
+    assert conclusions["a2"].kind == "AlreadyIncluded"
+
+    wg = _setup_target_ctx(ctx)
+    final = run_sync_command(
+        ctx, cycle_id="manual-20260824-101010", target=TARGET, batch=batch, checkpointer=None
+    )
+    picked = [args[0] for name, args in wg.calls if name == "cherry_pick"]
+    assert picked == ["a1"]
+    assert final["branch_results"][TARGET].status == "SUCCESS"
+
+
+def test_source_target_mode_no_need_sync_batch_empty(tmp_path):
+    write_branch_md(tmp_path)
+    ctx = make_ctx(tmp_path)
+    ctx.git.window_shas = {f"origin/{DEVELOP}": ["a1"]}
+    ctx.git.changed = {"a1": ["plat/demo.c"]}
+    ctx.git.patches = {"a1": "+x"}
+    ctx.git.patch_ids = {"a1": "pid1"}
+    ctx.classify.results = {
+        "a1": Classification(
+            is_bug_fix=True, recognition_source="machine:[BUG]", needs_agent=False
+        )
+    }
+    ctx.build_snapshot = lambda **kw: _target_snapshot()
+    ctx.conclude.results = {
+        ("a1", TARGET): Conclusion4(
+            kind="AlreadyIncluded", evidence=[], confidence="high"
+        )
+    }
+
+    batch, conclusions = build_source_target_batch(
+        ctx, DEVELOP, TARGET, "2026-01-01T00:00:00+08:00", "2026-01-02T00:00:00+08:00"
+    )
+
+    assert batch == []
+    assert conclusions["a1"].kind == "AlreadyIncluded"
+
+
+def test_source_target_mode_agent_fallback_for_pending(tmp_path):
+    write_branch_md(tmp_path)
+    ctx = make_ctx(tmp_path)
+    ctx.git.window_shas = {f"origin/{DEVELOP}": ["a1"]}
+    ctx.git.changed = {"a1": ["plat/demo.c"]}
+    ctx.git.patches = {"a1": "+x"}
+    ctx.git.patch_ids = {"a1": "pid1"}
+    ctx.classify.results = {
+        "a1": Classification(
+            is_bug_fix=False,
+            recognition_source="pending:claude-agent",
+            needs_agent=True,
+        )
+    }
+    ctx.sync_decision_agent.results = {
+        "a1": SyncDecision(
+            sha="a1",
+            is_bug_fix=True,
+            reason=None,
+            recognition_source="agent:bug-fix",
+            needs_agent=False,
+        )
+    }
+    ctx.build_snapshot = lambda **kw: _target_snapshot()
+    ctx.conclude.results = {
+        ("a1", TARGET): Conclusion4(kind="NeedSync", evidence=[], confidence="high")
+    }
+
+    batch, _ = build_source_target_batch(
+        ctx, DEVELOP, TARGET, "2026-01-01T00:00:00+08:00", "2026-01-02T00:00:00+08:00"
+    )
+
+    assert [c.sha for c in ctx.sync_decision_agent.calls[0]] == ["a1"]
+    assert [c.sha for c in batch] == ["a1"]
+
+
+# --- CLI 接线 ---
+
+
+def test_sync_cli_no_need_sync_prints_and_exits_zero(monkeypatch, tmp_path, capsys):
+    env = valid_env()
+    env["LOG_DIR"] = str(tmp_path / "logs")
+    monkeypatch.setattr("bsa.config.settings.os.environ", env)
+    monkeypatch.setattr(
+        "bsa.cli.build_graph_context",
+        lambda settings, **kw: SimpleNamespace(settings=settings),
+    )
+    monkeypatch.setattr(
+        "bsa.cli.build_source_target_batch",
+        lambda ctx, src, target, since, until: ([], {}),
+    )
+
+    code = main(["sync", DEVELOP, TARGET])
+
+    assert code == 0
+    assert "无需同步" in capsys.readouterr().out
+
+
+def test_sync_cli_sha_mode_wires_through(monkeypatch, tmp_path, capsys):
+    env = valid_env()
+    env["LOG_DIR"] = str(tmp_path / "logs")
+    monkeypatch.setattr("bsa.config.settings.os.environ", env)
+    seen: dict = {}
+    monkeypatch.setattr(
+        "bsa.cli.build_graph_context",
+        lambda settings, **kw: SimpleNamespace(settings=settings),
+    )
+
+    def fake_batch(ctx, src, shas):
+        seen["batch"] = (src, list(shas))
+        return [commit("a1")]
+
+    monkeypatch.setattr("bsa.cli.build_sha_batch", fake_batch)
+
+    def fake_run(ctx, *, cycle_id, target, batch, checkpointer):
+        seen["run"] = (cycle_id, target, len(batch))
+        return {
+            "cycle_id": cycle_id,
+            "status": "REPORTED",
+            "branch_results": {
+                TARGET: BranchResult(
+                    target_branch=TARGET,
+                    worktree_path="/wt",
+                    status="SUCCESS",
+                    commits=[],
+                    patch_path=str(tmp_path / "p.patch"),
+                    stop_reason=None,
+                )
+            },
+        }
+
+    monkeypatch.setattr("bsa.cli.run_sync_command", fake_run)
+
+    code = main(["sync", DEVELOP, TARGET, "--sha", "a1"])
+
+    assert code == 0
+    assert seen["batch"] == (DEVELOP, ["a1"])
+    assert seen["run"][1] == TARGET
+    assert seen["run"][0].startswith("manual-")
+    assert "SUCCESS" in capsys.readouterr().out
+
+
+def test_sync_cli_rejects_sha_with_window(monkeypatch, tmp_path):
+    env = valid_env()
+    env["LOG_DIR"] = str(tmp_path / "logs")
+    monkeypatch.setattr("bsa.config.settings.os.environ", env)
+
+    code = main(
+        [
+            "sync",
+            DEVELOP,
+            TARGET,
+            "--sha",
+            "a1",
+            "--since",
+            "2026-01-01T00:00:00+08:00",
+        ]
+    )
+
+    assert code == 1

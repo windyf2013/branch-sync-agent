@@ -3,10 +3,18 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+from pathlib import Path
 
 from bsa.commands.override import apply_override
+from bsa.commands.sync import (
+    build_sha_batch,
+    build_source_target_batch,
+    manual_cycle_id,
+    run_sync_command,
+)
 from bsa.config.settings import load_settings
-from bsa.graph.factory import _bundled_rules_dir
+from bsa.graph.factory import _bundled_rules_dir, build_graph_context
+from bsa.graph.workflow import open_checkpointer
 from bsa.report.projection import _cycle_status, projection_payload, read_cycle_state
 from bsa.rules import load_decision_rules, load_safety_rules
 from bsa.scheduler.cycle import list_cycle_records, run_cycle
@@ -62,6 +70,17 @@ def _build_parser() -> argparse.ArgumentParser:
         "--risk", choices=["low", "medium", "high"], help="人工判定严重性"
     )
     override_p.set_defaults(handler=_cmd_override)
+
+    sync_p = sub.add_parser(
+        "sync",
+        help="分支级同步：--sha 直同步，或源+目标判定同步（自动筛选 NeedSync）",
+    )
+    sync_p.add_argument("src", help="源分支名")
+    sync_p.add_argument("target", help="目标分支名")
+    sync_p.add_argument("--sha", nargs="+", help="直同步指定 commit sha（跳过决策）")
+    sync_p.add_argument("--since", help="扫描窗口起点 (ISO8601)，源+目标模式生效")
+    sync_p.add_argument("--until", help="扫描窗口终点 (ISO8601)，源+目标模式生效")
+    sync_p.set_defaults(handler=_cmd_sync)
 
     return parser
 
@@ -179,6 +198,52 @@ def _cmd_override(args: argparse.Namespace) -> int:
         risk=args.risk,
     )
     print(json.dumps(entry, ensure_ascii=False, indent=2))
+    return 0
+
+
+def _cmd_sync(args: argparse.Namespace) -> int:
+    if args.sha and (args.since or args.until):
+        print("sync: --sha 模式不能与 --since/--until 同时使用", file=sys.stderr)
+        return 1
+    try:
+        settings = load_settings()
+    except Exception as exc:
+        print(f"配置错误: {exc}", file=sys.stderr)
+        return 2
+    cycle_id = manual_cycle_id()
+    ctx = build_graph_context(settings, cycle_id=cycle_id)
+    try:
+        if args.sha:
+            batch = build_sha_batch(ctx, args.src, args.sha)
+        else:
+            batch, conclusions = build_source_target_batch(
+                ctx, args.src, args.target, args.since, args.until
+            )
+            for sha in sorted(conclusions):
+                conclusion = conclusions[sha]
+                print(
+                    f"判定 {sha[:12]}: {conclusion.kind} "
+                    f"(confidence={conclusion.confidence})"
+                )
+    except Exception as exc:
+        print(f"准备同步失败: {exc}", file=sys.stderr)
+        return 1
+    if not batch:
+        print("无需同步")
+        return 0
+    log_dir = Path(settings.log_dir)
+    log_dir.mkdir(parents=True, exist_ok=True)
+    with open_checkpointer(str(log_dir / "state.sqlite3")) as checkpointer:
+        final = run_sync_command(
+            ctx, cycle_id=cycle_id, target=args.target, batch=batch, checkpointer=checkpointer
+        )
+    branch = (final.get("branch_results") or {}).get(args.target)
+    status = branch.status if branch is not None else final.get("status", "UNKNOWN")
+    patch_path = branch.patch_path if branch is not None else None
+    print(
+        f"同步完成: cycle={cycle_id} target={args.target} 状态={status} "
+        f"patch={patch_path}"
+    )
     return 0
 
 
