@@ -101,7 +101,7 @@ def test_override_cli_writes_judgment(monkeypatch, tmp_path, capsys):
     env["LOG_DIR"] = str(tmp_path)
     monkeypatch.setattr("bsa.config.settings.os.environ", env)
 
-    code = main(["override", "a1b2c3d4e5f6", "--is-bug-fix", "--risk", "high"])
+    code = main(["override", "a1b2c3d4e5f6", "--is-bug-fix", "true", "--risk", "high"])
 
     assert code == 0
     out = json.loads(capsys.readouterr().out)
@@ -113,9 +113,41 @@ def test_override_cli_writes_judgment(monkeypatch, tmp_path, capsys):
     assert _read(tmp_path)["a1b2c3d4e5f6"] == out
 
 
+def test_override_cli_sets_is_bug_fix_false(monkeypatch, tmp_path, capsys):
+    from tests.test_config import valid_env
+
+    from bsa.cli import main
+
+    env = valid_env()
+    env["LOG_DIR"] = str(tmp_path)
+    monkeypatch.setattr("bsa.config.settings.os.environ", env)
+
+    code = main(["override", "a1b2c3d4e5f6", "--is-bug-fix", "false"])
+
+    assert code == 0
+    out = json.loads(capsys.readouterr().out)
+    assert out == {"is_bug_fix": False, "recognition_source": "manual-override"}
+    assert _read(tmp_path)["a1b2c3d4e5f6"]["is_bug_fix"] is False
+
+
+def test_override_cli_rejects_invalid_is_bug_fix(monkeypatch, tmp_path):
+    from tests.test_config import valid_env
+
+    from bsa.cli import main
+
+    env = valid_env()
+    env["LOG_DIR"] = str(tmp_path)
+    monkeypatch.setattr("bsa.config.settings.os.environ", env)
+
+    with pytest.raises(SystemExit) as exc:
+        main(["override", "a1b2c3d4e5f6", "--is-bug-fix", "maybe"])
+    assert exc.value.code == 2
+    assert not (tmp_path / "judgments.json").exists()
+
+
 def test_override_cli_missing_env_exits_two(monkeypatch):
     from bsa.cli import main
 
     monkeypatch.setattr("bsa.config.settings.os.environ", {})
 
-    assert main(["override", "a1b2c3d4e5f6", "--is-bug-fix"]) == 2
+    assert main(["override", "a1b2c3d4e5f6", "--is-bug-fix", "true"]) == 2

@@ -12,6 +12,14 @@ from bsa.rules import load_decision_rules, load_safety_rules
 from bsa.scheduler.cycle import list_cycle_records, run_cycle
 
 
+def _parse_bool(value: str) -> bool:
+    if value == "true":
+        return True
+    if value == "false":
+        return False
+    raise argparse.ArgumentTypeError(f"必须为 true 或 false，收到: {value!r}")
+
+
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="bsa", description="Branch Sync Agent")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -46,7 +54,9 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     override_p.add_argument("sha", help="commit sha（完整或前 7+ 位）")
     override_p.add_argument(
-        "--is-bug-fix", action="store_true", help="人工判定为 bug fix"
+        "--is-bug-fix",
+        type=_parse_bool,
+        help="人工判定为 bug fix（true/false）",
     )
     override_p.add_argument(
         "--risk", choices=["low", "medium", "high"], help="人工判定严重性"
@@ -165,7 +175,7 @@ def _cmd_override(args: argparse.Namespace) -> int:
     entry = apply_override(
         settings.log_dir,
         args.sha,
-        is_bug_fix=args.is_bug_fix if args.is_bug_fix else None,
+        is_bug_fix=args.is_bug_fix,
         risk=args.risk,
     )
     print(json.dumps(entry, ensure_ascii=False, indent=2))
