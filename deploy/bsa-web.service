@@ -1,0 +1,38 @@
+# bsa-web.service — BSA V2 Web 分支维护工作台 systemd 单元
+#
+# 部署位置：/etc/systemd/system/bsa-web.service
+# 使用：
+#   sudo cp deploy/bsa-web.service /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now bsa-web
+# 查看状态/日志：
+#   systemctl status bsa-web
+#   journalctl -u bsa-web -f
+
+[Unit]
+Description=BSA V2 Web 分支维护工作台
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=bsa
+Group=bsa
+WorkingDirectory=/srv/bsa/bsa
+EnvironmentFile=/etc/bsa-web.env
+Environment=PYTHONUNBUFFERED=1
+# systemd 系统服务 PATH 不含用户级 uv，需显式补入（`which uv` 查看实际路径）
+Environment=PATH=/srv/bsa/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+ExecStart=uv run uvicorn bsa_web.app:create_app --factory --host 127.0.0.1 --port 8888
+Restart=always
+RestartSec=5
+TimeoutStopSec=30
+KillSignal=SIGINT
+# 安全加固
+NoNewPrivileges=true
+PrivateTmp=true
+# 注意：不启用 ProtectSystem=full —— 平台子进程（V1 CLI）需写 repo/worktree
+# 等任意路径，硬只读会破坏同步/推送链路；靠 bsa 低权限用户 + env 约束兜底。
+
+[Install]
+WantedBy=multi-user.target

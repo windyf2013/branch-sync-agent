@@ -1,8 +1,12 @@
+import json
+import logging
+import logging.handlers
+import time
 from pathlib import Path
 from typing import Annotated
 
 from fastapi import Depends, FastAPI, Form, Request
-from fastapi.responses import RedirectResponse
+from fastapi.responses import JSONResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 from pydantic import ValidationError
 
@@ -28,6 +32,40 @@ from bsa_web.views.operations import router as operations_view_router
 from bsa_web.views.workbench import router as workbench_router
 
 templates = Jinja2Templates(directory=str(Path(__file__).resolve().parent / "templates"))
+
+_access_logger = logging.getLogger("bsa_web.access")
+
+
+def _configure_access_logger(log_dir: str | Path) -> logging.Logger:
+    """为 ``bsa_web.access`` 挂 JSON 行文件 handler（供 logrotate 轮转）。
+
+    用 ``WatchedFileHandler``：logrotate rename 后下次写入自动重开新文件。
+    同路径 handler 幂等去重，避免多次 create_app 重复挂载。
+    """
+    logger = logging.getLogger("bsa_web.access")
+    logger.setLevel(logging.INFO)
+    logger.propagate = False
+    path = Path(log_dir) / "access.log"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if not any(
+        isinstance(h, logging.handlers.WatchedFileHandler) and h.baseFilename == str(path)
+        for h in logger.handlers
+    ):
+        handler = logging.handlers.WatchedFileHandler(str(path), encoding="utf-8")
+        handler.setFormatter(logging.Formatter("%(message)s"))
+        logger.addHandler(handler)
+    return logger
+
+
+def _request_username(request: Request) -> str:
+    """只读会话用户名（不做续期），供访问日志记录操作者。"""
+    token = request.cookies.get(SESSION_COOKIE)
+    if not token:
+        return ""
+    row = request.app.state.db.execute(
+        "SELECT user FROM sessions WHERE token=?", (token,)
+    ).fetchone()
+    return row["user"] if row else ""
 
 
 def _build_settings(
@@ -68,8 +106,40 @@ def create_app(*, settings_override: dict | None = None) -> FastAPI:
     runner.start()
     app.state.runner = runner
 
+    _configure_access_logger(settings.log_dir)
+
+    @app.middleware("http")
+    async def access_log_middleware(request: Request, call_next):
+        """结构化请求日志：JSON 行 method/path/status/duration_ms/user。
+
+        不记录 body/敏感信息；中间件在异常经 ServerErrorMiddleware 兜底前
+        先记录 500，再向上重抛交由框架生成响应。
+        """
+        start = time.perf_counter()
+        try:
+            response = await call_next(request)
+            status = response.status_code
+        except Exception:
+            status = 500
+            raise
+        finally:
+            record = {
+                "method": request.method,
+                "path": request.url.path,
+                "status": status,
+                "duration_ms": round((time.perf_counter() - start) * 1000, 2),
+                "user": _request_username(request),
+            }
+            _access_logger.info(json.dumps(record, ensure_ascii=False))
+        return response
+
     @app.get("/healthz")
     def healthz():
+        """平台健康检查：DB 可打开/可写（SELECT 1）失败返回 503 供探活摘除。"""
+        try:
+            app.state.db.execute("SELECT 1").fetchone()
+        except Exception:
+            return JSONResponse(status_code=503, content={"status": "error"})
         return {"status": "ok"}
 
     @app.get("/login")
