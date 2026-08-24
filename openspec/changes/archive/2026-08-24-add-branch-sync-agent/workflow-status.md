@@ -5,9 +5,9 @@
 - Phase: close
 - Capture Mode: none
 - Status: ready_for_next_phase
-- Last Updated: 2026-08-22
+- Last Updated: 2026-08-24
 - Next Command: /openflow close
-- Next Action: Archive change (sync specs to main specs + archive). Implementation complete (commit bf00cb7, 498 tests, 真机测试通过).
+- Next Action: Done. Archived; independent spec-compliance verification passed (commit 13e90e2, 520 tests, ruff clean).
 
 ## Gates
 
@@ -18,7 +18,7 @@
 | Specs validated | passed | specs/ 6 能力 + design.md + openspec validate 通过 |
 | Plan ready | passed | plan-ready.md（补生成，记录实现依据） |
 | Implementation complete | passed | commit bf00cb7，498 tests，ruff clean |
-| Verification complete | passed | 真机测试通过（同步执行链路 + 15 问题修复） |
+| Verification complete | passed | 真机测试通过 + 独立 subagent57 spec-compliance 验证（11 项 PARTIAL 全部修复，520 tests） |
 | Archived | pending | 待 /openflow close（sync specs + archive） |
 
 ## Tasks
