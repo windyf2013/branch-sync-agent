@@ -35,12 +35,20 @@ def _render(request: Request, **extra) -> object:
     return request.app.state.templates.TemplateResponse(request, "workbench.html", extra)
 
 
+def _op_error(request: Request) -> str | None:
+    """快速操作重定向带回来的提示（如 ?error=busy 并发被拒）。"""
+    if request.query_params.get("error") == "busy":
+        return "该目标分支已有任务在运行或排队，请稍后再试"
+    return None
+
+
 @router.get("/")
 def workbench(request: Request, user: Annotated[dict, Depends(require_login)]):
     settings = request.app.state.settings
     log_dir = settings.log_dir
     csrf = make_csrf(settings.secret_key, user["username"])
     records = projection.list_cycles(log_dir)
+    op_error = _op_error(request)
 
     running = next((r for r in records if r.get("status") == "running"), None)
     if running is not None:
@@ -52,11 +60,19 @@ def workbench(request: Request, user: Annotated[dict, Depends(require_login)]):
             cycles=records,
             agent_status="running",
             running_cycle_id=running.get("cycle_id"),
+            op_error=op_error,
         )
 
     cycle_id = projection.latest_completed_cycle(log_dir)
     if cycle_id is None:
-        return _render(request, user=user, csrf=csrf, cycles=records, agent_status=None)
+        return _render(
+            request,
+            user=user,
+            csrf=csrf,
+            cycles=records,
+            agent_status=None,
+            op_error=op_error,
+        )
 
     payload = projection.load_cycle(log_dir, cycle_id)
     if payload is None:
@@ -68,6 +84,7 @@ def workbench(request: Request, user: Annotated[dict, Depends(require_login)]):
             cycles=records,
             agent_status="unavailable",
             current_cycle_id=cycle_id,
+            op_error=op_error,
         )
 
     return _render(
@@ -80,5 +97,6 @@ def workbench(request: Request, user: Annotated[dict, Depends(require_login)]):
         cycle_status=payload.get("status"),
         payload=payload,
         branches=list((payload.get("branch_results") or {}).values()),
+        op_error=op_error,
         **_build_todo(payload),
     )

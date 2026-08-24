@@ -6,6 +6,7 @@ from fastapi.responses import RedirectResponse
 from fastapi.templating import Jinja2Templates
 from pydantic import ValidationError
 
+from bsa_web.api.operations import router as operations_api_router
 from bsa_web.auth import (
     SESSION_COOKIE,
     EnvAuthenticator,
@@ -16,9 +17,11 @@ from bsa_web.auth import (
     require_operator,
 )
 from bsa_web.db import init_db
+from bsa_web.runner import TaskRunner
 from bsa_web.settings import WebSettings
 from bsa_web.views.detail import router as detail_router
 from bsa_web.views.history import router as history_router
+from bsa_web.views.operations import router as operations_view_router
 from bsa_web.views.workbench import router as workbench_router
 
 templates = Jinja2Templates(directory=str(Path(__file__).resolve().parent / "templates"))
@@ -57,6 +60,10 @@ def create_app(*, settings_override: dict | None = None) -> FastAPI:
     app.state.db = init_db(Path(settings.log_dir) / "platform.sqlite3")
     raw_users = ",".join(f"{name}:{creds}" for name, creds in settings.users.items())
     app.state.authenticator = EnvAuthenticator(raw_users)
+
+    runner = TaskRunner(app.state.db, settings.log_dir)
+    runner.start()
+    app.state.runner = runner
 
     @app.get("/healthz")
     def healthz():
@@ -104,6 +111,8 @@ def create_app(*, settings_override: dict | None = None) -> FastAPI:
     app.include_router(workbench_router)
     app.include_router(history_router)
     app.include_router(detail_router)
+    app.include_router(operations_view_router)
+    app.include_router(operations_api_router)
     @app.get("/settings")
     def settings_page(
         request: Request, user: Annotated[dict, Depends(require_operator)]

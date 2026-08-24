@@ -128,6 +128,13 @@ def _loads_user(secret_key: str, token: str | None) -> str | None:
 async def require_csrf(request: Request) -> None:
     form = await request.form()
     token = form.get("_csrf")
+    if token is None:
+        # JSON API 场景：token 放请求体（与表单隐藏字段同一套签名）
+        try:
+            body = await request.json()
+        except Exception:
+            body = {}
+        token = body.get("_csrf")
     secret_key = request.app.state.settings.secret_key
     signed_user = _loads_user(secret_key, token)
     if signed_user is None:

@@ -1,0 +1,23 @@
+{% extends "base.html" %}
+{% block content %}
+<section>
+  <h2>任务 #{{ task_id }}</h2>
+  <ul>
+    <li>类型：{{ "同步" if task.kind == "sync" else "重跑" }}</li>
+    <li>目标分支：{{ task.target }}</li>
+    {% if task.src %}<li>源分支：{{ task.src }}</li>{% endif %}
+    <li>发起人：{{ task.user }}</li>
+    <li>状态：<span class="badge {{ task.state }}">{{ state_label }}</span></li>
+    {% if task.wait_reason %}<li>说明：{{ task.wait_reason }}</li>{% endif %}
+    {% if task.error %}<li>错误：{{ task.error }}</li>{% endif %}
+    <li>创建时间：{{ task.created_at }}</li>
+    {% if task.started_at %}<li>开始时间：{{ task.started_at }}</li>{% endif %}
+    {% if task.finished_at %}<li>结束时间：{{ task.finished_at }}</li>{% endif %}
+  </ul>
+  {% if task.state in ("queued", "running") %}
+  <p>任务执行中，<a href="/tasks/{{ task_id }}">刷新</a>查看最新状态。</p>
+  {% else %}
+  <p><a href="/">返回工作台</a></p>
+  {% endif %}
+</section>
+{% endblock %}

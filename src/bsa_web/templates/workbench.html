@@ -1,6 +1,9 @@
 {% extends "base.html" %}
 {% block content %}
 <section class="agent">
+  {% if op_error %}
+    <p class="op-error">{{ op_error }}</p>
+  {% endif %}
   {% if agent_status == "running" %}
     <span class="badge running">Agent 进行中（{{ running_cycle_id }}）</span>
     <p>当前周期正在执行，完成后自动刷新展示详情。</p>
@@ -67,6 +70,7 @@
     <p>
       <label>源分支 <input type="text" name="src" required></label>
       <label>目标分支 <input type="text" name="target" required></label>
+      <label>SHA（可选，空格分隔）<input type="text" name="sha"></label>
       <button type="submit">触发同步</button>
     </p>
   </form>
@@ -74,6 +78,7 @@
     <input type="hidden" name="_csrf" value="{{ csrf }}">
     <p>
       <label>目标分支 <input type="text" name="target" required></label>
+      <label><input type="checkbox" name="fresh" value="on"> 重建重同步（--fresh）</label>
       <button type="submit">重跑</button>
     </p>
   </form>
