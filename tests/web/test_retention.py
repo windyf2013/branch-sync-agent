@@ -8,6 +8,7 @@ run_maintenance 是组合入口，供 cron 每日调用。
 from __future__ import annotations
 
 import os
+import sqlite3
 import tarfile
 import time
 from pathlib import Path
@@ -151,6 +152,29 @@ class TestBackupNow:
 
         with tarfile.open(archive, "r:gz") as tf:
             assert tf.getnames() == ["logs/judgments.json"]
+
+    def test_wal_snapshot_includes_uncheckpointed_data(self, tmp_path):
+        log_dir = tmp_path / "logs"
+        log_dir.mkdir()
+        db_path = log_dir / "state.sqlite3"
+        conn = sqlite3.connect(db_path)
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("CREATE TABLE t(x)")
+        conn.execute("INSERT INTO t VALUES (42)")
+        conn.commit()
+        assert (log_dir / "state.sqlite3-wal").exists()
+
+        archive = backup_now(log_dir, tmp_path / "backups", keep=7)
+
+        extract_dir = tmp_path / "restored"
+        with tarfile.open(archive, "r:gz") as tf:
+            tf.extractall(extract_dir)
+        restored = sqlite3.connect(extract_dir / "logs" / "state.sqlite3")
+        try:
+            rows = restored.execute("SELECT x FROM t").fetchall()
+        finally:
+            restored.close()
+        assert rows == [(42,)]
 
 
 class TestRunMaintenance:
