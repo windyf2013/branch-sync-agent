@@ -93,6 +93,16 @@ def _payload(branch_results=None, status="REPORTED"):
     }
 
 
+def _fake_worktree(base, target, cycle_id="cycle-2026-08-24"):
+    """构造符合 V1 命名 <target>-<cycle_id> 且 gitdir 有效的假 worktree。"""
+    path = base / f"{target}-{cycle_id}"
+    path.mkdir(parents=True, exist_ok=True)
+    gitdir = base / (".git-" + f"{target}-{cycle_id}".replace("/", "_"))
+    gitdir.mkdir(parents=True, exist_ok=True)
+    (path / ".git").write_text(f"gitdir: {gitdir}\n", encoding="utf-8")
+    return path
+
+
 class _Rec:
     """记录 argv 并模拟成功返回的假 executor。"""
 
@@ -107,7 +117,7 @@ class _Rec:
 class TestCheckPushGates:
     def test_status_not_success_rejected(self, tmp_path):
         payload = _payload(
-            {"feat/x": _branch("feat/x", status="FAILED", worktree=tmp_path)}
+            {"feat/x": _branch("feat/x", status="FAILED", worktree=_fake_worktree(tmp_path, "feat/x"))}
         )
         reasons = push.check_push_gates(payload, "feat/x", forbidden=[], status_clean=True)
         assert any("SUCCESS" in r for r in reasons)
@@ -118,17 +128,21 @@ class TestCheckPushGates:
         assert any("worktree" in r for r in reasons)
 
     def test_forbidden_branch_rejected(self, tmp_path):
-        payload = _payload({"main": _branch("main", worktree=tmp_path)})
+        payload = _payload({"main": _branch("main", worktree=_fake_worktree(tmp_path, "main"))})
         reasons = push.check_push_gates(payload, "main", forbidden=["main"], status_clean=True)
         assert any("禁止" in r for r in reasons)
 
     def test_dirty_worktree_rejected(self, tmp_path):
-        payload = _payload({"feat/x": _branch("feat/x", worktree=tmp_path)})
+        payload = _payload(
+            {"feat/x": _branch("feat/x", worktree=_fake_worktree(tmp_path, "feat/x"))}
+        )
         reasons = push.check_push_gates(payload, "feat/x", forbidden=[], status_clean=False)
         assert any("未提交" in r for r in reasons)
 
     def test_all_gates_pass_empty(self, tmp_path):
-        payload = _payload({"feat/x": _branch("feat/x", worktree=tmp_path)})
+        payload = _payload(
+            {"feat/x": _branch("feat/x", worktree=_fake_worktree(tmp_path, "feat/x"))}
+        )
         reasons = push.check_push_gates(
             payload, "feat/x", forbidden=["main"], status_clean=True
         )
@@ -139,6 +153,37 @@ class TestCheckPushGates:
             _payload(), "feat/x", forbidden=[], status_clean=True
         )
         assert any("不存在" in r for r in reasons)
+
+    def test_stale_worktree_wrong_name_rejected(self, tmp_path):
+        # 投影指向的 worktree 命名不是 <target>-<cycle_id> → 不视为本 target 的 worktree
+        other = _fake_worktree(tmp_path, "stale/target")
+        payload = _payload({"feat/x": _branch("feat/x", worktree=other)})
+        reasons = push.check_push_gates(
+            payload, "feat/x", forbidden=[], status_clean=True,
+            cycle_id="cycle-2026-08-24",
+        )
+        assert any("不匹配" in r for r in reasons)
+
+    def test_worktree_on_wrong_branch_rejected(self, tmp_path, monkeypatch):
+        payload = _payload(
+            {"feat/x": _branch("feat/x", worktree=_fake_worktree(tmp_path, "feat/x"))}
+        )
+        monkeypatch.setattr("bsa_web.push._checked_out_branch", lambda wt: "release/2.0")
+        reasons = push.check_push_gates(
+            payload, "feat/x", forbidden=[], status_clean=True,
+            cycle_id="cycle-2026-08-24",
+        )
+        assert any("不一致" in r for r in reasons)
+
+    def test_worktree_binding_ok(self, tmp_path):
+        payload = _payload(
+            {"feat/x": _branch("feat/x", worktree=_fake_worktree(tmp_path, "feat/x"))}
+        )
+        reasons = push.check_push_gates(
+            payload, "feat/x", forbidden=["main"], status_clean=True,
+            cycle_id="cycle-2026-08-24",
+        )
+        assert reasons == []
 
 
 class TestExecutePush:
@@ -274,8 +319,7 @@ class TestPushApi:
         app = _make_app(tmp_path)
         client = _client(app)
         _login(client)
-        worktree = tmp_path / "wt"
-        worktree.mkdir(parents=True)
+        worktree = _fake_worktree(tmp_path, "feat/x")
         payload = _payload(
             {"feat/x": _branch("feat/x", worktree=worktree, shas=["abc123"])}
         )
@@ -301,12 +345,34 @@ class TestPushApi:
         assert audit[0]["result"] == "ok"
         assert "abc123" in (audit[0]["sha"] or "")
 
+    def test_push_safety_violation_400_and_failed_audit(self, tmp_path, monkeypatch):
+        # target 名过了四道闸但被受限 executor 拒绝（如 feature@2.0）→ 400 且留痕 failed
+        app = _make_app(tmp_path)
+        client = _client(app)
+        _login(client)
+        worktree = _fake_worktree(tmp_path, "feat@2.0")
+        payload = _payload(
+            {"feat@2.0": _branch("feat@2.0", worktree=worktree, shas=["abc123"])}
+        )
+        _install_projection(monkeypatch, payload)
+        monkeypatch.setattr("bsa_web.push.worktree_is_clean", lambda wt: True)
+        r = client.post(
+            "/api/push",
+            json={"target": "feat@2.0", "shas": ["abc123"], "_csrf": _csrf(client)},
+        )
+        assert r.status_code == 400
+        assert "安全策略" in r.json()["detail"]
+        audit = [row for row in _audit_rows(app) if row["action"] == "push"]
+        assert len(audit) == 1
+        assert audit[0]["user"] == "alice"
+        assert audit[0]["target"] == "feat@2.0"
+        assert audit[0]["result"] == "failed"
+
     def test_push_gate_fail_400_with_reasons(self, tmp_path, monkeypatch):
         app = _make_app(tmp_path)
         client = _client(app)
         _login(client)
-        worktree = tmp_path / "wt"
-        worktree.mkdir(parents=True)
+        worktree = _fake_worktree(tmp_path, "feat/x")
         payload = _payload(
             {"feat/x": _branch("feat/x", status="FAILED", worktree=worktree)}
         )
@@ -323,8 +389,7 @@ class TestPushApi:
         app = _make_app(tmp_path)
         client = _client(app)
         _login(client)
-        worktree = tmp_path / "wt"
-        worktree.mkdir(parents=True)
+        worktree = _fake_worktree(tmp_path, "main")
         payload = _payload({"main": _branch("main", worktree=worktree)})
         _install_projection(monkeypatch, payload)
         monkeypatch.setattr("bsa_web.push.worktree_is_clean", lambda wt: True)
@@ -336,12 +401,29 @@ class TestPushApi:
         assert r.status_code == 400
         assert any("禁止" in reason for reason in r.json()["detail"]["reasons"])
 
+    def test_push_stale_worktree_binding_400(self, tmp_path, monkeypatch):
+        # 投影的 worktree 命名不是 <target>-<cycle_id> → 闸②拒绝，绝不从错仓库推送
+        app = _make_app(tmp_path)
+        client = _client(app)
+        _login(client)
+        worktree = _fake_worktree(tmp_path, "other/target")
+        payload = _payload(
+            {"feat/x": _branch("feat/x", worktree=worktree, shas=["abc123"])}
+        )
+        _install_projection(monkeypatch, payload)
+        monkeypatch.setattr("bsa_web.push.worktree_is_clean", lambda wt: True)
+        r = client.post(
+            "/api/push",
+            json={"target": "feat/x", "shas": ["abc123"], "_csrf": _csrf(client)},
+        )
+        assert r.status_code == 400
+        assert any("不匹配" in reason for reason in r.json()["detail"]["reasons"])
+
     def test_push_non_fast_forward_echo(self, tmp_path, monkeypatch):
         app = _make_app(tmp_path)
         client = _client(app)
         _login(client)
-        worktree = tmp_path / "wt"
-        worktree.mkdir(parents=True)
+        worktree = _fake_worktree(tmp_path, "feat/x")
         payload = _payload(
             {"feat/x": _branch("feat/x", worktree=worktree, shas=["abc123"])}
         )

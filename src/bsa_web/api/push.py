@@ -17,6 +17,7 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
 
+from bsa.executor.exceptions import SafetyViolation
 from bsa_web import audit, projection, push
 from bsa_web.auth import require_csrf, require_operator
 
@@ -106,6 +107,7 @@ def api_push(
         body.target,
         forbidden=push.load_forbidden_branches(),
         status_clean=push.worktree_is_clean(worktree),
+        cycle_id=cycle_id,
     )
     if reasons:
         raise HTTPException(status_code=400, detail={"reasons": reasons})
@@ -115,9 +117,31 @@ def api_push(
     if body.shas is not None and body.shas != shas:
         raise HTTPException(status_code=400, detail="确认信息已过期，请重新确认")
 
-    returncode, message = push.execute_push(
-        push.PushExecutor(), worktree, body.target
-    )
+    audit_detail = {
+        "worktree": worktree,
+        "commits": shas,
+        "patch_path": branch.get("patch_path"),
+    }
+    try:
+        returncode, message = push.execute_push(
+            push.PushExecutor(), worktree, body.target
+        )
+    except SafetyViolation as exc:
+        # 受限 executor 拒绝（合法 git 名但非安全 target 等）→ 400 + 留痕，
+        # 失败的推送尝试也必须写入审计（result=failed）。
+        audit.record(
+            request.app.state.db,
+            user["username"],
+            "push",
+            cycle_id=cycle_id,
+            target=body.target,
+            sha=",".join(shas) or None,
+            detail={**audit_detail, "safety_error": str(exc)},
+            result="failed",
+        )
+        raise HTTPException(
+            status_code=400, detail=f"推送被安全策略拦截：{exc}"
+        ) from exc
     audit.record(
         request.app.state.db,
         user["username"],
@@ -125,11 +149,7 @@ def api_push(
         cycle_id=cycle_id,
         target=body.target,
         sha=",".join(shas) or None,
-        detail={
-            "worktree": worktree,
-            "commits": shas,
-            "patch_path": branch.get("patch_path"),
-        },
+        detail=audit_detail,
         result="ok" if returncode == 0 else "failed",
     )
     return {

@@ -40,6 +40,67 @@ def load_forbidden_branches() -> list[str]:
     return rules.forbidden_branches
 
 
+def _valid_worktree_dir(path: Path) -> bool:
+    """True when path 是可用的 git worktree（.git gitdir 可解析）。
+
+    与 V1 ``graph.nodes._is_valid_worktree`` 同判定：有效 worktree 的 ``.git``
+    是文件且 ``gitdir:`` 指向存在的目录，或是目录（老式布局）。已 remove 的
+    worktree 残留目录 gitdir 悬空 → 无效，禁止当作本 target 的 worktree。
+    """
+    dot_git = path / ".git"
+    if not dot_git.exists():
+        return False
+    if dot_git.is_dir():
+        return True
+    text = dot_git.read_text(encoding="utf-8", errors="replace").strip()
+    if not text.startswith("gitdir:"):
+        return False
+    return Path(text[len("gitdir:") :].strip()).is_dir()
+
+
+def _checked_out_branch(worktree: str) -> str | None:
+    """返回 worktree 当前检出分支名；detached HEAD 或不可读返回 None。"""
+    try:
+        proc = subprocess.run(
+            ["git", "-C", worktree, "rev-parse", "--abbrev-ref", "HEAD"],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if proc.returncode != 0:
+        return None
+    branch = proc.stdout.strip()
+    return None if branch == "HEAD" else branch
+
+
+def worktree_belongs_to_target(
+    worktree: str, target: str, cycle_id: str | None = None
+) -> str | None:
+    """确认 worktree 属于 target（含周期），返回原因或 None。
+
+    三重绑定（invariant：绝不从无法确认归属 target 的 worktree 推送）：
+    ① 目录存在且为有效 git worktree（.git gitdir 可解析）；
+    ② 路径尾部命名 ``<target>-<cycle_id>``（与 V1 ``prepare_worktree`` 一致，
+       排除 stale/错指到其他仓库的投影路径）；
+    ③ 检出分支与 target 一致（detached HEAD 无法确认时跳过，靠 ①② 兜底）。
+    """
+    if not worktree:
+        return "worktree 不存在"
+    path = Path(worktree)
+    if not path.exists():
+        return f"worktree 不存在：{worktree}"
+    if not _valid_worktree_dir(path):
+        return f"worktree 不是有效 git 仓库：{worktree}"
+    if cycle_id is not None and not str(path).endswith(f"{target}-{cycle_id}"):
+        return f"worktree 路径与目标/周期不匹配：{path}"
+    branch = _checked_out_branch(worktree)
+    if branch and branch != target:
+        return f"worktree 检出分支 {branch}，与目标 {target} 不一致"
+    return None
+
+
 def worktree_is_clean(worktree: str) -> bool:
     """worktree 上跑只读 ``git status --porcelain``；非空输出视为不干净。
 
@@ -60,11 +121,14 @@ def worktree_is_clean(worktree: str) -> bool:
     return proc.returncode == 0 and not proc.stdout.strip()
 
 
-def check_push_gates(projection, target, *, forbidden, status_clean) -> list[str]:
+def check_push_gates(
+    projection, target, *, forbidden, status_clean, cycle_id=None
+) -> list[str]:
     """四道闸预检，返回未过闸原因列表（空=通过）。
 
-    ① 分支状态 SUCCESS；② worktree 存在；③ 目标不在 forbidden_branches；
-    ④ worktree ``git status --porcelain`` 干净（status_clean 由调用方注入）。
+    ① 分支状态 SUCCESS；② worktree 存在且绑定 target/周期（worktree↔target
+    三重绑定校验）；③ 目标不在 forbidden_branches；④ worktree ``git status
+    --porcelain`` 干净（status_clean 由调用方注入）。
     """
     reasons = []
     branch = (projection.get("branch_results") or {}).get(target)
@@ -74,8 +138,9 @@ def check_push_gates(projection, target, *, forbidden, status_clean) -> list[str
     if branch.get("status") != "SUCCESS":
         reasons.append(f"分支 {target} 状态 {branch.get('status')}，非 SUCCESS")
     worktree = branch.get("worktree_path") or ""
-    if not worktree or not Path(worktree).exists():
-        reasons.append(f"worktree 不存在：{worktree}")
+    binding = worktree_belongs_to_target(worktree, target, cycle_id)
+    if binding is not None:
+        reasons.append(binding)
     if target in forbidden:
         reasons.append(f"目标分支 {target} 在 forbidden_branches 中，禁止推送")
     if not status_clean:
