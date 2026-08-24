@@ -19,6 +19,8 @@ from bsa.domain.models import (
     SyncDecision,
 )
 from bsa.executor.exceptions import SafetyViolation
+from bsa.graph.workflow import open_checkpointer
+from bsa.report.projection import read_cycle_state
 from bsa.rules import Classification, TargetSnapshot
 from tests.test_config import valid_env
 from tests.test_graph_nodes import (
@@ -154,6 +156,31 @@ def test_sha_mode_forbidden_target_rejected(tmp_path):
 def test_manual_cycle_id_is_unique(tmp_path):
     ids = {manual_cycle_id() for _ in range(1000)}
     assert len(ids) == 1000
+
+
+def test_run_sync_command_thread_id_isolates_checkpoint(tmp_path):
+    ctx = make_ctx(tmp_path)
+    _setup_target_ctx(ctx)
+    log_dir = Path(ctx.settings.log_dir)
+    log_dir.mkdir(parents=True, exist_ok=True)
+    db_path = log_dir / "state.sqlite3"
+    batch = build_sha_batch(ctx, DEVELOP, ["a1"])
+
+    with open_checkpointer(str(db_path)) as cp:
+        final = run_sync_command(
+            ctx,
+            cycle_id="manual-20260824-101010",
+            thread_id="rerun-fresh-thread",
+            target=TARGET,
+            batch=batch,
+            checkpointer=cp,
+        )
+
+    assert final["status"] == "REPORTED"
+    assert read_cycle_state(ctx.settings, "manual-20260824-101010") is None
+    fresh = read_cycle_state(ctx.settings, "rerun-fresh-thread")
+    assert fresh is not None
+    assert fresh["branch_results"][TARGET].status == "SUCCESS"
 
 
 # --- 源+目标模式 ---

@@ -4,8 +4,11 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from bsa.cli import main
-from bsa.commands.rerun import run_rerun_command
+from bsa.commands.rerun import _batch_from_state, run_rerun_command
+from bsa.commands.sync import run_sync_command
 from bsa.domain.models import BranchResult, CherryPickResult, Conclusion4
+from bsa.graph.workflow import open_checkpointer
+from bsa.report.projection import read_cycle_state
 from bsa.rules import TargetSnapshot
 from tests.test_config import valid_env
 from tests.test_graph_nodes import DEVELOP, TARGET, FakeGit, commit, make_ctx
@@ -92,7 +95,9 @@ def test_rerun_retained_reuses_worktree_and_updates_patch(tmp_path, monkeypatch)
 
     assert not final.get("stop")
     assert final["rerun"]["mode"] == "retained"
-    assert final["rerun"]["cycle_id"] == RETAINED_CYCLE
+    assert final["rerun"]["cycle_id"] != RETAINED_CYCLE
+    assert final["rerun"]["cycle_id"].startswith("rerun-")
+    assert final["rerun"]["source_cycle_id"] == RETAINED_CYCLE
     assert final["rerun"]["worktree"] == str(wt)
     branch = final["branch_results"][TARGET]
     assert branch.status == "SUCCESS"
@@ -200,6 +205,76 @@ def test_rerun_fresh_still_need_sync_discards_and_rebuilds(tmp_path, monkeypatch
     assert branch.patch_path is not None
 
 
+def test_rerun_fresh_manual_review_stops_with_distinct_reason(tmp_path, monkeypatch):
+    ctx = make_ctx(tmp_path)
+    ctx.git.tips = {
+        TARGET: ("origin/" + TARGET, "tip1"),
+        DEVELOP: ("origin/" + DEVELOP, "tip1"),
+    }
+    patch_cycle_lookup(monkeypatch, [cycle_record(RETAINED_CYCLE)])
+    ctx.build_snapshot = lambda **kw: target_snapshot()
+    ctx.conclude.results = {
+        ("a1", TARGET): Conclusion4(kind="ManualReview", evidence=[], confidence="low")
+    }
+
+    result = run_rerun_command(ctx, target=TARGET, fresh=True)
+
+    assert result["stop"] is True
+    assert result["reason"] == "conclusion-manual-review"
+    assert result["conclusions"]["a1"] == "ManualReview"
+    assert result.get("rerun") is None
+    assert not any(name == "remove_worktree" for name, args in ctx.git.calls)
+    assert not any(name == "add_worktree" for name, args in ctx.git.calls)
+
+
+def test_rerun_fresh_out_of_scope_keeps_now_included_reason(tmp_path, monkeypatch):
+    ctx = make_ctx(tmp_path)
+    ctx.git.tips = {
+        TARGET: ("origin/" + TARGET, "tip1"),
+        DEVELOP: ("origin/" + DEVELOP, "tip1"),
+    }
+    patch_cycle_lookup(monkeypatch, [cycle_record(RETAINED_CYCLE)])
+    ctx.build_snapshot = lambda **kw: target_snapshot()
+    ctx.conclude.results = {
+        ("a1", TARGET): Conclusion4(kind="OutOfScope", evidence=[], confidence="high")
+    }
+
+    result = run_rerun_command(ctx, target=TARGET, fresh=True)
+
+    assert result["stop"] is True
+    assert result["reason"] == "conclusion-now-included"
+
+
+def test_rerun_retained_isolates_checkpoint_thread(tmp_path, monkeypatch):
+    ctx = make_ctx(tmp_path)
+    ctx.git.tips = {TARGET: ("origin/" + TARGET, "tip1")}
+    patch_cycle_lookup(monkeypatch, [cycle_record(RETAINED_CYCLE)])
+    wt = make_valid_worktree(ctx, TARGET, RETAINED_CYCLE)
+    wg = ok_worktree_git()
+    ctx.worktree_gits[str(wt)] = wg
+    monkeypatch.setattr(
+        "bsa.commands.rerun._rerun_thread_id", lambda target: f"rerun-{target}-thread"
+    )
+
+    log_dir = Path(ctx.settings.log_dir)
+    log_dir.mkdir(parents=True, exist_ok=True)
+    db_path = log_dir / "state.sqlite3"
+    batch = _batch_from_state(frozen_state(RETAINED_CYCLE, TARGET, ["a1"]), TARGET)
+    with open_checkpointer(str(db_path)) as cp:
+        run_sync_command(
+            ctx, cycle_id=RETAINED_CYCLE, target=TARGET, batch=batch, checkpointer=cp
+        )
+        before = read_cycle_state(ctx.settings, RETAINED_CYCLE)
+        assert before is not None
+        final = run_rerun_command(ctx, target=TARGET, checkpointer=cp)
+
+    after = read_cycle_state(ctx.settings, RETAINED_CYCLE)
+    assert after == before
+    fresh = read_cycle_state(ctx.settings, f"rerun-{TARGET}-thread")
+    assert fresh is not None
+    assert fresh["branch_results"][TARGET].status == "SUCCESS"
+
+
 # --- CLI 接线 ---
 
 
@@ -274,3 +349,25 @@ def test_rerun_cli_conclusion_now_included_exits_zero(monkeypatch, tmp_path, cap
 
     assert code == 0
     assert "无需重同步" in capsys.readouterr().err
+
+
+def test_rerun_cli_manual_review_exits_zero_with_hint(monkeypatch, tmp_path, capsys):
+    env = valid_env()
+    env["LOG_DIR"] = str(tmp_path / "logs")
+    monkeypatch.setattr("bsa.config.settings.os.environ", env)
+    monkeypatch.setattr(
+        "bsa.cli.build_graph_context",
+        lambda settings, **kw: SimpleNamespace(settings=settings),
+    )
+    monkeypatch.setattr(
+        "bsa.cli.run_rerun_command",
+        lambda ctx, *, target, cycle, fresh, checkpointer: {
+            "stop": True,
+            "reason": "conclusion-manual-review",
+        },
+    )
+
+    code = main(["rerun", TARGET, "--fresh"])
+
+    assert code == 0
+    assert "请先处理人工项" in capsys.readouterr().err

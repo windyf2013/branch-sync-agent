@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import shutil
 from datetime import datetime
 from pathlib import Path
@@ -22,6 +23,12 @@ from bsa.scheduler.cycle import list_cycle_records
 def _worktree_path(ctx: GraphContext, target: str, cycle_id: str) -> Path:
     """目标分支在某周期的 worktree 路径（与 prepare_worktree 命名保持一致）。"""
     return Path(ctx.settings.worktree_root) / f"{target}-{cycle_id}"
+
+
+def _rerun_thread_id(target: str) -> str:
+    """retained 重跑的独立 checkpoint 线程 id：与来源周期隔离，避免污染其投影。"""
+    ts = datetime.now().strftime("%Y%m%d-%H%M%S%f")
+    return f"rerun-{target}-{ts}-{os.getpid()}"
 
 
 def _started_at(record: dict) -> datetime:
@@ -177,12 +184,19 @@ def _rerun_retained(
             "target": target,
             "cycle_id": cycle_id,
         }
+    thread_id = _rerun_thread_id(target)
     final = run_sync_command(
-        ctx, cycle_id=cycle_id, target=target, batch=batch, checkpointer=checkpointer
+        ctx,
+        cycle_id=cycle_id,
+        target=target,
+        batch=batch,
+        checkpointer=checkpointer,
+        thread_id=thread_id,
     )
     final["rerun"] = {
         "mode": "retained",
-        "cycle_id": cycle_id,
+        "cycle_id": thread_id,
+        "source_cycle_id": cycle_id,
         "worktree": str(worktree_path),
     }
     return final
@@ -206,6 +220,17 @@ def _rerun_fresh(
         }
     remaining, conclusions = _rejudge_batch(ctx, target, batch, state)
     if not remaining:
+        if any(
+            conclusion.kind == "ManualReview"
+            for conclusion in conclusions.values()
+        ):
+            return {
+                "stop": True,
+                "reason": "conclusion-manual-review",
+                "target": target,
+                "cycle_id": cycle_id,
+                "conclusions": {sha: conclusion.kind for sha, conclusion in conclusions.items()},
+            }
         return {
             "stop": True,
             "reason": "conclusion-now-included",
@@ -242,8 +267,10 @@ def run_rerun_command(
     """分支级重跑：默认保留现场续跑；--fresh 重建并对当前远端重判。
 
     返回值统一为 dict：拦截场景含 ``stop=True`` 与 ``reason``
-    （dirty / no-cycle / no-worktree / no-batch / conclusion-now-included），
-    正常场景返回同步最终 state 并附 ``rerun`` 元信息。
+    （dirty / no-cycle / no-worktree / no-batch / conclusion-now-included /
+    conclusion-manual-review），正常场景返回同步最终 state 并附 ``rerun``
+    元信息。retained 模式将 checkpoint 写入独立 ``rerun-*`` 线程
+    （``rerun.cycle_id``），不覆盖来源周期投影。
     """
     if fresh:
         return _rerun_fresh(ctx, target=target, cycle=cycle, checkpointer=checkpointer)
