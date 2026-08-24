@@ -1,0 +1,87 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="agent">
+  {% if agent_status == "running" %}
+    <span class="badge running">Agent 进行中（{{ running_cycle_id }}）</span>
+    <p>当前周期正在执行，完成后自动刷新展示详情。</p>
+  {% elif agent_status == "failed" %}
+    <span class="badge failed">周期失败（{{ current_cycle_id }}）</span>
+  {% elif agent_status == "unavailable" %}
+    <p>周期数据暂不可用（{{ current_cycle_id }}）。</p>
+  {% elif agent_status == "done" %}
+    <span class="badge success">周期完成（{{ current_cycle_id }}）</span>
+  {% else %}
+    <p>暂无周期记录，等待首个同步周期。</p>
+  {% endif %}
+</section>
+
+{% if payload %}
+<section>
+  <h2>待办</h2>
+  {% if push_pending %}
+    <h3>可推送</h3>
+    <ul>
+      {% for b in push_pending %}
+      <li>{{ b.target_branch }} —
+        <button type="button" disabled>推送</button> <small>推送功能待实现</small></li>
+      {% endfor %}
+    </ul>
+  {% endif %}
+
+  {% if review_pending %}
+    <h3>待确认</h3>
+    <ul>
+      {% for item in review_pending %}
+      <li>{{ item.sha }} — {{ item.kind }}{% if item.reason %}（{{ item.reason }}）{% endif %}</li>
+      {% endfor %}
+    </ul>
+  {% endif %}
+
+  {% if rerun_pending %}
+    <h3>失败/待重跑分支</h3>
+    <ul>
+      {% for b in rerun_pending %}
+      <li>{{ b.target_branch }}（{{ b.status }}）— 重跑</li>
+      {% endfor %}
+    </ul>
+  {% endif %}
+
+  {% if not push_pending and not review_pending and not rerun_pending %}
+    <p>当前周期无待办项。</p>
+  {% endif %}
+</section>
+
+<section>
+  <h2>当前周期实时总览</h2>
+  <ul class="branches">
+    {% for b in branches %}
+    <li><span class="badge {{ b.status | lower }}">{{ b.status }}</span> {{ b.target_branch }}</li>
+    {% endfor %}
+  </ul>
+</section>
+
+<section>
+  <h2>快速操作</h2>
+  <form method="post" action="/sync">
+    <input type="hidden" name="_csrf" value="{{ csrf }}">
+    <p>
+      <label>源分支 <input type="text" name="src" required></label>
+      <label>目标分支 <input type="text" name="target" required></label>
+      <button type="submit">触发同步</button>
+    </p>
+  </form>
+  <form method="post" action="/rerun">
+    <input type="hidden" name="_csrf" value="{{ csrf }}">
+    <p>
+      <label>目标分支 <input type="text" name="target" required></label>
+      <button type="submit">重跑</button>
+    </p>
+  </form>
+</section>
+{% endif %}
+
+<section>
+  <h2>历史报告</h2>
+  <p><a href="/history">查看全部周期历史</a></p>
+</section>
+{% endblock %}

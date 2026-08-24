@@ -17,6 +17,7 @@ from bsa_web.auth import (
 )
 from bsa_web.db import init_db
 from bsa_web.settings import WebSettings
+from bsa_web.views.workbench import router as workbench_router
 
 templates = Jinja2Templates(directory=str(Path(__file__).resolve().parent / "templates"))
 
@@ -50,6 +51,7 @@ def create_app(*, settings_override: dict | None = None) -> FastAPI:
     settings = _build_settings(settings_override)
     app = FastAPI(title="BSA Web 工作台")
     app.state.settings = settings
+    app.state.templates = templates
     app.state.db = init_db(Path(settings.log_dir) / "platform.sqlite3")
     raw_users = ",".join(f"{name}:{creds}" for name, creds in settings.users.items())
     app.state.authenticator = EnvAuthenticator(raw_users)
@@ -97,17 +99,7 @@ def create_app(*, settings_override: dict | None = None) -> FastAPI:
         resp.delete_cookie(SESSION_COOKIE)
         return resp
 
-    @app.get("/")
-    def index(request: Request, user: Annotated[dict, Depends(require_login)]):
-        return templates.TemplateResponse(
-            request,
-            "index.html",
-            {
-                "user": user,
-                "csrf": make_csrf(settings.secret_key, user["username"]),
-            },
-        )
-
+    app.include_router(workbench_router)
     @app.get("/settings")
     def settings_page(
         request: Request, user: Annotated[dict, Depends(require_operator)]
