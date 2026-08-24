@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 import sqlite3
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
@@ -153,24 +154,96 @@ def _subsequent_commits(state: dict) -> list[CommitInfo]:
     return [by_sha[s] for s in batch[batch.index(sha) + 1 :] if s in by_sha]
 
 
+_HUNK_RE = re.compile(r"@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@")
+
+
+def _patch_hunk_ranges(patch_text: str) -> dict[str, list[tuple[int, int]]]:
+    """Per-file new-side line ranges from unified-diff hunks (``@@ -a,b +c,d @@``)."""
+    ranges: dict[str, list[tuple[int, int]]] = {}
+    file: str | None = None
+    for line in patch_text.splitlines():
+        if line.startswith("diff --git "):
+            match = re.search(r" b/(.+)$", line)
+            file = match.group(1) if match else None
+            if file is not None:
+                ranges.setdefault(file, [])
+            continue
+        if file is None:
+            continue
+        m = _HUNK_RE.match(line)
+        if m:
+            start = int(m.group(1))
+            count = int(m.group(2) or "1")
+            if start > 0:
+                ranges[file].append((start, start + count))
+    return ranges
+
+
+def _ranges_close(
+    a: list[tuple[int, int]], b: list[tuple[int, int]], gap: int
+) -> bool:
+    for start1, end1 in a:
+        for start2, end2 in b:
+            if max(start1 - end2, start2 - end1) <= gap:
+                return True
+    return False
+
+
+def _ambiguous_subsequent(
+    failed: CommitInfo, subsequent: list[CommitInfo], *, gap: int
+) -> list[CommitInfo]:
+    """决策 3 layers 1+2: 过滤确定无关的后续 commit，返回仍模糊者。
+
+    Layer 1 (file-level): 与失败 commit 无 changed_files 交集 → 无关。
+    Layer 2 (region-level): 重叠文件 hunk 行区间相距 > gap → 无关；
+    区间接近/重叠或无法提取区间 → 模糊，交 layer 3（LLM）。
+    """
+    failed_files = set(failed.changed_files)
+    failed_ranges = _patch_hunk_ranges(failed.patch_text)
+    ambiguous: list[CommitInfo] = []
+    for ci in subsequent:
+        overlap = failed_files & set(ci.changed_files)
+        if not overlap:
+            continue
+        ci_ranges = _patch_hunk_ranges(ci.patch_text)
+        close = False
+        for path in overlap:
+            fr = failed_ranges.get(path)
+            cr = ci_ranges.get(path)
+            if fr is None or cr is None or _ranges_close(fr, cr, gap):
+                close = True
+                break
+        if close:
+            ambiguous.append(ci)
+    return ambiguous
+
+
 def fail_fast(state: dict, *, ctx: GraphContext) -> dict:
     """决策 7/32: judge whether subsequent commits relate to the failed one.
 
-    Related → stop this branch's batch; unrelated → continue. LLM degraded /
-    absent → conservative stop (停批). Branch-local, never leaks across targets.
+    Related → stop this branch's batch; unrelated → continue. 决策 3 三层方案：
+    layer 1 文件级交集、layer 2 区域级行区间距离（failfast_region_gap），仅
+    仍模糊的 commit 进 layer 3 LLM。LLM degraded / absent → 模糊者保守停批。
+    Branch-local, never leaks across targets.
     """
     target = state["current_target"]
     sha = state["current_commit"]
     commit = _current_commit_result(state)
+    subsequent = _subsequent_commits(state)
     failed = FailedCommit(
         sha=sha,
         failure_summary=_failure_summary(state),
         changed_files=list(commit.changed_files),
     )
-    if ctx.llm is None:
+    ambiguous = _ambiguous_subsequent(
+        commit, subsequent, gap=ctx.settings.failfast_region_gap
+    )
+    if ambiguous and (
+        ctx.llm is None or ctx.llm.judge_failfast_related(failed, ambiguous)
+    ):
         related = True
     else:
-        related = ctx.llm.judge_failfast_related(failed, _subsequent_commits(state))
+        related = False
     results, branch = _branch_results(state, ctx, target)
     stop_reason = (
         f"fail-fast: {sha} failed; subsequent commits judged related" if related else None

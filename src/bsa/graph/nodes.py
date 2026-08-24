@@ -247,6 +247,7 @@ def _to_analysis(
         source_branch_type=resolve_branch_type(commit.source_branch, branch_mapping),
         homologous_section=commit.homologous_section,
         risk=decision.risk,
+        needs_agent=decision.needs_agent,
     )
 
 

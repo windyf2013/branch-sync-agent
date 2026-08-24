@@ -29,6 +29,7 @@ class CommitAnalysis(BaseModel):
     source_branch_type: str
     homologous_section: str
     risk: Literal["low", "medium", "high"] | None = None
+    needs_agent: bool = False
 
 
 class TargetSnapshot(BaseModel):
@@ -271,6 +272,14 @@ def conclude_pair(
         return Conclusion4(
             kind="ManualReview",
             evidence=["关联符号在目标分支上未全部存在。"],
+            confidence="medium",
+        )
+
+    if source.needs_agent or source.recognition_source.startswith("pending:"):
+        # 决策 18: LLM 未判定（pending）→ 降级人工审核，绝不自动同步。
+        return Conclusion4(
+            kind="ManualReview",
+            evidence=["LLM 未判定（pending），转人工审核"],
             confidence="medium",
         )
 

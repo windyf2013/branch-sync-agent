@@ -189,6 +189,23 @@ def test_classify_lookup_agent_judgment_prefix():
     assert lookup_agent_judgment("abcdef1234567890", judgments)["is_bug_fix"] is True
 
 
+def test_classify_agent_judgment_overrides_machine_marker():
+    # 决策 6: 人工判定最高优先级，先于所有机器规则（含 [BUG] 标记）。
+    result = classify_commit(
+        "[BUG] CQ99999 Fix dhcp lease timeout",
+        ["plat/dhcp/dhcp.c"],
+        ["dhcp_lease_timeout"],
+        "+if (NULL == cfg) return -1;",
+        sha="deadbeefdeadbeefdeadbeefdeadbeefdeadbeef",
+        agent_judgments={
+            "deadbeef": {"is_bug_fix": False, "reason": "False positive, refactor."}
+        },
+    )
+    assert result.is_bug_fix is False
+    assert result.recognition_source == "agent:not-bug-fix"
+    assert result.needs_agent is False
+
+
 # --- classify: 完整移植规则（决策 21 FULLY ported） ---
 
 
@@ -380,11 +397,27 @@ def test_need_sync_high_confidence_with_ticket_and_symbols():
 
 
 def test_need_sync_medium_without_ticket():
-    source = _analysis(issue_ids=[], recognition_source="pending:claude-agent")
+    source = _analysis(issue_ids=[], recognition_source="agent:bug-fix")
     target = _target(fix_clearly_missing=True)
     conclusion = conclude_pair(source, target, similarity_high=0.90, similarity_low=0.50)
     assert conclusion.kind == "NeedSync"
     assert conclusion.confidence == "medium"
+
+
+def test_pending_needs_agent_never_auto_sync():
+    # 决策 18: LLM 未判定（pending）→ 即使 risk=high + 锚点齐全也转人工，不自动同步。
+    source = _analysis(risk="high", needs_agent=True)
+    target = _target(fix_clearly_missing=True)
+    conclusion = conclude_pair(source, target, similarity_high=0.90, similarity_low=0.50)
+    assert conclusion.kind == "ManualReview"
+    assert any("pending" in item for item in conclusion.evidence)
+
+
+def test_pending_recognition_source_never_auto_sync():
+    source = _analysis(recognition_source="pending:claude-agent")
+    target = _target(fix_clearly_missing=True)
+    conclusion = conclude_pair(source, target, similarity_high=0.90, similarity_low=0.50)
+    assert conclusion.kind == "ManualReview"
 
 
 def test_need_sync_low_without_ticket_or_symbols():

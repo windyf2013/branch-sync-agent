@@ -300,6 +300,93 @@ def test_failfast_not_related_continues(tmp_path):
     assert out["report"] is not None
 
 
+def _conflict_ctx(ctx):
+    ctx.conflict_agent.resolution = None
+    inject_worktree_git(
+        ctx,
+        FakeWorktreeGit(
+            results={"a1": CherryPickResult(status="CONFLICT")}, unmerged=["plat/demo.c"]
+        ),
+        TARGET,
+    )
+    return ctx
+
+
+def test_failfast_layer1_disjoint_files_no_llm(tmp_path):
+    # 决策 3 第 1 层: changed_files 无交集 → 无关，继续，且不触发 LLM。
+    write_branch_md(tmp_path)
+    ctx = batch_ctx(tmp_path, shas=["a1", "a2"])
+    ctx.git.changed = {"a1": ["plat/demo.c"], "a2": ["plat/other.c"]}
+    ctx.llm = FakeLLM(related=True)
+    _conflict_ctx(ctx)
+
+    out = run(build_workflow(ctx), base_state())
+
+    assert cherry_picked(worktree_git_for(ctx, TARGET)) == ["a1", "a2"]
+    assert ctx.llm.calls == []
+    assert out["branch_results"][TARGET].stop_reason is None
+    assert out["report"] is not None
+
+
+def test_failfast_layer2_far_regions_no_llm(tmp_path):
+    # 决策 3 第 2 层: 重叠文件但 hunk 行区间相距 > failfast_region_gap → 无关，继续。
+    write_branch_md(tmp_path)
+    ctx = batch_ctx(tmp_path, shas=["a1", "a2"])
+    ctx.git.changed = {"a1": ["plat/demo.c"], "a2": ["plat/demo.c"]}
+    ctx.git.patches = {
+        "a1": "diff --git a/plat/demo.c b/plat/demo.c\n@@ -1,3 +1,3 @@\n- x\n+ y\n",
+        "a2": "diff --git a/plat/demo.c b/plat/demo.c\n@@ -1000,3 +1000,3 @@\n- x\n+ y\n",
+    }
+    ctx.llm = FakeLLM(related=True)
+    _conflict_ctx(ctx)
+
+    out = run(build_workflow(ctx), base_state())
+
+    assert cherry_picked(worktree_git_for(ctx, TARGET)) == ["a1", "a2"]
+    assert ctx.llm.calls == []
+    assert out["branch_results"][TARGET].stop_reason is None
+
+
+def test_failfast_layer3_llm_only_for_ambiguous(tmp_path):
+    # 决策 3 第 3 层: 仅第 2 层仍模糊的 commit 进 LLM；无关/远区间不进。
+    write_branch_md(tmp_path)
+    ctx = batch_ctx(tmp_path, shas=["a1", "a2", "a3"])
+    ctx.git.changed = {
+        "a1": ["plat/demo.c"],
+        "a2": ["plat/other.c"],
+        "a3": ["plat/demo.c"],
+    }
+    ctx.git.patches = {
+        "a1": "diff --git a/plat/demo.c b/plat/demo.c\n@@ -1,3 +1,3 @@\n- x\n+ y\n",
+        "a2": "+x",
+        "a3": "diff --git a/plat/demo.c b/plat/demo.c\n@@ -5,3 +5,3 @@\n- x\n+ y\n",
+    }
+    ctx.llm = FakeLLM(related=True)
+    _conflict_ctx(ctx)
+
+    out = run(build_workflow(ctx), base_state())
+
+    assert cherry_picked(worktree_git_for(ctx, TARGET)) == ["a1"]
+    assert len(ctx.llm.calls) == 1
+    failed, subsequent = ctx.llm.calls[0]
+    assert failed.sha == "a1"
+    assert [c.sha for c in subsequent] == ["a3"]
+    assert out["branch_results"][TARGET].stop_reason is not None
+
+
+def test_failfast_ambiguous_llm_absent_conservative_stop(tmp_path):
+    # LLM 不可用 → 模糊 commit 保守视为相关 → 停批（决策 7/32）。
+    write_branch_md(tmp_path)
+    ctx = batch_ctx(tmp_path, shas=["a1", "a2"])
+    ctx.llm = None
+    _conflict_ctx(ctx)
+
+    out = run(build_workflow(ctx), base_state())
+
+    assert cherry_picked(worktree_git_for(ctx, TARGET)) == ["a1"]
+    assert out["branch_results"][TARGET].stop_reason is not None
+
+
 def test_cherry_pick_failed_routes_to_report_not_failfast(tmp_path):
     write_branch_md(tmp_path)
     ctx = batch_ctx(tmp_path, shas=["a1"])
@@ -319,7 +406,7 @@ def test_cherry_pick_failed_routes_to_report_not_failfast(tmp_path):
 
 def test_fix_build_fails_after_max_attempts_then_failfast(tmp_path):
     write_branch_md(tmp_path)
-    ctx = batch_ctx(tmp_path, shas=["a1"])
+    ctx = batch_ctx(tmp_path, shas=["a1", "a2"])
     ctx.llm = FakeLLM(related=True)
     ctx.runner = FakeRunner(success=False)
 

@@ -214,6 +214,21 @@ def classify_commit(
     cherry_match = rules.cherry_pick_re.search(message)
     cherry_pick_from = cherry_match.group(1) if cherry_match else None
     issue_ids = _extract_issue_ids(message, rules.issue_id_re, rules.issue_prefixes)
+    judgment = lookup_agent_judgment(sha or "", agent_judgments)
+    if judgment is not None:
+        # 决策 6: 人工判定最高优先级，先于所有机器规则。
+        is_bug = bool(judgment.get("is_bug_fix"))
+        reason = str(judgment.get("reason") or "").strip() or "Claude 主 Agent 判定结果。"
+        return Classification(
+            is_bug_fix=is_bug,
+            recognition_source=(
+                rules.agent_bug_fix_source if is_bug else rules.agent_not_bug_fix_source
+            ),
+            issue_ids=issue_ids,
+            cherry_pick_from=cherry_pick_from,
+            reason=reason,
+            needs_agent=False,
+        )
 
     for marker in rules.bugfix_markers:
         if marker.pattern and marker.pattern.search(message):
@@ -245,21 +260,6 @@ def classify_commit(
             is_bug_fix=False,
             recognition_source=rules.not_included_source,
             reason="无关联文件可提取（多为 merge 等），不交 Agent 判定。",
-        )
-
-    judgment = lookup_agent_judgment(sha or "", agent_judgments)
-    if judgment is not None:
-        is_bug = bool(judgment.get("is_bug_fix"))
-        reason = str(judgment.get("reason") or "").strip() or "Claude 主 Agent 判定结果。"
-        return Classification(
-            is_bug_fix=is_bug,
-            recognition_source=(
-                rules.agent_bug_fix_source if is_bug else rules.agent_not_bug_fix_source
-            ),
-            issue_ids=issue_ids,
-            cherry_pick_from=cherry_pick_from,
-            reason=reason,
-            needs_agent=False,
         )
 
     for marker in rules.not_bugfix_markers:
