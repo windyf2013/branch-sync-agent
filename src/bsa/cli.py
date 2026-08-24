@@ -6,6 +6,7 @@ import sys
 from pathlib import Path
 
 from bsa.commands.override import apply_override
+from bsa.commands.rerun import run_rerun_command
 from bsa.commands.sync import (
     build_sha_batch,
     build_source_target_batch,
@@ -82,6 +83,19 @@ def _build_parser() -> argparse.ArgumentParser:
     sync_p.add_argument("--since", help="扫描窗口起点 (ISO8601)，源+目标模式生效")
     sync_p.add_argument("--until", help="扫描窗口终点 (ISO8601)，源+目标模式生效")
     sync_p.set_defaults(handler=_cmd_sync)
+
+    rerun_p = sub.add_parser(
+        "rerun",
+        help="分支级重跑：默认保留现场续跑；--fresh 丢弃现场重建并先对当前远端重判",
+    )
+    rerun_p.add_argument("target", help="目标分支名")
+    rerun_p.add_argument("--cycle", help="来源周期 id（缺省取最近含该分支的周期）")
+    rerun_p.add_argument(
+        "--fresh",
+        action="store_true",
+        help="丢弃旧 worktree 重建，并先对当前远端重判结论（已合入则停止）",
+    )
+    rerun_p.set_defaults(handler=_cmd_rerun)
 
     return parser
 
@@ -248,6 +262,71 @@ def _cmd_sync(args: argparse.Namespace) -> int:
     print(
         f"同步完成: cycle={cycle_id} target={args.target} 状态={status} "
         f"patch={patch_path}"
+    )
+    return 0
+
+
+def _cmd_rerun(args: argparse.Namespace) -> int:
+    try:
+        settings = load_settings()
+    except Exception as exc:
+        print(f"配置错误: {exc}", file=sys.stderr)
+        return 2
+    ctx = build_graph_context(settings)
+    log_dir = Path(settings.log_dir)
+    log_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        with open_checkpointer(str(log_dir / "state.sqlite3")) as checkpointer:
+            result = run_rerun_command(
+                ctx,
+                target=args.target,
+                cycle=args.cycle,
+                fresh=args.fresh,
+                checkpointer=checkpointer,
+            )
+    except Exception as exc:
+        print(f"重跑失败: {exc}", file=sys.stderr)
+        return 1
+    if result.get("stop"):
+        reason = result.get("reason")
+        if reason == "dirty":
+            print(
+                f"现场有未提交修改，请先提交或清理: {result.get('worktree')}",
+                file=sys.stderr,
+            )
+            return 1
+        if reason == "no-worktree":
+            print(
+                f"目标分支 {args.target} 的活 worktree 不存在（可能已过期清理），"
+                "请使用 --fresh 重新同步。",
+                file=sys.stderr,
+            )
+            return 1
+        if reason == "no-cycle":
+            print(
+                f"未找到包含目标分支 {args.target} 的已完成周期，请先使用 bsa sync 同步。",
+                file=sys.stderr,
+            )
+            return 1
+        if reason == "no-batch":
+            print(
+                f"来源周期 {result.get('cycle_id')} 无目标分支 {args.target} 的待同步批次。",
+                file=sys.stderr,
+            )
+            return 1
+        if reason == "conclusion-now-included":
+            print("该修复已被合入/超出范围，无需重同步。", file=sys.stderr)
+            return 0
+        print(f"重跑被拦截: {reason}", file=sys.stderr)
+        return 1
+    rerun = result.get("rerun") or {}
+    branch = (result.get("branch_results") or {}).get(args.target)
+    status = branch.status if branch is not None else result.get("status", "UNKNOWN")
+    patch_path = branch.patch_path if branch is not None else None
+    cycle_id = rerun.get("cycle_id") or result.get("cycle_id")
+    print(
+        f"重跑完成: mode={rerun.get('mode')} cycle={cycle_id} "
+        f"target={args.target} 状态={status} patch={patch_path}"
     )
     return 0
 

@@ -129,6 +129,7 @@ class FakeGit:
         self.format_patch_result: Path | None = None
         self.file_texts: dict[tuple[str, str], str] = {}
         self.metadata_results: dict[str, tuple[str, str, str]] = {}
+        self.status_result: str = ""
 
     def _record(self, name: str, args: tuple) -> None:
         self.calls.append((name, args))
@@ -196,6 +197,10 @@ class FakeGit:
 
     def cherry_pick_continue(self) -> None:
         self.cherry_pick_continue_calls += 1
+
+    def status(self) -> str:
+        self._record("status", ())
+        return self.status_result
 
     def format_patch(self, base: str, head: str, out_dir: Path, prefix: str) -> Path:
         self._record("format_patch", (base, head, out_dir, prefix))
