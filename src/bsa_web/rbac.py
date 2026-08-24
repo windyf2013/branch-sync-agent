@@ -1,0 +1,2 @@
+VIEWER = "viewer"
+OPERATOR = "operator"

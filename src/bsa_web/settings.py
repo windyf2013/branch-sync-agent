@@ -17,6 +17,7 @@ class WebSettings(BaseSettings):
     log_dir: str = "logs"
     secret_key: str
     session_ttl_sec: int = 8 * 3600
+    cookie_secure: bool = False
     users: dict[str, str] = Field(default_factory=dict, validation_alias="BSA_USERS")
 
 

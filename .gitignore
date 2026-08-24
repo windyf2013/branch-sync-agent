@@ -15,3 +15,6 @@ bsa-venv/
 
 .env
 test_branch.md
+
+# 平台运行时产物
+logs/
