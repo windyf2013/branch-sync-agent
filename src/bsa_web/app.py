@@ -8,6 +8,7 @@ from pydantic import ValidationError
 
 from bsa_web.api.manual_review import router as manual_review_api_router
 from bsa_web.api.operations import router as operations_api_router
+from bsa_web.api.push import router as push_api_router
 from bsa_web.auth import (
     SESSION_COOKIE,
     EnvAuthenticator,
@@ -117,6 +118,7 @@ def create_app(*, settings_override: dict | None = None) -> FastAPI:
     app.include_router(operations_view_router)
     app.include_router(operations_api_router)
     app.include_router(manual_review_api_router)
+    app.include_router(push_api_router)
     @app.get("/settings")
     def settings_page(
         request: Request, user: Annotated[dict, Depends(require_operator)]
