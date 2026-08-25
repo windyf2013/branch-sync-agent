@@ -36,6 +36,13 @@ _ABANDONS_IDX_SQL = (
     "ON abandons(cycle_id, target, COALESCE(sha,''))"
 )
 
+_SSH_SESSIONS_SQL = """
+CREATE TABLE IF NOT EXISTS ssh_sessions(
+  token TEXT PRIMARY KEY, cycle_id TEXT NOT NULL, target TEXT NOT NULL,
+  worktree TEXT NOT NULL, port INTEGER NOT NULL, user TEXT NOT NULL,
+  created_at TEXT NOT NULL)
+"""
+
 
 def init_db(path: str | Path) -> sqlite3.Connection:
     """初始化平台库，返回供多线程共享的连接。
@@ -52,6 +59,7 @@ def init_db(path: str | Path) -> sqlite3.Connection:
     conn.executescript(_SCHEMA)
     _migrate_tasks(conn)
     _migrate_abandons(conn)
+    _migrate_ssh_sessions(conn)
     conn.execute(
         "CREATE UNIQUE INDEX IF NOT EXISTS idx_tasks_active_target "
         "ON tasks(target) WHERE state IN ('queued','running')"
@@ -76,6 +84,13 @@ def _migrate_abandons(conn: sqlite3.Connection) -> None:
     if not cols:
         conn.execute(_ABANDONS_SQL)
     conn.execute(_ABANDONS_IDX_SQL)
+
+
+def _migrate_ssh_sessions(conn: sqlite3.Connection) -> None:
+    """ssh_sessions 表：旧库缺失则建表（幂等）。"""
+    cols = {row["name"] for row in conn.execute("PRAGMA table_info(ssh_sessions)")}
+    if not cols:
+        conn.execute(_SSH_SESSIONS_SQL)
 
 
 def is_abandoned(

@@ -1,0 +1,80 @@
+{% extends "base.html" %}
+{% block title %}WebSSH 受限终端{% endblock %}
+{% block extra_head %}
+<link rel="stylesheet" href="/static/xterm.css">
+<style>
+  #ssh-info { background: #1e293b; color: #e2e8f0; padding: 0.5rem 0.75rem;
+              display: flex; gap: 0.75rem; align-items: center; flex-wrap: wrap; }
+  #ssh-info code { background: #0f172a; padding: 0.1rem 0.4rem; border-radius: 4px; }
+  #terminal { padding: 0.5rem; background: #0f172a; }
+  #ssh-status { color: #94a3b8; font-size: 0.85rem; }
+</style>
+{% endblock %}
+{% block content %}
+<h1>WebSSH 受限终端</h1>
+<p class="muted">
+  <a href="javascript:history.back()">&larr; 返回</a> ·
+  仅限当前任务工作树 <code>{{ worktree }}</code>，会话 30 分钟空闲超时、断开即回收。
+</p>
+<div id="ssh-info">
+  <code>{{ worktree }}</code>
+  <span id="ssh-status">连接中…</span>
+  <span style="flex:1"></span>
+  <button type="button" id="ssh-close">关闭终端</button>
+</div>
+<div id="terminal"></div>
+<script src="/static/xterm.js"></script>
+<script src="/static/xterm-addon-fit.js"></script>
+<script>
+(function () {
+  var wsUrl = "{{ ws_url }}";
+  var proto = location.protocol === "https:" ? "wss://" : "ws://";
+  var status = document.getElementById("ssh-status");
+  var term = new Terminal({ fontSize: 13, cursorBlink: true, scrollback: 2000 });
+  var fit = new FitAddon.FitAddon();
+  term.loadAddon(fit);
+  term.open(document.getElementById("terminal"));
+  fit.fit();
+
+  var ws;
+  function connect() {
+    ws = new WebSocket(proto + location.host + wsUrl);
+    ws.onopen = function () {
+      status.textContent = "已连接";
+      term.focus();
+      fit.fit();
+    };
+    ws.onmessage = function (ev) {
+      term.write(ev.data);
+    };
+    ws.onclose = function (ev) {
+      status.textContent = "连接已断开（" + ev.code + "）";
+    };
+    ws.onerror = function () {
+      status.textContent = "连接异常";
+    };
+  }
+  term.onData(function (data) {
+    if (ws && ws.readyState === WebSocket.OPEN) {
+      ws.send(data);
+    }
+  });
+
+  window.addEventListener("resize", function () {
+    try { fit.fit(); } catch (e) {}
+  });
+
+  document.getElementById("ssh-close").addEventListener("click", function () {
+    fetch("/api/ssh/close", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ _csrf: "{{ csrf }}", token: "{{ token }}" }),
+    }).then(function () {
+      window.location.href = "/";
+    });
+  });
+
+  connect();
+})();
+</script>
+{% endblock %}

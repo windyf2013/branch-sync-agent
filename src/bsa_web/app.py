@@ -31,6 +31,8 @@ from bsa_web.views.audit_log import router as audit_log_router
 from bsa_web.views.detail import router as detail_router
 from bsa_web.views.history import router as history_router
 from bsa_web.views.operations import router as operations_view_router
+from bsa_web.views.ssh import api_router as ssh_api_router
+from bsa_web.views.ssh import router as ssh_router
 from bsa_web.views.task_detail import router as task_detail_router
 from bsa_web.views.workbench import router as workbench_router
 
@@ -217,6 +219,8 @@ def create_app(*, settings_override: dict | None = None, env_file: str | None = 
     app.include_router(abandon_api_router)
     app.include_router(push_api_router)
     app.include_router(task_detail_router)
+    app.include_router(ssh_api_router)
+    app.include_router(ssh_router)
     @app.get("/settings")
     def settings_page(
         request: Request, user: Annotated[dict, Depends(require_operator)]
