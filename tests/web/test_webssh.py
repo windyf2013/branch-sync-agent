@@ -450,7 +450,7 @@ class TestSshWs:
             assert ws.receive_text() == "s1"
             ws.send_text("client->server")
             assert ws.receive_text() == "s2"
-        assert state["uris"] == [f"ws://127.0.0.1:{_PORT}/"]
+        assert state["uris"] == [f"ws://127.0.0.1:{_PORT}/ws"]
         assert state["client_msgs"] == ["client->server"]
 
     def test_ws_invalid_token_rejected(self, tmp_path, monkeypatch):
@@ -509,3 +509,60 @@ class TestParsePortRealTtyd:
 # ---- helpers ----
 
 _PORT = 43210
+
+
+class TestWsRelayContract:
+    """_ws_relay 真实契约：ttyd 路径 /ws + tty 子协议 + 字节双向转发。
+
+    真机冒烟发现 mock 掩盖的三类错误：路径连 `/`、无子协议、按文本帧转发。
+    """
+
+    def test_relay_connects_to_ws_path_tty_subprotocol_and_forwards_bytes(
+        self, monkeypatch
+    ):
+        import asyncio
+
+        from bsa_web.views import ssh as ssh_views
+
+        captured: dict = {}
+
+        class FakeConn:
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *a):
+                return False
+
+            async def send(self, msg):
+                captured["sent_to_ttyd"] = msg
+
+            async def recv(self):
+                if not captured.get("recv_done"):
+                    captured["recv_done"] = True
+                    return b"ttyd-output"
+                raise ConnectionError("ttyd closed")  # 模拟断开，让 relay 结束
+
+        class FakeWs:
+            def __init__(self):
+                self._msgs = iter([{"bytes": b"client-input"}])
+
+            async def receive(self):
+                try:
+                    return next(self._msgs)
+                except StopIteration:
+                    raise ConnectionError("client closed") from None
+
+            async def send_bytes(self, b):
+                captured["sent_to_client"] = b
+
+        def fake_connect(uri, subprotocols=None):
+            captured["uri"] = uri
+            captured["subprotocols"] = subprotocols
+            return FakeConn()
+
+        monkeypatch.setattr("bsa_web.views.ssh.websockets.connect", fake_connect)
+        asyncio.run(ssh_views._ws_relay(FakeWs(), "ws://x:1234/ws", {"port": 1234}))
+        # URI 由 ssh_ws 构造（test_ws_proxies_bidirectionally 断言 /ws 路径）
+        assert captured["subprotocols"] == ["tty"]
+        assert captured["sent_to_ttyd"] == b"client-input"
+        assert captured["sent_to_client"] == b"ttyd-output"

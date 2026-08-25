@@ -171,18 +171,30 @@ def ssh_page(
 
 
 async def _ws_relay(ws, uri: str, session: dict) -> None:
-    """双向转发：客户端 <-> ttyd WebSocket；任一端断开即关闭对端。"""
-    async with websockets.connect(uri) as conn:
+    """双向转发：客户端 <-> ttyd WebSocket；任一端断开即关闭对端。
+
+    ttyd 1.7 用二进制帧（首字节类型标记：0=JSON 控制、1=输出/输入数据），
+    必须按字节转发，不能走 receive_text/send_text（mock 假 ttyd 发文本
+    会掩盖此问题——真 ttyd 全二进制帧）。
+    """
+    async with websockets.connect(uri, subprotocols=["tty"]) as conn:
 
         async def client_to_server() -> None:
             while True:
-                message = await ws.receive_text()
-                await conn.send(message)
+                message = await ws.receive()
+                # 浏览器端：JSON 初始化/resize 走文本帧，终端输入走二进制帧
+                # （ttyd 1.7 混合帧型），必须按原帧型转发。
+                if "text" in message:
+                    await conn.send(message["text"])
+                elif "bytes" in message:
+                    await conn.send(message["bytes"])
+                else:
+                    break
 
         async def server_to_client() -> None:
             while True:
                 message = await conn.recv()
-                await ws.send_text(message)
+                await ws.send_bytes(message)
 
         done, pending = await asyncio.wait(
             {asyncio.create_task(client_to_server()), asyncio.create_task(server_to_client())},
@@ -206,7 +218,7 @@ async def ssh_ws(websocket: WebSocket, token: str):
         await websocket.close(code=4401)
         return
     await websocket.accept()
-    uri = f"ws://127.0.0.1:{session['port']}/"
+    uri = f"ws://127.0.0.1:{session['port']}/ws"
     try:
         await _ws_relay(websocket, uri, session)
         # relay 正常返回 = ttyd 侧已断开（空闲超时/close 杀进程）。必须显式关闭

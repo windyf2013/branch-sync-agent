@@ -233,10 +233,13 @@ def session_info(db, token: str) -> dict | None:
         return None
     try:
         created = datetime.fromisoformat(row["created_at"])
-    except ValueError:
+    except (ValueError, TypeError):
         db.execute("DELETE FROM ssh_sessions WHERE token=?", (token,))
         db.commit()
         return None
+    # 防御 naive 时间戳（畸形/手工插入行）：按 UTC 解释，避免减法抛 TypeError
+    if created.tzinfo is None:
+        created = created.replace(tzinfo=UTC)
     if datetime.now(UTC) - created > timedelta(seconds=SSH_TOKEN_TTL_SEC):
         db.execute("DELETE FROM ssh_sessions WHERE token=?", (token,))
         db.commit()
