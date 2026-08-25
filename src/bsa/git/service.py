@@ -60,6 +60,15 @@ class GitService:
             raise InfrastructureError(msg)
         return result
 
+    def fetch_branch(self, branch: str) -> None:
+        """git fetch origin <branch>：仅更新单个源分支的远端引用（快，失败即抛）。"""
+        result = self.executor.run(["fetch", "origin", branch], cwd=self.repo_path)
+        if result.returncode != 0:
+            kind = _classify_fetch_failure(result.stderr)
+            raise InfrastructureError(
+                f"git fetch origin {branch} failed ({kind}): {result.stderr.strip()}"
+            )
+
     def fetch_all(self) -> None:
         """git fetch --all --prune with exponential-backoff retries."""
         for attempt in range(1, self.fetch_retry_count + 1):

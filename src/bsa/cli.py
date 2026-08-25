@@ -63,6 +63,11 @@ def _build_parser() -> argparse.ArgumentParser:
     commits_p = sub.add_parser("commits", help="列出源分支最近的候选 commit（只读）")
     commits_p.add_argument("src", help="源分支名")
     commits_p.add_argument("--limit", type=int, default=50, help="返回条数（默认 50）")
+    commits_p.add_argument(
+        "--refresh",
+        action="store_true",
+        help="先 git fetch origin <src> 更新远端再列（持全局锁）",
+    )
     commits_p.set_defaults(handler=_cmd_commits)
 
     override_p = sub.add_parser(
@@ -214,7 +219,15 @@ def _cmd_commits(args: argparse.Namespace) -> int:
         return 2
     ctx = build_graph_context(settings)
     try:
-        commits = list_candidate_commits(ctx.git, args.src, limit=args.limit)
+        if args.refresh:
+            from bsa.executor.lock import flock_acquire
+
+            with flock_acquire(Path(settings.log_dir) / "bsa.lock"):
+                commits = list_candidate_commits(
+                    ctx.git, args.src, limit=args.limit, refresh=True
+                )
+        else:
+            commits = list_candidate_commits(ctx.git, args.src, limit=args.limit)
     except Exception as exc:
         print(f"候选 commit 加载失败: {exc}", file=sys.stderr)
         return 1

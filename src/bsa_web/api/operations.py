@@ -50,7 +50,10 @@ class RerunBody(BaseModel):
 
 
 def _load_commits(log_dir: str, src: str, limit: int = 50) -> list[dict]:
-    """子进程调 `bsa commits <src> --limit N`，返回候选 commit 列表；失败返回空列表。
+    """子进程调 `bsa commits <src> --limit N --refresh`，返回候选 commit 列表。
+
+    ``--refresh`` 使 CLI 先 ``git fetch origin <src>`` 取远端最新（持全局
+    flock），保证快速操作选源分支后加载的即最新远端提交。失败返回空列表。
 
     环境变量注入 ``LOG_DIR``（承 projection.py 既有 subprocess 模式），
     其余 BSA 设置继承进程环境（生产同 env 部署）。
@@ -59,7 +62,16 @@ def _load_commits(log_dir: str, src: str, limit: int = 50) -> list[dict]:
     env["LOG_DIR"] = str(log_dir)
     try:
         proc = subprocess.run(
-            [sys.executable, "-m", "bsa.cli", "commits", src, "--limit", str(limit)],
+            [
+                sys.executable,
+                "-m",
+                "bsa.cli",
+                "commits",
+                src,
+                "--limit",
+                str(limit),
+                "--refresh",
+            ],
             capture_output=True,
             text=True,
             timeout=60,

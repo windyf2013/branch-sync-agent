@@ -91,6 +91,22 @@ class TestCommitsEndpoint:
         monkeypatch.setattr(operations.subprocess, "run", lambda *a, **k: FakeProc())
         assert operations._load_commits("/tmp/logs", "main", 50) == []
 
+    def test_load_commits_passes_refresh_flag(self, monkeypatch):
+        class FakeProc:
+            returncode = 0
+            stdout = "[]"
+
+        seen = {}
+
+        def fake_run(*args, **kwargs):
+            seen["args"] = args[0]
+            return FakeProc()
+
+        monkeypatch.setattr(operations.subprocess, "run", fake_run)
+        operations._load_commits("/tmp/logs", "main", 50)
+        assert "--refresh" in seen["args"]
+        assert "commits" in seen["args"]
+
     def test_commits_viewer_forbidden(self, tmp_path):
         users = {
             "alice": f"{hash_password('op')}:{OPERATOR}",

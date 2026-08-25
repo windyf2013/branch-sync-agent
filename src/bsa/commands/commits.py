@@ -2,12 +2,18 @@ from bsa.executor.exceptions import InfrastructureError
 from bsa.git.service import GitService
 
 
-def list_candidate_commits(git: GitService, src: str, limit: int = 50) -> list[dict]:
+def list_candidate_commits(
+    git: GitService, src: str, limit: int = 50, *, refresh: bool = False
+) -> list[dict]:
     """列出源分支最近的候选 commit（只读），每项含 sha/message/committed_at。
 
-    只经 GitService 的 executor 走白名单 git 子命令（rev-parse/log），
+    只经 GitService 的 executor 走白名单 git 子命令（fetch/rev-parse/log）；
+    refresh=True 时先 ``git fetch origin <src>`` 取远端最新再列（调用方负责持锁）；
     不写任何状态；src 或 log 失败时抛 InfrastructureError。
     """
+    if refresh:
+        git.fetch_branch(src)
+
     ref: str | None = None
     for candidate in (f"origin/{src}", src):
         check = git.executor.run(
