@@ -2,15 +2,38 @@
 <html lang="zh-CN">
 <head>
   <meta charset="utf-8">
-  <title>BSA 工作台登录</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>登录 · BSA 分支维护工作台</title>
+  <link rel="stylesheet" href="/static/style.css">
 </head>
-<body>
-  <h1>BSA 分支维护工作台</h1>
-  <form method="post" action="/login">
-    <input type="hidden" name="_csrf" value="{{ csrf }}">
-    <p><label>用户名 <input type="text" name="username" autocomplete="username" required></label></p>
-    <p><label>密码 <input type="password" name="password" autocomplete="current-password" required></label></p>
-    <p><button type="submit">登录</button></p>
-  </form>
+<body class="login-body">
+  <div class="login-card">
+    <div class="login-brand">
+      <div class="login-logo">BSA</div>
+      <div>
+        <p class="login-title">分支维护工作台</p>
+      </div>
+    </div>
+    <p class="login-sub">Branch Sync Agent · 登录后查看与维护分支同步</p>
+
+    {% if error %}
+      <div class="login-error">{{ error }}</div>
+    {% endif %}
+
+    <form method="post" action="/login">
+      <input type="hidden" name="_csrf" value="{{ csrf }}">
+      <div class="login-field">
+        <label for="username">用户名</label>
+        <input id="username" type="text" name="username" autocomplete="username" autofocus required>
+      </div>
+      <div class="login-field">
+        <label for="password">密码</label>
+        <input id="password" type="password" name="password" autocomplete="current-password" required>
+      </div>
+      <button class="login-submit" type="submit">登 录</button>
+    </form>
+
+    <div class="login-footer">内部维护工具 · 仅授权用户可访问</div>
+  </div>
 </body>
 </html>

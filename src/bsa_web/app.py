@@ -7,6 +7,7 @@ from typing import Annotated
 
 from fastapi import Depends, FastAPI, Form, Request
 from fastapi.responses import JSONResponse, RedirectResponse
+from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from pydantic import ValidationError
 
@@ -100,14 +101,20 @@ def _build_settings(
     return settings
 
 
-def create_app(*, settings_override: dict | None = None) -> FastAPI:
-    settings = _build_settings(settings_override)
+def create_app(*, settings_override: dict | None = None, env_file: str | None = ".env") -> FastAPI:
+    settings = _build_settings(settings_override, env_file=env_file)
     app = FastAPI(title="BSA Web 工作台")
     app.state.settings = settings
     app.state.templates = templates
     app.state.db = init_db(Path(settings.log_dir) / "platform.sqlite3")
     raw_users = ",".join(f"{name}:{creds}" for name, creds in settings.users.items())
     app.state.authenticator = EnvAuthenticator(raw_users)
+
+    app.mount(
+        "/static",
+        StaticFiles(directory=str(Path(__file__).resolve().parent / "static")),
+        name="static",
+    )
 
     runner = TaskRunner(app.state.db, settings.log_dir)
     runner.start()
@@ -152,7 +159,9 @@ def create_app(*, settings_override: dict | None = None) -> FastAPI:
     @app.get("/login")
     def login_page(request: Request):
         return templates.TemplateResponse(
-            request, "login.html", {"csrf": make_csrf(settings.secret_key, "")}
+            request,
+            "login.html",
+            {"csrf": make_csrf(settings.secret_key, ""), "error": None},
         )
 
     @app.post("/login", dependencies=[Depends(require_csrf)])
@@ -161,7 +170,15 @@ def create_app(*, settings_override: dict | None = None) -> FastAPI:
     ):
         role = app.state.authenticator.authenticate(username, password)
         if role is None:
-            return RedirectResponse("/login", status_code=302)
+            return templates.TemplateResponse(
+                request,
+                "login.html",
+                {
+                    "csrf": make_csrf(settings.secret_key, ""),
+                    "error": "用户名或密码错误",
+                },
+                status_code=400,
+            )
         token = create_session(
             app.state.db, username, role, settings.session_ttl_sec
         )

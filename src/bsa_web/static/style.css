@@ -1,0 +1,189 @@
+/* ===== BSA 分支维护工作台 设计系统 ===== */
+:root {
+  --bg: #f1f5f9;
+  --surface: #ffffff;
+  --border: #e2e8f0;
+  --text: #0f172a;
+  --text-muted: #64748b;
+  --primary: #2563eb;
+  --primary-dark: #1d4ed8;
+  --header-bg: #1e293b;
+  --success: #16a34a;
+  --warning: #d97706;
+  --danger: #dc2626;
+  --radius: 0.5rem;
+  --shadow: 0 1px 3px rgba(15, 23, 42, 0.08), 0 4px 12px rgba(15, 23, 42, 0.06);
+}
+
+* { box-sizing: border-box; }
+
+html, body { margin: 0; padding: 0; }
+
+body {
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC",
+    "Microsoft YaHei", "Helvetica Neue", Arial, sans-serif;
+  background: var(--bg);
+  color: var(--text);
+  line-height: 1.6;
+  font-size: 15px;
+}
+
+h1, h2, h3 { line-height: 1.3; margin: 0 0 0.75rem; }
+h1 { font-size: 1.5rem; }
+h2 { font-size: 1.2rem; color: var(--text); border-bottom: 1px solid var(--border); padding-bottom: 0.4rem; }
+h3 { font-size: 1.02rem; color: var(--text-muted); }
+
+a { color: var(--primary); text-decoration: none; }
+a:hover { text-decoration: underline; }
+
+p { margin: 0.4rem 0; }
+
+.muted { color: var(--text-muted); font-size: 0.9rem; }
+
+/* ===== 顶栏 ===== */
+header {
+  background: var(--header-bg);
+  color: #f8fafc;
+  padding: 0.65rem 1.25rem;
+  display: flex;
+  align-items: center;
+  gap: 1.25rem;
+  flex-wrap: wrap;
+  position: sticky;
+  top: 0;
+  z-index: 10;
+  box-shadow: 0 1px 4px rgba(15, 23, 42, 0.25);
+}
+header .brand { font-weight: 700; font-size: 1.05rem; color: #fff; letter-spacing: 0.02em; }
+header nav { display: flex; gap: 1rem; }
+header nav a { color: #cbd5e1; font-size: 0.92rem; }
+header nav a:hover { color: #fff; text-decoration: none; }
+header .spacer { flex: 1; }
+header .user { font-size: 0.85rem; color: #94a3b8; }
+
+main { padding: 1.25rem; max-width: 1000px; margin: 0 auto; }
+section { margin-bottom: 1.75rem; background: var(--surface); padding: 1rem 1.25rem; border: 1px solid var(--border); border-radius: var(--radius); box-shadow: var(--shadow); }
+
+/* ===== 徽章 ===== */
+.badge {
+  display: inline-block;
+  padding: 0.08rem 0.6rem;
+  border-radius: 0.9rem;
+  font-size: 0.78rem;
+  font-weight: 600;
+  background: #e2e8f0;
+  color: #334155;
+  vertical-align: middle;
+}
+.badge.running, .badge.queued { background: #fef3c7; color: #92400e; }
+.badge.failed, .badge.need { background: #fee2e2; color: #991b1b; }
+.badge.success, .badge.ok { background: #dcfce7; color: #166534; }
+.badge.partial, .badge.review { background: #fef9c3; color: #854d0e; }
+.badge.manual, .badge.pending { background: #e0e7ff; color: #3730a3; }
+.badge.skip { background: #e2e8f0; color: #64748b; }
+
+/* ===== 表格 ===== */
+.table-wrap { overflow-x: auto; }
+table { width: 100%; border-collapse: collapse; font-size: 0.9rem; }
+th, td { text-align: left; padding: 0.5rem 0.65rem; border-bottom: 1px solid var(--border); vertical-align: top; }
+th { color: var(--text-muted); font-weight: 600; white-space: nowrap; }
+tbody tr:hover { background: #f8fafc; }
+td.mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 0.85rem; }
+
+/* ===== 按钮 ===== */
+button {
+  font-family: inherit;
+  font-size: 0.9rem;
+  padding: 0.4rem 0.9rem;
+  border-radius: 0.375rem;
+  border: 1px solid var(--border);
+  background: #fff;
+  color: var(--text);
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s;
+}
+button:hover { background: #f1f5f9; border-color: #cbd5e1; }
+button[type="submit"], button.primary {
+  background: var(--primary);
+  border-color: var(--primary);
+  color: #fff;
+}
+button[type="submit"]:hover, button.primary:hover { background: var(--primary-dark); border-color: var(--primary-dark); }
+button:disabled { opacity: 0.6; cursor: not-allowed; }
+
+/* ===== 表单 ===== */
+form { margin: 0; }
+label { display: inline-block; margin-right: 0.75rem; font-size: 0.9rem; color: var(--text-muted); }
+input[type="text"], input[type="password"], input[type="email"] {
+  font-family: inherit;
+  font-size: 0.92rem;
+  padding: 0.42rem 0.6rem;
+  border: 1px solid #cbd5e1;
+  border-radius: 0.375rem;
+  background: #fff;
+  color: var(--text);
+}
+input:focus { outline: 2px solid var(--primary); outline-offset: -1px; border-color: var(--primary); }
+.form-row { display: flex; gap: 0.75rem; flex-wrap: wrap; align-items: flex-end; margin-bottom: 0.5rem; }
+.form-row label { margin: 0; display: flex; flex-direction: column; gap: 0.2rem; }
+
+/* ===== 提示 / 错误 ===== */
+.op-error {
+  color: #991b1b;
+  background: #fee2e2;
+  border: 1px solid #fecaca;
+  padding: 0.55rem 0.85rem;
+  border-radius: 0.4rem;
+  margin-bottom: 0.75rem;
+}
+.callout { border-left: 4px solid var(--primary); background: #eff6ff; padding: 0.6rem 0.85rem; border-radius: 0.375rem; margin: 0.5rem 0; }
+
+/* ===== 列表 ===== */
+ul.branches { list-style: none; padding: 0; margin: 0.5rem 0; }
+ul.branches li { padding: 0.35rem 0; border-bottom: 1px dashed var(--border); }
+ul.branches li:last-child { border-bottom: 0; }
+
+/* ===== 弹窗 ===== */
+dialog {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 1.1rem 1.3rem;
+  box-shadow: var(--shadow);
+  max-width: 520px;
+  width: 90%;
+}
+dialog::backdrop { background: rgba(15, 23, 42, 0.45); }
+.dialog-close { position: absolute; top: 0.5rem; right: 0.6rem; border: 0; background: none; font-size: 1.1rem; cursor: pointer; }
+.dialog-actions { margin-top: 1rem; display: flex; gap: 0.6rem; justify-content: flex-end; }
+#push-confirm-body pre { white-space: pre-wrap; background: #f1f5f9; padding: 0.6rem 0.8rem; border-radius: 0.375rem; font-size: 0.85rem; }
+.push-result-muted { color: var(--text-muted); font-size: 0.85rem; }
+
+/* ===== 登录页 ===== */
+.login-body { min-height: 100vh; display: flex; align-items: center; justify-content: center; background: linear-gradient(135deg, #1e293b 0%, #334155 100%); padding: 1rem; }
+.login-card {
+  background: var(--surface);
+  border-radius: 0.75rem;
+  box-shadow: 0 10px 40px rgba(15, 23, 42, 0.35);
+  padding: 2rem 2.25rem;
+  width: 100%;
+  max-width: 400px;
+}
+.login-brand { display: flex; align-items: center; gap: 0.7rem; margin-bottom: 0.4rem; }
+.login-logo {
+  width: 40px; height: 40px; border-radius: 0.5rem;
+  background: var(--primary); color: #fff;
+  display: flex; align-items: center; justify-content: center;
+  font-weight: 800; font-size: 1.05rem; letter-spacing: 0.02em;
+}
+.login-title { font-size: 1.15rem; font-weight: 700; margin: 0; }
+.login-sub { color: var(--text-muted); font-size: 0.88rem; margin: 0.2rem 0 1.5rem; }
+.login-field { margin-bottom: 1rem; display: flex; flex-direction: column; gap: 0.3rem; }
+.login-field label { font-size: 0.85rem; color: var(--text); font-weight: 600; }
+.login-field input {
+  font-size: 0.95rem; padding: 0.55rem 0.7rem;
+  border: 1px solid #cbd5e1; border-radius: 0.4rem;
+}
+.login-field input:focus { outline: 2px solid var(--primary); outline-offset: -1px; }
+.login-submit { width: 100%; padding: 0.6rem; font-size: 0.98rem; font-weight: 600; margin-top: 0.4rem; }
+.login-error { color: #991b1b; background: #fee2e2; border: 1px solid #fecaca; padding: 0.5rem 0.75rem; border-radius: 0.4rem; font-size: 0.88rem; margin-bottom: 1rem; }
+.login-footer { margin-top: 1.4rem; text-align: center; color: var(--text-muted); font-size: 0.78rem; }

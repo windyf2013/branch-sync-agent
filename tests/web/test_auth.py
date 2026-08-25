@@ -163,7 +163,10 @@ class TestRoles:
 class TestSecretKeyEnforcement:
     def test_production_missing_secret_key_raises(self, tmp_path):
         with pytest.raises(RuntimeError):
-            create_app(settings_override={"log_dir": str(tmp_path)})
+            create_app(
+                settings_override={"log_dir": str(tmp_path)},
+                env_file=None,
+            )
 
     def test_override_injects_secret_key(self, tmp_path):
         app = create_app(

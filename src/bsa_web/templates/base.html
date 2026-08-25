@@ -2,36 +2,21 @@
 <html lang="zh-CN">
 <head>
   <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>{% block title %}BSA 分支维护工作台{% endblock %}</title>
-  <style>
-    body { font-family: sans-serif; margin: 0; }
-    header { background: #1f2d3d; color: #fff; padding: 0.6rem 1rem;
-             display: flex; align-items: center; gap: 1rem; flex-wrap: wrap; }
-    header nav { display: flex; gap: 1rem; }
-    header nav a { color: #fff; text-decoration: none; }
-    header form { margin-left: auto; }
-    main { padding: 1rem; max-width: 900px; margin: 0 auto; }
-    .badge { display: inline-block; padding: 0.1rem 0.5rem; border-radius: 0.9rem;
-             font-size: 0.85rem; background: #e2e8f0; }
-    .badge.running { background: #fef3c7; color: #92400e; font-weight: bold; }
-    .badge.failed { background: #fee2e2; color: #991b1b; font-weight: bold; }
-    .badge.success { background: #dcfce7; color: #166534; }
-    .badge.partial { background: #fef9c3; color: #854d0e; }
-    .badge.manual { background: #e0e7ff; color: #3730a3; }
-    .op-error { color: #991b1b; background: #fee2e2; padding: 0.5rem 0.8rem;
-                border-radius: 0.4rem; }
-    section { margin-bottom: 1.5rem; }
-  </style>
+  <link rel="stylesheet" href="/static/style.css">
   {% block extra_head %}{% endblock %}
 </head>
 <body>
   <header>
+    <span class="brand">BSA 分支维护工作台</span>
     <nav>
       <a href="/">工作台</a>
       <a href="/history">历史</a>
       <a href="/audit">操作日志</a>
     </nav>
-    <span>当前用户：{{ user.username }}（{{ user.role }}）</span>
+    <span class="spacer"></span>
+    <span class="user">当前用户：{{ user.username }}（{{ user.role }}）</span>
     <form method="post" action="/logout">
       <input type="hidden" name="_csrf" value="{{ csrf }}">
       <button type="submit">登出</button>
