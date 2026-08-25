@@ -1,3 +1,5 @@
+import fcntl
+import os
 import sqlite3
 from pathlib import Path
 
@@ -67,6 +69,43 @@ def init_db(path: str | Path) -> sqlite3.Connection:
     conn.execute("INSERT OR IGNORE INTO meta(key,value) VALUES('schema_version','1')")
     conn.commit()
     return conn
+
+
+class InstanceLock:
+    """平台单实例守卫：对平台库文件加独占 flock，第二个实例启动即失败。
+
+    修复：第二个 app 实例可共享同一 platform.sqlite3，其 ``runner.start()``
+    的 ``_recover_stale_tasks`` 会把仍在运行的 CLI 子进程任务误标失败
+    "平台重启中断"，同时释放唯一索引导致同 target 可再排队。持锁后任何
+    并发的第二个实例在此即抛错，杜绝共享库 + 误恢复。
+
+    进程退出/GC 自动释放 flock（fd 关闭即解锁），无需显式清理。
+    """
+
+    def __init__(self, db_path: str | Path) -> None:
+        path = Path(db_path).resolve()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        self._fd = os.open(path, os.O_RDWR | os.O_CREAT)
+        try:
+            fcntl.flock(self._fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            os.close(self._fd)
+            raise RuntimeError(
+                f"平台单实例冲突：另一个 BSA Web 实例正占用 {path}。"
+                "请勿同时启动两个 web 进程共享同一 LOG_DIR。"
+            ) from None
+
+    def close(self) -> None:
+        try:
+            fcntl.flock(self._fd, fcntl.LOCK_UN)
+        finally:
+            os.close(self._fd)
+
+    def __enter__(self) -> "InstanceLock":
+        return self
+
+    def __exit__(self, *exc) -> None:
+        self.close()
 
 
 def _migrate_tasks(conn: sqlite3.Connection) -> None:

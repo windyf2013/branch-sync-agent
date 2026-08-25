@@ -24,7 +24,7 @@ from bsa_web.auth import (
     require_login,
     require_operator,
 )
-from bsa_web.db import init_db
+from bsa_web.db import InstanceLock, init_db
 from bsa_web.runner import TaskRunner
 from bsa_web.settings import WebSettings
 from bsa_web.views.audit_log import router as audit_log_router
@@ -110,7 +110,12 @@ def create_app(*, settings_override: dict | None = None, env_file: str | None = 
     app = FastAPI(title="BSA Web 工作台")
     app.state.settings = settings
     app.state.templates = templates
-    app.state.db = init_db(Path(settings.log_dir) / "platform.sqlite3")
+    db_path = Path(settings.log_dir) / "platform.sqlite3"
+    # 单实例守卫：必须先于 init_db/runner 持锁，第二个 web 实例在此即抛错，
+    # 杜绝两个实例共享同一平台库时 _recover_stale_tasks 误标运行中任务。
+    instance_lock = InstanceLock(db_path)
+    app.state.db = init_db(db_path)
+    app.state.instance_lock = instance_lock
     raw_users = ",".join(f"{name}:{creds}" for name, creds in settings.users.items())
     app.state.authenticator = EnvAuthenticator(raw_users)
 

@@ -307,6 +307,55 @@ class TestTaskUserSource:
         assert "feat/cli" in r.text
         assert "来源 cli" in r.text
 
+    def test_active_web_task_not_duplicated_as_cli_cycle(
+        self, tmp_path, monkeypatch
+    ):
+        # 回归：运行中 web 任务（tasks 表 running，cycle_id 未回写）与其对应
+        # manual 周期是同一份工作，_cli_cycles 必须按 target 去重，不能重复展示
+        # 为"来源 cli"的独立任务（曾导致任务中心同时显示 失败任务 + 停批CLI周期）。
+        import sqlite3
+        from pathlib import Path
+
+        app = _make_app(tmp_path)
+        client = _client(app)
+        _login(client)
+        db = Path(str(tmp_path)) / "state.sqlite3"
+        db.parent.mkdir(parents=True, exist_ok=True)
+        conn = sqlite3.connect(str(db))
+        conn.execute(
+            "CREATE TABLE checkpoints(thread_id TEXT, checkpoint_ns TEXT, "
+            "checkpoint_id TEXT, parent_checkpoint_id TEXT, type TEXT, "
+            "checkpoint BLOB, metadata BLOB)"
+        )
+        conn.execute(
+            "INSERT INTO checkpoints(thread_id, checkpoint_ns, checkpoint_id, type, checkpoint) "
+            "VALUES ('manual-20260825-123456-99', 'x', 'c1', 'write', '{}')"
+        )
+        conn.commit()
+        conn.close()
+        # web 任务 running、cycle_id 尚未回写（CLI 仍在执行）
+        app.state.db.execute(
+            "INSERT INTO tasks(kind, user, target, state, created_at) "
+            "VALUES ('sync','alice','feat/cli','running',?)",
+            ("2026-08-25T09:00:00+00:00",),
+        )
+        app.state.db.commit()
+        monkeypatch.setattr(
+            "bsa_web.views.workbench.projection.load_cycle",
+            lambda log_dir, cid: _payload(
+                branch_results={"feat/cli": _branch("feat/cli", "PARTIAL")}
+            ),
+        )
+        monkeypatch.setattr("bsa_web.projection.list_cycles", lambda log_dir: [])
+        monkeypatch.setattr(
+            "bsa_web.projection.latest_completed_cycle", lambda log_dir: None
+        )
+        r = client.get("/")
+        assert r.status_code == 200
+        # 任务中心只出现一次 feat/cli（running 的 web 任务），不再有第二条"来源 cli"
+        assert r.text.count("feat/cli") == 1
+        assert "来源 cli" not in r.text
+
 
 class TestTaskDetail:
     def test_detail_success_shows_push_key(self, tmp_path, monkeypatch):

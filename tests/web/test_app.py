@@ -1,13 +1,20 @@
+import pytest
 from fastapi.testclient import TestClient
 
 from bsa_web.app import create_app
-from bsa_web.db import init_db
+from bsa_web.db import InstanceLock, init_db
 from bsa_web.settings import WebSettings, load_web_settings
 
 
-def test_healthcheck():
+def test_healthcheck(tmp_path):
     client = TestClient(
-        create_app(settings_override={"secret_key": "test-secret"}, env_file=None)
+        create_app(
+            settings_override={
+                "log_dir": str(tmp_path),
+                "secret_key": "test-secret",
+            },
+            env_file=None,
+        )
     )
     r = client.get("/healthz")
     assert r.status_code == 200
@@ -76,3 +83,39 @@ class TestInitDb:
         n = conn.execute("SELECT COUNT(*) FROM meta").fetchone()[0]
         assert n == 1
         conn.close()
+
+
+class TestInstanceLock:
+    def test_second_instance_acquire_fails(self, tmp_path):
+        db = tmp_path / "platform.sqlite3"
+        first = InstanceLock(db)
+        try:
+            with pytest.raises(RuntimeError, match="单实例冲突"):
+                InstanceLock(db)
+        finally:
+            first.close()
+
+    def test_reacquire_after_close_succeeds(self, tmp_path):
+        db = tmp_path / "platform.sqlite3"
+        InstanceLock(db).close()
+        InstanceLock(db).close()
+
+    def test_context_manager_releases(self, tmp_path):
+        db = tmp_path / "platform.sqlite3"
+        with InstanceLock(db):
+            pass
+        InstanceLock(db).close()
+
+    def test_second_app_same_log_dir_raises(self, tmp_path):
+        create_app(
+            settings_override={"log_dir": str(tmp_path), "secret_key": "test-secret"},
+            env_file=None,
+        )
+        with pytest.raises(RuntimeError, match="单实例冲突"):
+            create_app(
+                settings_override={
+                    "log_dir": str(tmp_path),
+                    "secret_key": "test-secret",
+                },
+                env_file=None,
+            )

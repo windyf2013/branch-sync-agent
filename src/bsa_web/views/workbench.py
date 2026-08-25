@@ -133,12 +133,16 @@ def _auto_tasks(payload: dict, cycle_id: str, abandoned: set) -> list[dict]:
     return tasks
 
 
-def _cli_cycles(log_dir: str, exclude: set[str]) -> list[dict]:
+def _cli_cycles(log_dir: str, exclude: set[str], active_targets: set[str]) -> list[dict]:
     """枚举 CLI/cron 直启的手动周期（manual-*/rerun-* checkpoint 线程）。
 
     平台 B 区发起的任务有 tasks 行（含 user/source）；CLI 或 cron 直接调
     `bsa sync/rerun` 不写 tasks 表，只能从 checkpoint thread_id 枚举，保证
     "编译中的手动任务在 A 区可见"。每项 user=运行 CLI 的 OS 用户、source=cli。
+
+    去重：运行中/排队中的 web 任务（tasks 表 queued/running）与对应的
+    manual/rerun 周期是同一份工作，thread_id 未回写 cycle_id 前无法用
+    exclude 去重；此处按 target 跳过重叠项，避免同一工作重复展示。
     """
     db = Path(log_dir) / "state.sqlite3"
     if not db.is_file():
@@ -167,6 +171,8 @@ def _cli_cycles(log_dir: str, exclude: set[str]) -> list[dict]:
             continue
         for branch in (payload.get("branch_results") or {}).values():
             target = branch.get("target_branch")
+            if target in active_targets:
+                continue
             status = branch.get("status") or "UNKNOWN"
             cycles.append(
                 {
@@ -207,6 +213,13 @@ def _manual_tasks(db, log_dir: str, window_start: str | None) -> list[dict]:
     start = _parse_ts(window_start)
     tasks = []
     known_cycles: set[str] = set()
+    # 运行中/排队中 web 任务的 target 集合：_cli_cycles 据此跳过同一份工作
+    # （web 任务 CLI 子进程对应的 manual/rerun 周期），避免重复展示。
+    active_targets: set[str] = {
+        row["target"]
+        for row in rows
+        if row["state"] in _ACTIVE_STATES and row["target"]
+    }
     for row in rows:
         task = dict(row)
         created = _parse_ts(task["created_at"])
@@ -246,7 +259,7 @@ def _manual_tasks(db, log_dir: str, window_start: str | None) -> list[dict]:
                 "source": task["source"] or "web",
             }
         )
-    tasks.extend(_cli_cycles(log_dir, known_cycles))
+    tasks.extend(_cli_cycles(log_dir, known_cycles, active_targets))
     tasks.sort(key=lambda t: t.get("created_at") or "", reverse=True)
     return tasks
 
