@@ -2,12 +2,12 @@
 
 ## Summary
 
-- Phase: build
+- Phase: close
 - Capture Mode: none
-- Status: ready_for_next_phase
+- Status: completed
 - Last Updated: 2026-08-25
-- Next Command: /openflow close
-- Next Action: 全部实现完成，待 close 验证归档。
+- Next Command: 无（变更已完成）
+- Next Action: 可以开始新的 change
 
 ## Gates
 
@@ -19,7 +19,7 @@
 | Plan ready | passed | plan-ready.md |
 | Implementation complete | passed | 实现完成，全量测试 818 passed |
 | Verification complete | passed | 最终全分支审查通过（I1-I3 已修复） |
-| Archived | pending | - |
+| Archived | passed | 已归档 |
 
 ## Tasks
 
