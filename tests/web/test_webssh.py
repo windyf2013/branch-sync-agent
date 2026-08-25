@@ -221,6 +221,30 @@ class TestSshOpen:
         assert r.status_code == 302
         assert r.headers["location"].endswith("/login")
 
+    def test_spawn_times_out_and_reaps_unresponsive_process(
+        self, tmp_path, monkeypatch
+    ):
+        import subprocess as real_subprocess
+        import time
+
+        from bsa_web.ssh import SshSpawnError, spawn_ttyd
+
+        worktree = tmp_path / "wt"
+        worktree.mkdir()
+        proc = real_subprocess.Popen(
+            ["sleep", "1000"],
+            stdout=real_subprocess.PIPE,
+            stderr=real_subprocess.STDOUT,
+            start_new_session=True,
+        )
+        monkeypatch.setattr("bsa_web.ssh.SSH_SPAWN_PORT_TIMEOUT_SEC", 0.5)
+        monkeypatch.setattr("bsa_web.ssh.subprocess.Popen", lambda *a, **k: proc)
+        start = time.monotonic()
+        with pytest.raises(SshSpawnError):
+            spawn_ttyd(str(worktree))
+        assert time.monotonic() - start < 5  # 未永久挂起，按约 0.5s 超时抛错
+        assert proc.poll() is not None  # 超时后整进程组已回收
+
 
 class TestSshSession:
     def test_ssh_page_renders_with_ws_path(self, tmp_path, monkeypatch):
@@ -439,6 +463,28 @@ class TestSshWs:
             with client.websocket_connect("/ssh/ws/nope"):
                 pass
         assert exc.value.code == 4401
+
+    def test_ws_closed_when_server_side_relay_ends(self, tmp_path, monkeypatch):
+        app = _make_app(tmp_path)
+        client = _client(app)
+        _login(client)
+        worktree = tmp_path / "wt"
+        worktree.mkdir()
+        _mount_cycle(
+            monkeypatch,
+            _payload({"feat/bad": _branch("feat/bad", "FAILED", str(worktree))}),
+        )
+        token = _open(client, worktree)
+        from starlette.websockets import WebSocketDisconnect
+
+        async def silent_relay(websocket, uri, session):
+            return
+
+        monkeypatch.setattr("bsa_web.views.ssh._ws_relay", silent_relay)
+        with pytest.raises(WebSocketDisconnect) as exc:
+            with client.websocket_connect(f"/ssh/ws/{token}") as ws:
+                ws.receive_text()
+        assert exc.value.code == 1000
 
 
 # ---- helpers ----

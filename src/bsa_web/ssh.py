@@ -16,6 +16,7 @@ from __future__ import annotations
 import os
 import re
 import secrets
+import select
 import shlex
 import signal
 import subprocess
@@ -106,7 +107,16 @@ def spawn_ttyd(worktree: str) -> tuple[int, subprocess.Popen]:
     port = None
     try:
         assert proc.stdout is not None
-        while time.monotonic() < deadline:
+        fd = proc.stdout.fileno()
+        # readline 是阻塞调用，必须先经 select 限时等可读，否则“起来了但无输出”
+        # 的 ttyd 会让本函数永久挂起（端口行永远不来也不退出）。
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            ready, _, _ = select.select([fd], [], [], remaining)
+            if not ready:
+                break
             line = proc.stdout.readline()
             if not line:
                 break

@@ -209,6 +209,9 @@ async def ssh_ws(websocket: WebSocket, token: str):
     uri = f"ws://127.0.0.1:{session['port']}/"
     try:
         await _ws_relay(websocket, uri, session)
+        # relay 正常返回 = ttyd 侧已断开（空闲超时/close 杀进程）。必须显式关闭
+        # 客户端 WS，否则浏览器 onclose 不触发、页面停留在“已连接”。
+        await websocket.close()
     except websockets.exceptions.WebSocketException as exc:
         logger.warning("ws 反代 ttyd 失败（%s）: %s", uri, exc)
         await websocket.close(code=1011)
