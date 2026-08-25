@@ -103,7 +103,7 @@
 <div class="panel-head"><h2>基本信息</h2></div>
   <div class="panel-body">
 <p>{{ commit.message }}</p>
-  <p class="muted">作者：{{ commit.author }} · 时间：{{ commit.committed_at }} · 来源分支：{{ commit.source_branch }}</p>
+  <p class="muted">作者：{{ commit.author }} · 时间：{{ commit.committed_at | localtime }} · 来源分支：{{ commit.source_branch }}</p>
   <p>改动文件：{{ commit.changed_files | join(", ") }}</p>
   </div>
 </section>

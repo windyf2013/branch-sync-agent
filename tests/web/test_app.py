@@ -1,7 +1,7 @@
 import pytest
 from fastapi.testclient import TestClient
 
-from bsa_web.app import create_app
+from bsa_web.app import _localtime, create_app
 from bsa_web.db import InstanceLock, init_db
 from bsa_web.settings import WebSettings, load_web_settings
 
@@ -119,3 +119,30 @@ class TestInstanceLock:
                 },
                 env_file=None,
             )
+
+
+class TestLocaltimeFilter:
+    def test_utc_to_local(self):
+        # UTC 时间转宿主本地时区（非 +8 宿主也能过，偏移按当前时区推导）
+        from datetime import UTC, datetime
+
+        src = datetime(2026, 8, 25, 10, 25, 7, tzinfo=UTC)
+        expect = src.astimezone().strftime("%Y-%m-%d %H:%M:%S")
+        assert _localtime("2026-08-25T10:25:07.311877+00:00") == expect
+
+    def test_naive_treated_as_local(self):
+        # V1 周期 naive 本地时间原样格式化
+        assert _localtime("2026-08-25T17:13:40") == "2026-08-25 17:13:40"
+
+    def test_offset_converted(self):
+        # git commit +08:00 -> 宿主本地时区（当前 +8 时同值，其他时区按偏移转）
+        from datetime import datetime, timedelta, timezone
+
+        src = datetime(2026, 8, 25, 10, 25, 7, tzinfo=timezone(timedelta(hours=8)))
+        expect = src.astimezone().strftime("%Y-%m-%d %H:%M:%S")
+        assert _localtime("2026-08-25T10:25:07+08:00") == expect
+
+    def test_empty_and_invalid(self):
+        assert _localtime("") == ""
+        assert _localtime(None) == ""
+        assert _localtime("not-a-date") == "not-a-date"

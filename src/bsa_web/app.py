@@ -2,6 +2,7 @@ import json
 import logging
 import logging.handlers
 import time
+from datetime import datetime
 from pathlib import Path
 from typing import Annotated
 
@@ -37,6 +38,30 @@ from bsa_web.views.task_detail import router as task_detail_router
 from bsa_web.views.workbench import router as workbench_router
 
 templates = Jinja2Templates(directory=str(Path(__file__).resolve().parent / "templates"))
+
+
+def _localtime(value) -> str:
+    """ISO 时间字符串转宿主本地时区显示（统一 YYYY-MM-DD HH:MM:SS）。
+
+    平台时间（tasks/audit）存 UTC（``+00:00``）、V1 周期存本地 naive、git
+    commit 带偏移（如 ``+08:00``）；直接原样显示会让 UTC 时间在 CST 宿主上
+    落后 8 小时。这里统一解析并转到本地时区：
+    - 带 tzinfo 的（UTC / +08:00）→ astimezone() 转本地
+    - naive（V1 周期本地时间）→ 视为本地原样格式化
+    解析失败返回原值。
+    """
+    if not value:
+        return ""
+    try:
+        dt = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except (TypeError, ValueError):
+        return str(value)
+    if dt.tzinfo is not None:
+        dt = dt.astimezone()
+    return dt.strftime("%Y-%m-%d %H:%M:%S")
+
+
+templates.env.filters["localtime"] = _localtime
 
 _access_logger = logging.getLogger("bsa_web.access")
 

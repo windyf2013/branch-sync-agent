@@ -15,7 +15,7 @@
     <tbody>
       {% for r in records %}
       <tr>
-        <td>{{ r.ts }}</td>
+        <td>{{ r.ts | localtime }}</td>
         <td>{{ r.user }}</td>
         <td>{{ r.action }}</td>
         <td>

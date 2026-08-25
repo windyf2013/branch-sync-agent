@@ -31,7 +31,7 @@
       <tr>
         <td><a href="/cycle/{{ c.cycle_id }}">{{ c.cycle_id }}</a></td>
         <td><span class="badge">{{ c.status }}</span></td>
-        <td>{{ c.started_at }}</td>
+        <td>{{ c.started_at | localtime }}</td>
         {% if kind %}<td>{{ c.count }}</td>{% endif %}
       </tr>
       {% endfor %}

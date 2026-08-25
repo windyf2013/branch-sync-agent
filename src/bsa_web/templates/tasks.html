@@ -11,9 +11,9 @@
     <li>状态：<span class="badge {{ task.state }}">{{ state_label }}</span></li>
     {% if task.wait_reason %}<li>说明：{{ task.wait_reason }}</li>{% endif %}
     {% if task.error %}<li>错误：{{ task.error }}</li>{% endif %}
-    <li>创建时间：{{ task.created_at }}</li>
-    {% if task.started_at %}<li>开始时间：{{ task.started_at }}</li>{% endif %}
-    {% if task.finished_at %}<li>结束时间：{{ task.finished_at }}</li>{% endif %}
+    <li>创建时间：{{ task.created_at | localtime }}</li>
+    {% if task.started_at %}<li>开始时间：{{ task.started_at | localtime }}</li>{% endif %}
+    {% if task.finished_at %}<li>结束时间：{{ task.finished_at | localtime }}</li>{% endif %}
   </ul>
   {% if task.state in ("queued", "running") %}
   <p>任务执行中，<a href="/tasks/{{ task_id }}">刷新</a>查看最新状态。</p>
