@@ -487,6 +487,25 @@ class TestSshWs:
         assert exc.value.code == 1000
 
 
+class TestParsePortRealTtyd:
+    """ttyd 1.7 真实输出回归：`Listening on port: 44251`（带冒号）。"""
+
+    def test_real_ttyd_line(self):
+        from bsa_web.ssh import _parse_port
+
+        assert _parse_port("Listening on port: 44251") == 44251
+
+    def test_legacy_no_colon(self):
+        from bsa_web.ssh import _parse_port
+
+        assert _parse_port("Listening on port 44251") == 44251
+
+    def test_unrelated_line(self):
+        from bsa_web.ssh import _parse_port
+
+        assert _parse_port("ttyd 1.7.7 (libwebsockets)") is None
+
+
 # ---- helpers ----
 
 _PORT = 43210

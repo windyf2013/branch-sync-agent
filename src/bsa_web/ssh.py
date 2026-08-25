@@ -56,7 +56,8 @@ def _build_cmd(worktree: str) -> list[str]:
 
 
 def _parse_port(line: str) -> int | None:
-    m = re.search(r"port (\d+)", line)
+    # ttyd 1.7 真实输出为 "Listening on port: 44251"（带冒号）；兼容 "port 44251"。
+    m = re.search(r"port:?\s+(\d+)", line)
     return int(m.group(1)) if m else None
 
 
@@ -108,19 +109,20 @@ def spawn_ttyd(worktree: str) -> tuple[int, subprocess.Popen]:
     try:
         assert proc.stdout is not None
         fd = proc.stdout.fileno()
-        # readline 是阻塞调用，必须先经 select 限时等可读，否则“起来了但无输出”
-        # 的 ttyd 会让本函数永久挂起（端口行永远不来也不退出）。
-        while True:
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
-                break
-            ready, _, _ = select.select([fd], [], [], remaining)
+        # 用 os.read 原始字节 + 累积缓冲解析：select 只看 OS 管道缓冲，
+        # 而 TextIOWrapper.readline 会把整批读进 Python 缓冲导致 select 假超时
+        # （端口行已在 Python 缓冲里、fd 却显示不可读）——真机 ttyd 间歇复现。
+        buf = b""
+        while time.monotonic() < deadline:
+            ready, _, _ = select.select([fd], [], [], deadline - time.monotonic())
             if not ready:
                 break
-            line = proc.stdout.readline()
-            if not line:
+            chunk = os.read(fd, 8192)
+            if not chunk:
                 break
-            port = _parse_port(line)
+            buf += chunk
+            # ttyd 日志为 ASCII，解码后复用 _parse_port（单点解析）
+            port = _parse_port(buf.decode("ascii", errors="ignore"))
             if port is not None:
                 break
     finally:
