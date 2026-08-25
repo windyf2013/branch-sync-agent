@@ -97,14 +97,16 @@
         <label>SHA（可选，空格分隔）<input type="text" name="sha"></label>
         <button type="submit">触发同步</button>
       </div>
+      <p class="muted">将源分支的 bug-fix 同步到目标分支（指定 SHA 为直同步）。</p>
     </form>
     <form method="post" action="/rerun">
       <input type="hidden" name="_csrf" value="{{ csrf }}">
       <div class="form-row">
-        {{ branch_select("target", "目标分支") }}
+        {{ branch_select("target", "重跑目标分支") }}
         <label class="inline"><input type="checkbox" name="fresh" value="on"> 重建重同步（--fresh）</label>
         <button type="submit">重跑</button>
       </div>
+      <p class="muted">对失败/停批分支重跑；勾选 --fresh 为基于当前远端重建重同步。</p>
     </form>
   {% else %}
     <p class="muted">仅操作者可触发同步与重跑。</p>
