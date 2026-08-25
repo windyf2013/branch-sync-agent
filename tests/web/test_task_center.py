@@ -252,6 +252,25 @@ class TestTaskDetail:
         assert 'data-push-target="feat/x"' not in r.text
         assert "WebSSH" not in r.text
 
+    def test_detail_restore_button_result_are_siblings(self, tmp_path, monkeypatch):
+        # C1：恢复 JS 用 btn.parentElement.querySelector(".restore-result") 定位结果，
+        # 详情页按钮在 .ops-row div 内（无 <li> 祖先），按钮与结果必须是兄弟节点。
+        app = _make_app(tmp_path)
+        client = _client(app)
+        _login(client)
+        payload = _payload(branch_results={"feat/x": _branch("feat/x", "SUCCESS")})
+        _mount_cycle(monkeypatch, payload)
+        _post(client, "/api/abandon", {"cycle_id": _CYCLE, "target": "feat/x"})
+        r = client.get(f"/task/{_CYCLE}/feat/x")
+        assert r.status_code == 200
+        assert re.search(
+            r'<button[^>]*data-restore-target="feat/x"[^>]*>.*?</button>\s*'
+            r'<span class="restore-result">',
+            r.text,
+            re.S,
+        ), "详情页恢复按钮与 .restore-result 必须相邻（同父级，JS parentElement 才能命中）"
+        assert "parentElement" in r.text
+
     def test_detail_shows_manual_review_ops(self, tmp_path, monkeypatch):
         app = _make_app(tmp_path)
         client = _client(app)

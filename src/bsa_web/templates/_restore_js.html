@@ -6,7 +6,7 @@
       var cycleId = btn.getAttribute("data-restore-cycle");
       var target = btn.getAttribute("data-restore-target");
       var sha = btn.getAttribute("data-restore-sha") || null;
-      var result = btn.closest("li").querySelector(".restore-result");
+      var result = btn.parentElement.querySelector(".restore-result");
       result.textContent = "恢复中…";
       fetch("/api/restore", {
         method: "POST",

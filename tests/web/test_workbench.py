@@ -103,6 +103,14 @@ def _set_bsa_env(monkeypatch):
         monkeypatch.setenv(key, val)
 
 
+def _add_task(app, *, target, state, created_at, kind="sync"):
+    app.state.db.execute(
+        "INSERT INTO tasks(kind, user, target, state, created_at) VALUES (?,?,?,?,?)",
+        (kind, "alice", target, state, created_at),
+    )
+    app.state.db.commit()
+
+
 class TestWorkbenchView:
     def test_workbench_shows_success_branches_with_push(self, tmp_path, monkeypatch):
         client = _client(_make_app(tmp_path))
@@ -199,6 +207,51 @@ class TestWorkbenchView:
         r = client.get("/")
         assert r.status_code == 200
         assert "暂无" in r.text
+
+    def test_workbench_no_cycle_shows_manual_tasks(self, tmp_path, monkeypatch):
+        # I2：手动任务 = tasks 表，无周期时任务中心照常渲染手动任务区。
+        app = _make_app(tmp_path)
+        client = _client(app)
+        _login(client)
+        _add_task(
+            app, target="feat/manual", state="succeeded",
+            created_at="2026-08-21T09:00:00+00:00",
+        )
+        monkeypatch.setattr("bsa_web.projection.list_cycles", lambda log_dir: [])
+        monkeypatch.setattr(
+            "bsa_web.projection.latest_completed_cycle", lambda log_dir: None
+        )
+        r = client.get("/")
+        assert r.status_code == 200
+        assert "手动任务" in r.text
+        assert "feat/manual" in r.text
+        assert "/tasks/" in r.text
+        assert 'data-push-target="feat/manual"' not in r.text
+
+    def test_workbench_projection_failure_shows_manual_tasks(self, tmp_path, monkeypatch):
+        # I2：投影失败（unavailable）时手动任务区照常渲染。
+        app = _make_app(tmp_path)
+        client = _client(app)
+        _login(client)
+        _add_task(
+            app, target="feat/manual", state="running",
+            created_at="2026-08-21T09:00:00+00:00",
+        )
+        monkeypatch.setattr(
+            "bsa_web.projection.list_cycles",
+            lambda log_dir: [{"cycle_id": "cycle-2026-08-20", "status": "REPORTED"}],
+        )
+        monkeypatch.setattr(
+            "bsa_web.projection.latest_completed_cycle", lambda log_dir: "cycle-2026-08-20"
+        )
+        monkeypatch.setattr(
+            "bsa_web.projection.load_cycle", lambda log_dir, cycle_id: None
+        )
+        r = client.get("/")
+        assert r.status_code == 200
+        assert "不可用" in r.text
+        assert "手动任务" in r.text
+        assert "feat/manual" in r.text
 
     def test_workbench_no_cycle_still_shows_quick_ops_to_operator(
         self, tmp_path, monkeypatch

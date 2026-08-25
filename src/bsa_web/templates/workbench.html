@@ -67,21 +67,6 @@
   {% else %}
     <p>当前周期无自动任务。</p>
   {% endif %}
-
-  <h3>手动任务</h3>
-  {% if manual_tasks %}
-    <ul class="task-panels">
-      {% for t in manual_tasks %}
-      <li class="task-panel">
-        <span class="badge {{ t.status | lower }}">{{ t.badge }}</span>
-        <a href="/tasks/{{ t.task_id }}">{{ t.target }}</a>
-        <span class="muted">任务 #{{ t.task_id }} · {{ t.created_at }}{% if t.kind == "rerun" %} · 重跑{% endif %}</span>
-      </li>
-      {% endfor %}
-    </ul>
-  {% else %}
-    <p>暂无手动任务。</p>
-  {% endif %}
 </section>
 
 {% if review_pending %}
@@ -101,6 +86,21 @@
   </ul>
 </section>
 {% endif %}
+{% endif %}
+
+{% if manual_tasks %}
+<section>
+  <h2>手动任务</h2>
+  <ul class="task-panels">
+    {% for t in manual_tasks %}
+    <li class="task-panel">
+      <span class="badge {{ t.status | lower }}">{{ t.badge }}</span>
+      <a href="/tasks/{{ t.task_id }}">{{ t.target }}</a>
+      <span class="muted">任务 #{{ t.task_id }} · {{ t.created_at }}{% if t.kind == "rerun" %} · 重跑{% endif %}</span>
+    </li>
+    {% endfor %}
+  </ul>
+</section>
 {% endif %}
 
 {% if abandoned_items %}
