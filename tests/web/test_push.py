@@ -95,9 +95,9 @@ def _branch(target, status="SUCCESS", worktree=None, shas=None, patch="/patches/
     }
 
 
-def _payload(branch_results=None, status="REPORTED"):
+def _payload(branch_results=None, status="REPORTED", cycle_id="cycle-2026-08-24"):
     return {
-        "cycle_id": "cycle-2026-08-24",
+        "cycle_id": cycle_id,
         "status": status,
         "scan_window": ["", ""],
         "detected_commits": [],
@@ -200,11 +200,13 @@ class TestCheckPushGates:
         assert reasons == []
 
     def test_manual_projection_gates_all_pass(self, tmp_path):
-        # 手动（manual cycle）SUCCESS 投影：worktree 命名 <target>-<manual-cycle>
-        # 且干净 → 四道闸全过（四道闸对手动 cycle 投影同样生效）。
+        # 手动（manual cycle）SUCCESS 投影：投影自报周期 manual（state.cycle_id
+        # = manual_cycle_id），worktree 命名 <target>-<manual-cycle> 且干净 →
+        # 四道闸全过（四道闸对手动 cycle 投影同样生效）。
         manual_cycle = "manual-20260824-101010-4242"
         payload = _payload(
-            {"feat/x": _branch("feat/x", worktree=_fake_worktree(tmp_path, "feat/x", cycle_id=manual_cycle))}
+            cycle_id=manual_cycle,
+            branch_results={"feat/x": _branch("feat/x", worktree=_fake_worktree(tmp_path, "feat/x", cycle_id=manual_cycle))},
         )
         reasons = push.check_push_gates(
             payload, "feat/x", forbidden=["main"], status_clean=True,
@@ -217,11 +219,48 @@ class TestCheckPushGates:
         manual_cycle = "manual-20260824-101010-4242"
         other_cycle = "manual-20260825-101010-4242"
         payload = _payload(
-            {"feat/x": _branch("feat/x", worktree=_fake_worktree(tmp_path, "feat/x", cycle_id=other_cycle))}
+            cycle_id=manual_cycle,
+            branch_results={"feat/x": _branch("feat/x", worktree=_fake_worktree(tmp_path, "feat/x", cycle_id=other_cycle))},
         )
         reasons = push.check_push_gates(
             payload, "feat/x", forbidden=[], status_clean=True,
             cycle_id=manual_cycle,
+        )
+        assert any("不匹配" in r for r in reasons)
+
+    def test_rerun_retained_gates_all_pass_with_source_worktree(self, tmp_path):
+        # I2：retained 重跑线程投影自报来源周期（state.cycle_id 在写入线程时即
+        # 来源周期，见 rerun.py _rerun_retained），worktree 复用 <target>-<来源周期>；
+        # URL/请求体携带 rerun 线程 id 与 worktree 周期不同 → 闸②须按投影自报
+        # 周期绑定才能通过（WebSSH 修复 → 重跑 → 推送闭环）。
+        source_cycle = "cycle-2026-08-24"
+        rerun_cycle = "rerun-release-2.4-20260825-093000-4242"
+        payload = _payload(
+            cycle_id=source_cycle,
+            branch_results={
+                "release-2.4": _branch("release-2.4", worktree=_fake_worktree(tmp_path, "release-2.4", cycle_id=source_cycle))
+            },
+        )
+        reasons = push.check_push_gates(
+            payload, "release-2.4", forbidden=["main"], status_clean=True,
+            cycle_id=rerun_cycle,
+        )
+        assert reasons == []
+
+    def test_rerun_retained_thread_named_worktree_rejected(self, tmp_path):
+        # 闸②不放松：worktree 误命名成 rerun 线程 id（非来源周期）→ 仍拒绝，
+        # 绝不从无法确认归属 target 的 worktree 推送。
+        source_cycle = "cycle-2026-08-24"
+        rerun_cycle = "rerun-release-2.4-20260825-093000-4242"
+        payload = _payload(
+            cycle_id=source_cycle,
+            branch_results={
+                "release-2.4": _branch("release-2.4", worktree=_fake_worktree(tmp_path, "release-2.4", cycle_id=rerun_cycle))
+            },
+        )
+        reasons = push.check_push_gates(
+            payload, "release-2.4", forbidden=[], status_clean=True,
+            cycle_id=rerun_cycle,
         )
         assert any("不匹配" in r for r in reasons)
 
@@ -389,7 +428,8 @@ class TestConfirmApi:
         _login(client)
         worktree = _fake_worktree(tmp_path, "feat/x", cycle_id=manual_cycle)
         payload = _payload(
-            {"feat/x": _branch("feat/x", worktree=worktree, shas=["abc123", "def456"])}
+            cycle_id=manual_cycle,
+            branch_results={"feat/x": _branch("feat/x", worktree=worktree, shas=["abc123", "def456"])},
         )
         _install_load_cycle(monkeypatch, {manual_cycle: payload})
         r = client.post(
@@ -413,10 +453,12 @@ class TestConfirmApi:
         auto_wt = _fake_worktree(tmp_path, "feat/x")
         manual_wt = _fake_worktree(tmp_path, "feat/x", cycle_id=manual_cycle)
         auto_payload = _payload(
-            {"feat/x": _branch("feat/x", worktree=auto_wt, shas=["auto1"])}
+            cycle_id=auto_cycle,
+            branch_results={"feat/x": _branch("feat/x", worktree=auto_wt, shas=["auto1"])},
         )
         manual_payload = _payload(
-            {"feat/x": _branch("feat/x", worktree=manual_wt, shas=["manual1"])}
+            cycle_id=manual_cycle,
+            branch_results={"feat/x": _branch("feat/x", worktree=manual_wt, shas=["manual1"])},
         )
         monkeypatch.setattr(
             "bsa_web.projection.latest_completed_cycle", lambda log_dir: auto_cycle
@@ -475,7 +517,8 @@ class TestPushApi:
         _login(client)
         worktree = _fake_worktree(tmp_path, "feat/x", cycle_id=manual_cycle)
         payload = _payload(
-            {"feat/x": _branch("feat/x", worktree=worktree, shas=["abc123"])}
+            cycle_id=manual_cycle,
+            branch_results={"feat/x": _branch("feat/x", worktree=worktree, shas=["abc123"])},
         )
         _install_load_cycle(monkeypatch, {manual_cycle: payload})
         monkeypatch.setattr("bsa_web.push.worktree_is_clean", lambda wt: True)
@@ -501,6 +544,50 @@ class TestPushApi:
         assert len(audit) == 1
         assert audit[0]["cycle_id"] == manual_cycle
         assert audit[0]["target"] == "feat/x"
+        assert audit[0]["result"] == "ok"
+        assert "abc123" in (audit[0]["sha"] or "")
+
+    def test_push_retained_rerun_success_200_and_audit(self, tmp_path, monkeypatch):
+        # I2：retained 重跑线程（rerun-*）SUCCESS 推送闭环——请求体带 rerun 线程
+        # id 经 load_cycle 解析线程投影，投影自报来源周期（state.cycle_id 即来源
+        # 周期），worktree 复用 <target>-<来源周期>；闸②按投影自报周期绑定通过，
+        # 审计 cycle_id 落 rerun 线程 id（操作入口周期）。
+        source_cycle = "cycle-2026-08-24"
+        rerun_cycle = "rerun-release-2.4-20260825-093000-4242"
+        app = _make_app(tmp_path)
+        client = _client(app)
+        _login(client)
+        worktree = _fake_worktree(tmp_path, "release-2.4", cycle_id=source_cycle)
+        payload = _payload(
+            cycle_id=source_cycle,
+            branch_results={
+                "release-2.4": _branch("release-2.4", worktree=worktree, shas=["abc123"])
+            },
+        )
+        _install_load_cycle(monkeypatch, {rerun_cycle: payload})
+        monkeypatch.setattr("bsa_web.push.worktree_is_clean", lambda wt: True)
+        calls = []
+        monkeypatch.setattr(
+            "bsa_web.push.execute_push",
+            lambda executor, wt, target: (calls.append((executor, wt, target)) or (0, "推送成功")),
+        )
+        r = client.post(
+            "/api/push",
+            json={
+                "target": "release-2.4",
+                "shas": ["abc123"],
+                "cycle_id": rerun_cycle,
+                "_csrf": _csrf(client),
+            },
+        )
+        assert r.status_code == 200
+        assert "推送成功" in r.json()["message"]
+        assert calls and calls[0][1] == str(worktree) and calls[0][2] == "release-2.4"
+
+        audit = [row for row in _audit_rows(app) if row["action"] == "push"]
+        assert len(audit) == 1
+        assert audit[0]["cycle_id"] == rerun_cycle
+        assert audit[0]["target"] == "release-2.4"
         assert audit[0]["result"] == "ok"
         assert "abc123" in (audit[0]["sha"] or "")
 

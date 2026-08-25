@@ -14,6 +14,7 @@ from fastapi import APIRouter, Depends, Form, HTTPException, Request
 from fastapi.responses import RedirectResponse
 
 from bsa_web.auth import make_csrf, require_csrf, require_login, require_operator
+from bsa_web.runner import task_detail_url
 
 router = APIRouter(tags=["operations"])
 
@@ -27,6 +28,12 @@ STATE_LABELS = {
 
 def _busy_redirect() -> RedirectResponse:
     return RedirectResponse("/?error=busy", status_code=303)
+
+
+def _task_redirect(db, task_id: int) -> RedirectResponse:
+    """提交后跳转：cycle_id 已可用（极端同步完成）→ 任务详情页，否则任务状态页。"""
+    url = task_detail_url(db, task_id) or f"/tasks/{task_id}"
+    return RedirectResponse(url, status_code=303)
 
 
 @router.post("/sync", dependencies=[Depends(require_csrf)])
@@ -43,7 +50,7 @@ def form_sync(
     )
     if task_id is None:
         return _busy_redirect()
-    return RedirectResponse(f"/tasks/{task_id}", status_code=303)
+    return _task_redirect(request.app.state.db, task_id)
 
 
 @router.post("/rerun", dependencies=[Depends(require_csrf)])
@@ -59,7 +66,7 @@ def form_rerun(
     )
     if task_id is None:
         return _busy_redirect()
-    return RedirectResponse(f"/tasks/{task_id}", status_code=303)
+    return _task_redirect(request.app.state.db, task_id)
 
 
 @router.get("/tasks/{task_id}")
@@ -81,5 +88,6 @@ def task_status_page(
             "task": task,
             "task_id": task_id,
             "state_label": STATE_LABELS.get(task["state"], task["state"]),
+            "detail_url": task_detail_url(request.app.state.db, task_id),
         },
     )

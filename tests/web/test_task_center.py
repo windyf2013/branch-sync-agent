@@ -191,6 +191,30 @@ class TestTaskCenter:
         assert "feat/queued" in r.text
         assert "feat/running" in r.text
 
+    def test_center_manual_task_with_cycle_id_links_to_detail_page(self, tmp_path, monkeypatch):
+        # I1：runner 回写 cycle_id 后，手动面板链接任务详情页 /task/{cycle}/{target}
+        # （非 /tasks/{id}）；未回写（排队/执行中）仍回退 /tasks/{id}。
+        app = _make_app(tmp_path)
+        client = _client(app)
+        _login(client)
+        payload = _payload(branch_results={})
+        _mount_cycle(monkeypatch, payload)
+        app.state.db.execute(
+            "INSERT INTO tasks(kind, user, target, cycle_id, state, created_at) "
+            "VALUES ('sync','alice','feat/done','manual-20260821-093000-4242','succeeded',?)",
+            ("2026-08-21T09:00:00+00:00",),
+        )
+        app.state.db.execute(
+            "INSERT INTO tasks(kind, user, target, state, created_at) "
+            "VALUES ('sync','alice','feat/pending','queued',?)",
+            ("2026-08-21T09:10:00+00:00",),
+        )
+        app.state.db.commit()
+        r = client.get("/")
+        assert r.status_code == 200
+        assert "/task/manual-20260821-093000-4242/feat/done" in r.text
+        assert "/tasks/2" in r.text  # 未回写 cycle_id 的手动任务仍指向任务状态页
+
     def test_center_abandoned_branch_badge_and_restore(self, tmp_path, monkeypatch):
         app = _make_app(tmp_path)
         client = _client(app)
@@ -299,6 +323,51 @@ class TestTaskDetail:
         assert 'data-push-target="feat/x"' not in r.text
         assert "WebSSH" not in r.text
 
+    def test_detail_non_abandoned_shows_abandon_button(self, tmp_path, monkeypatch):
+        # I3：未放弃分支详情页提供放弃入口（分支级，operator），POST /api/abandon
+        app = _make_app(tmp_path)
+        client = _client(app)
+        _login(client)
+        payload = _payload(branch_results={"feat/ok": _branch("feat/ok", "SUCCESS")})
+        _mount_cycle(monkeypatch, payload)
+        r = client.get(f"/task/{_CYCLE}/feat/ok")
+        assert r.status_code == 200
+        assert 'data-abandon-target="feat/ok"' in r.text
+        assert f'data-abandon-cycle="{_CYCLE}"' in r.text
+        assert 'data-abandon-sha=""' in r.text
+        assert re.search(
+            r'<button[^>]*data-abandon-target="feat/ok"[^>]*>.*?</button>\s*'
+            r'<span class="abandon-result">',
+            r.text,
+            re.S,
+        ), "放弃按钮与 .abandon-result 必须相邻（同父级，JS parentElement 才能命中）"
+
+    def test_detail_abandoned_hides_abandon_button(self, tmp_path, monkeypatch):
+        # 已放弃分支不再显示放弃按钮（只有恢复入口）
+        app = _make_app(tmp_path)
+        client = _client(app)
+        _login(client)
+        payload = _payload(branch_results={"feat/x": _branch("feat/x", "SUCCESS")})
+        _mount_cycle(monkeypatch, payload)
+        _post(client, "/api/abandon", {"cycle_id": _CYCLE, "target": "feat/x"})
+        r = client.get(f"/task/{_CYCLE}/feat/x")
+        assert r.status_code == 200
+        assert 'data-abandon-target="feat/x"' not in r.text
+
+    def test_detail_abandon_button_wires_abandon_api(self, tmp_path, monkeypatch):
+        # 放弃按钮调 /api/abandon（带 _csrf）真实落库：abandon 后详情页切换为恢复
+        app = _make_app(tmp_path)
+        client = _client(app)
+        _login(client)
+        payload = _payload(branch_results={"feat/x": _branch("feat/x", "FAILED")})
+        _mount_cycle(monkeypatch, payload)
+        r = client.get(f"/task/{_CYCLE}/feat/x")
+        assert 'data-abandon-target="feat/x"' in r.text
+        _post(client, "/api/abandon", {"cycle_id": _CYCLE, "target": "feat/x"})
+        r = client.get(f"/task/{_CYCLE}/feat/x")
+        assert 'data-abandon-target="feat/x"' not in r.text
+        assert 'data-restore-target="feat/x"' in r.text
+
     def test_detail_restore_button_result_are_siblings(self, tmp_path, monkeypatch):
         # C1：恢复 JS 用 btn.parentElement.querySelector(".restore-result") 定位结果，
         # 详情页按钮在 .ops-row div 内（无 <li> 祖先），按钮与结果必须是兄弟节点。
@@ -383,6 +452,7 @@ class TestTaskDetail:
         assert 'data-push-target="feat/ok"' not in r.text
         assert "WebSSH" not in r.text
         assert 'action="/rerun"' not in r.text
+        assert 'data-abandon-target="feat/ok"' not in r.text
 
     def test_detail_missing_branch_404(self, tmp_path, monkeypatch):
         app = _make_app(tmp_path)

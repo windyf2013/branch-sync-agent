@@ -95,7 +95,11 @@
     {% for t in manual_tasks %}
     <li class="task-panel">
       <span class="badge {{ t.status | lower }}">{{ t.badge }}</span>
+      {% if t.cycle_id %}
+      <a href="/task/{{ t.cycle_id }}/{{ t.target }}">{{ t.target }}</a>
+      {% else %}
       <a href="/tasks/{{ t.task_id }}">{{ t.target }}</a>
+      {% endif %}
       <span class="muted">任务 #{{ t.task_id }} · {{ t.created_at }}{% if t.kind == "rerun" %} · 重跑{% endif %}</span>
     </li>
     {% endfor %}
@@ -232,6 +236,28 @@
         e.preventDefault();
       });
 
+      function redirectAfterSubmit(taskId, attemptsLeft) {
+        // 任务完成后 runner 回写 cycle_id，此时才能跳到任务详情页 /task/{cycle}/{target}；
+        // 未到终态则轮询，超限回退任务状态页。
+        fetch("/api/tasks/" + taskId, {
+          headers: { "Accept": "application/json" },
+        }).then(function (r) {
+          return r.json();
+        }).then(function (task) {
+          if (task && task.cycle_id && task.target) {
+            window.location.href = "/task/" + task.cycle_id + "/" + task.target;
+          } else if (attemptsLeft > 0) {
+            setTimeout(function () {
+              redirectAfterSubmit(taskId, attemptsLeft - 1);
+            }, 2000);
+          } else {
+            window.location.href = "/tasks/" + taskId;
+          }
+        }).catch(function () {
+          window.location.href = "/tasks/" + taskId;
+        });
+      }
+
       submitBtn.addEventListener("click", function () {
         var shas = Object.keys(selected);
         var src = srcEl.value;
@@ -251,7 +277,7 @@
           });
         }).then(function (res) {
           if (res.ok && res.json && res.json.task_id) {
-            window.location.href = "/tasks/" + res.json.task_id;
+            redirectAfterSubmit(res.json.task_id, 30);
           } else {
             statusEl.textContent = (res.json && res.json.detail) || "提交失败";
             submitBtn.disabled = false;

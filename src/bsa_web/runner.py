@@ -3,9 +3,11 @@
 Web 平台运维操作（触发同步/重跑）经任务队列异步执行：``submit`` 写 tasks 表
 （state=queued）并入队，daemon worker 逐个取出置 running，子进程调用 V1 CLI
 （``bsa sync``/``bsa rerun``），终态置 succeeded/failed（失败捕获 CLI 返回码
-与 stderr）。同 target 存在 running/queued 任务时拒绝新提交（返回 None）；
-子进程超时（默认 3600s）kill 并标 failed。CLI 环境注入 ``LOG_DIR``（承任务 10
-结论），其余 BSA env 从父进程继承。
+与 stderr）。CLI 完成行携带的 ``cycle=<id>`` 回写 tasks.cycle_id，手动/重跑
+任务因此可连到任务详情页 /task/{cycle}/{target}。同 target 存在
+running/queued 任务时拒绝新提交（返回 None）；子进程超时（默认 3600s）kill
+并标 failed。CLI 环境注入 ``LOG_DIR``（承任务 10 结论），其余 BSA env 从
+父进程继承。
 """
 
 from __future__ import annotations
@@ -13,6 +15,7 @@ from __future__ import annotations
 import json
 import os
 import queue
+import re
 import sqlite3
 import subprocess
 import sys
@@ -27,9 +30,42 @@ QUEUED_WAIT_REASON = "排队等待执行（同 target 串行，等待前序任�
 
 _ERROR_MAX_LEN = 2000
 
+# CLI 完成行（sync/rerun）固定带 `cycle=<id>`（bsa.cli _cmd_sync/_cmd_rerun 输出），
+# runner 解析后回写 tasks.cycle_id，手动任务因此能连到任务详情页。
+_CYCLE_RE = re.compile(r"\bcycle=(\S+)")
+
 
 def _now_iso() -> str:
     return datetime.now(UTC).isoformat()
+
+
+def _extract_cycle_id(*texts: str | None) -> str | None:
+    """从 CLI 输出解析周期 id（``cycle=<id>``）；失败/缺失返回 None。
+
+    sync 失败（FAILED/PARTIAL/MANUAL）把完成行打到 stderr，retained 重跑线程
+    id 无空格，均能被正则 ``\\bcycle=(\\S+)`` 命中。
+    """
+    for text in texts:
+        if not text:
+            continue
+        match = _CYCLE_RE.search(text)
+        if match:
+            return match.group(1)
+    return None
+
+
+def task_detail_url(db, task_id: int) -> str | None:
+    """任务对应任务详情页 URL；cycle_id 未回写（排队/执行中）返回 None。
+
+    手动/重跑任务完成后 cycle_id 才落库，此函数供提交重定向与任务状态页判断
+    "cycle_id 可用"时跳 /task/{cycle}/{target}，否则回退 /tasks/{id}。
+    """
+    row = db.execute(
+        "SELECT cycle_id, target FROM tasks WHERE id=?", (task_id,)
+    ).fetchone()
+    if row is None or not row["cycle_id"] or not row["target"]:
+        return None
+    return f"/task/{row['cycle_id']}/{row['target']}"
 
 
 class TaskRunner:
@@ -156,11 +192,18 @@ class TaskRunner:
                 finished_at=_now_iso(),
             )
             return
+        # CLI 完成行固定携带 cycle=<id>（FAILED/PARTIAL/MANUAL 打在 stderr 也带），
+        # 回写 tasks.cycle_id 才能让手动任务连到任务详情页 /task/{cycle}/{target}。
+        cycle_id = _extract_cycle_id(stdout, stderr)
         if returncode == 0:
-            self._mark(task_id, "succeeded", finished_at=_now_iso())
+            self._mark(
+                task_id, "succeeded", cycle_id=cycle_id, finished_at=_now_iso()
+            )
         else:
             error = (stderr or stdout or "执行失败").strip()[:_ERROR_MAX_LEN]
-            self._mark(task_id, "failed", error=error, finished_at=_now_iso())
+            self._mark(
+                task_id, "failed", cycle_id=cycle_id, error=error, finished_at=_now_iso()
+            )
 
     def _build_cmd(self, row: dict) -> list[str]:
         """按任务行构造 CLI 命令（注入 sys.executable 保证同解释器）。"""
@@ -177,9 +220,14 @@ class TaskRunner:
                 cmd.append("--fresh")
         return cmd
 
-    def _mark(self, task_id, state, *, error=None, started_at=None, finished_at=None) -> None:
+    def _mark(
+        self, task_id, state, *, cycle_id=None, error=None, started_at=None, finished_at=None
+    ) -> None:
         fields = ["state=?"]
         params = [state]
+        if cycle_id is not None:
+            fields.append("cycle_id=?")
+            params.append(cycle_id)
         if error is not None:
             fields.append("error=?")
             params.append(error)

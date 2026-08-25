@@ -129,6 +129,13 @@ def check_push_gates(
     ① 分支状态 SUCCESS；② worktree 存在且绑定 target/周期（worktree↔target
     三重绑定校验）；③ 目标不在 forbidden_branches；④ worktree ``git status
     --porcelain`` 干净（status_clean 由调用方注入）。
+
+    闸② 的绑定周期以投影自报周期（``projection["cycle_id"]``）为准：retained
+    重跑线程（rerun-*）的 state 在写入时即来源周期（见 rerun.py
+    ``_rerun_retained``：``run_sync_command(cycle_id=来源周期, thread_id=rerun
+    线程)``），其 worktree 命名 ``<target>-<来源周期>``，与 URL/请求体携带的
+    rerun 线程 id 不同。用投影自报周期校验才能通过真实 worktree 归属；请求体
+    cycle_id 仍用于加载投影与审计。
     """
     reasons = []
     branch = (projection.get("branch_results") or {}).get(target)
@@ -138,7 +145,9 @@ def check_push_gates(
     if branch.get("status") != "SUCCESS":
         reasons.append(f"分支 {target} 状态 {branch.get('status')}，非 SUCCESS")
     worktree = branch.get("worktree_path") or ""
-    binding = worktree_belongs_to_target(worktree, target, cycle_id)
+    binding = worktree_belongs_to_target(
+        worktree, target, projection.get("cycle_id") or cycle_id
+    )
     if binding is not None:
         reasons.append(binding)
     if target in forbidden:

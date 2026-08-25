@@ -66,6 +66,52 @@ class TestStateMachine:
         runner.join(timeout=5)
         assert runner.get(task_id)["state"] == "succeeded"
 
+    def test_completed_sync_persists_cycle_id(self, tmp_path):
+        # I1：CLI 完成行携带 cycle=<id> → runner 回写 tasks.cycle_id，手动任务
+        # 才能连到任务详情页 /task/{cycle}/{target}。
+        def fake_run(cmd):
+            return 0, "同步完成: cycle=manual-20260825-101010-12345 target=feat/x 状态=SUCCESS patch=/p", ""
+
+        runner = _make_runner(tmp_path, run_func=fake_run)
+        runner.start()
+        task_id = _submit_sync(runner)
+        runner.join(timeout=5)
+        task = runner.get(task_id)
+        assert task["state"] == "succeeded"
+        assert task["cycle_id"] == "manual-20260825-101010-12345"
+
+    def test_failed_sync_persists_cycle_id_from_stderr(self, tmp_path):
+        # FAILED/PARTIAL/MANUAL 的完成行打在 stderr（CLI 返回 1），cycle_id 同样回写
+        def fake_run(cmd):
+            return 1, "stdout", "同步完成: cycle=manual-20260825-111111-9999 target=feat/x 状态=FAILED patch=/p"
+
+        runner = _make_runner(tmp_path, run_func=fake_run)
+        runner.start()
+        task_id = _submit_sync(runner)
+        runner.join(timeout=5)
+        task = runner.get(task_id)
+        assert task["state"] == "failed"
+        assert task["cycle_id"] == "manual-20260825-111111-9999"
+
+    def test_rerun_persists_rerun_thread_cycle_id(self, tmp_path):
+        # retained 重跑线程 id（rerun-*）同样回写
+        def fake_run(cmd):
+            return 0, "重跑完成: mode=retained cycle=rerun-feat/x-20260825-093000-4242 target=feat/x 状态=SUCCESS patch=/p", ""
+
+        runner = _make_runner(tmp_path, run_func=fake_run)
+        runner.start()
+        task_id = runner.submit("rerun", "alice", "feat/x")
+        runner.join(timeout=5)
+        assert runner.get(task_id)["state"] == "succeeded"
+        assert runner.get(task_id)["cycle_id"] == "rerun-feat/x-20260825-093000-4242"
+
+    def test_no_cycle_in_output_leaves_cycle_id_none(self, tmp_path):
+        runner = _make_runner(tmp_path, run_func=_ok_run)
+        runner.start()
+        task_id = _submit_sync(runner)
+        runner.join(timeout=5)
+        assert runner.get(task_id)["cycle_id"] is None
+
     def test_failed_captures_cli_stderr(self, tmp_path):
         def fake_run(cmd):
             return 1, "stdout", "同步失败: build error"
