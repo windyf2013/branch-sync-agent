@@ -1,4 +1,4 @@
-"""人工项处理 API：改判定（override）/ 确认继续（confirm）/ 放弃（abandon）。
+"""人工项处理 API：改判定（override）/ 确认继续（confirm）。
 
 - ``POST /api/override``：operator 人工覆盖 commit 的 is_bug_fix/risk 判定，
   经 V1 CLI ``bsa override``（同解释器子进程，写 judgments.json）同步执行，
@@ -6,19 +6,18 @@
 - ``POST /api/confirm``：operator 确认允许同步 ManualReview 项，复用
   ``--sha`` 直同步路径（runner 异步跑 ``bsa sync <target> --sha <sha>``），
   返回 task_id；审计 action=confirm_continue。
-- ``POST /api/abandon``：operator 放弃人工项，写审计 + 在 tasks 表落一条
-  kind=abandon 的本地放弃标记（state=succeeded，不进入 worker 队列）。
+
+（放弃人工项已由 abandons 表机制承接：``POST /api/abandon`` / ``POST /api/restore``，
+见 ``bsa_web.api.abandon``。）
 
 全部端点 require_operator + CSRF（JSON body ``_csrf``）。
 """
 
 from __future__ import annotations
 
-import json
 import os
 import subprocess
 import sys
-from datetime import UTC, datetime
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -33,10 +32,6 @@ router = APIRouter(prefix="/api", tags=["manual_review"])
 _RISKS: tuple[str, ...] = ("low", "medium", "high")
 _OVERRIDE_TIMEOUT_SEC = 60
 _BUSY_MSG = "该目标分支已有任务在运行或排队，请稍后再试"
-
-
-def _now_iso() -> str:
-    return datetime.now(UTC).isoformat()
 
 
 def _run_cli(cmd: list[str], log_dir: str) -> subprocess.CompletedProcess:
@@ -55,11 +50,6 @@ class OverrideBody(BaseModel):
 
 
 class ConfirmBody(BaseModel):
-    target: str | None = None
-    sha: str | None = None
-
-
-class AbandonBody(BaseModel):
     target: str | None = None
     sha: str | None = None
 
@@ -131,32 +121,3 @@ def api_confirm(
         result="queued",
     )
     return {"task_id": task_id, "state": "queued", "wait_reason": QUEUED_WAIT_REASON}
-
-
-@router.post("/abandon", dependencies=[Depends(require_csrf)])
-def api_abandon(
-    request: Request,
-    body: AbandonBody,
-    user: Annotated[dict, Depends(require_operator)],
-):
-    if not body.target:
-        raise HTTPException(status_code=400, detail="缺少 target")
-
-    shas_json = json.dumps([body.sha]) if body.sha else None
-    request.app.state.db.execute(
-        "INSERT INTO tasks(kind, user, target, shas, state, created_at) "
-        "VALUES ('abandon',?,?,?,'succeeded',?)",
-        (user["username"], body.target, shas_json, _now_iso()),
-    )
-    request.app.state.db.commit()
-
-    audit.record(
-        request.app.state.db,
-        user["username"],
-        "abandon",
-        target=body.target,
-        sha=body.sha,
-        detail={"mark": "tasks.kind=abandon"},
-        result="ok",
-    )
-    return {"message": "已标记放弃", "target": body.target}

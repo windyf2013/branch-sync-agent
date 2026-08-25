@@ -7,6 +7,7 @@ from fastapi import APIRouter, Depends, Request
 from bsa_web import projection
 from bsa_web.auth import make_csrf, require_login
 from bsa_web.branches import rcios_branch_names
+from bsa_web.db import abandoned_keys
 
 router = APIRouter(tags=["workbench"])
 
@@ -21,22 +22,45 @@ def _branch_options(settings) -> list[str]:
     return rcios_branch_names(settings.branch_file)
 
 
-def _build_todo(payload: dict) -> dict:
-    """从投影 payload 推导待办区：可推送 / 待确认 / 待重跑。"""
+def _build_todo(payload: dict, abandoned: set) -> dict:
+    """从投影 payload 推导待办区：可推送 / 待确认 / 待重跑。
+
+    已放弃项过滤：分支级（sha=None）匹配该分支所有 commit，整个分支从
+    可推送/待重跑移除，其 commit 也从待确认移除；commit 级匹配具体 sha。
+    """
     branches = payload.get("branch_results") or {}
+    push_pending = []
+    rerun_pending = []
+    for b in branches.values():
+        if (b.get("target_branch"), None) in abandoned:
+            continue
+        if b.get("status") in _PUSH_STATUSES:
+            push_pending.append(b)
+        if b.get("status") in _RERUN_STATUSES:
+            rerun_pending.append(b)
+
+    review_pending = []
+    for item in payload.get("action_required") or []:
+        if item.get("kind") != "ManualReview":
+            continue
+        branch = item.get("branch")
+        if (branch, None) in abandoned or (branch, item.get("sha")) in abandoned:
+            continue
+        review_pending.append(item)
+
     return {
-        "push_pending": [
-            b for b in branches.values() if b.get("status") in _PUSH_STATUSES
-        ],
-        "review_pending": [
-            item
-            for item in (payload.get("action_required") or [])
-            if item.get("kind") == "ManualReview"
-        ],
-        "rerun_pending": [
-            b for b in branches.values() if b.get("status") in _RERUN_STATUSES
-        ],
+        "push_pending": push_pending,
+        "review_pending": review_pending,
+        "rerun_pending": rerun_pending,
     }
+
+
+def _abandoned_items(cycle_id: str, abandoned: set) -> list[dict]:
+    """已放弃项展示列表（已放弃徽章 + 恢复入口用）。"""
+    return [
+        {"cycle_id": cycle_id, "target": target, "sha": sha}
+        for (target, sha) in sorted(abandoned)
+    ]
 
 
 def _render(request: Request, branch_options: list[str], **extra) -> object:
@@ -95,6 +119,7 @@ def workbench(request: Request, user: Annotated[dict, Depends(require_login)]):
             op_error=op_error,
         )
 
+    abandoned = abandoned_keys(request.app.state.db, cycle_id)
     return _render(request, branch_options=branch_options,
         user=user,
         csrf=csrf,
@@ -104,6 +129,7 @@ def workbench(request: Request, user: Annotated[dict, Depends(require_login)]):
         cycle_status=payload.get("status"),
         payload=payload,
         branches=list((payload.get("branch_results") or {}).values()),
+        abandoned_items=_abandoned_items(cycle_id, abandoned),
         op_error=op_error,
-        **_build_todo(payload),
+        **_build_todo(payload, abandoned),
     )

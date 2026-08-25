@@ -11,6 +11,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from pydantic import ValidationError
 
+from bsa_web.api.abandon import router as abandon_api_router
 from bsa_web.api.manual_review import router as manual_review_api_router
 from bsa_web.api.operations import router as operations_api_router
 from bsa_web.api.push import router as push_api_router
@@ -212,6 +213,7 @@ def create_app(*, settings_override: dict | None = None, env_file: str | None = 
     app.include_router(operations_view_router)
     app.include_router(operations_api_router)
     app.include_router(manual_review_api_router)
+    app.include_router(abandon_api_router)
     app.include_router(push_api_router)
     @app.get("/settings")
     def settings_page(

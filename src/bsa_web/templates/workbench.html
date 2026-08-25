@@ -73,6 +73,54 @@
   {% endif %}
 </section>
 
+{% if abandoned_items %}
+<section>
+  <h2>已放弃</h2>
+  <ul>
+    {% for item in abandoned_items %}
+    <li>
+      <span class="badge abandoned">已放弃</span>
+      {{ item.target }}{% if item.sha %}（{{ item.sha }}）{% else %}（整分支）{% endif %}
+      {% if user.role == "operator" %}
+      <button type="button" data-restore-target="{{ item.target }}" data-restore-sha="{{ item.sha or '' }}">恢复</button>
+      <span class="restore-result"></span>
+      {% endif %}
+    </li>
+    {% endfor %}
+  </ul>
+</section>
+<script>
+(function () {
+  var csrf = "{{ csrf }}";
+  var cycleId = "{{ current_cycle_id }}";
+  document.querySelectorAll("[data-restore-target]").forEach(function (btn) {
+    btn.addEventListener("click", function () {
+      var target = btn.getAttribute("data-restore-target");
+      var sha = btn.getAttribute("data-restore-sha") || null;
+      var result = btn.closest("li").querySelector(".restore-result");
+      result.textContent = "恢复中…";
+      fetch("/api/restore", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ _csrf: csrf, cycle_id: cycleId, target: target, sha: sha }),
+      }).then(function (r) {
+        return r.json().then(function (json) {
+          return { ok: r.ok, json: json };
+        });
+      }).then(function (res) {
+        if (res.ok) {
+          result.textContent = "已恢复";
+          window.location.reload();
+        } else {
+          result.textContent = (res.json && res.json.detail) || "恢复失败";
+        }
+      });
+    });
+  });
+})();
+</script>
+{% endif %}
+
 <section>
   <h2>当前周期实时总览</h2>
   <ul class="branches">

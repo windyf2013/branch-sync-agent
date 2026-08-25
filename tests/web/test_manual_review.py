@@ -1,4 +1,4 @@
-"""人工项处理 API 测试：改判定（override）/ 确认继续（confirm）/ 放弃（abandon）。"""
+"""人工项处理 API 测试：改判定（override）/ 确认继续（confirm）。"""
 
 from __future__ import annotations
 
@@ -269,57 +269,3 @@ class TestConfirmApi:
         assert r.status_code == 409
         release.set()
         runner.join(timeout=5)
-
-
-class TestAbandonApi:
-    def test_abandon_audits_and_marks_task(self, tmp_path):
-        app = _make_app(tmp_path)
-        client = _client(app)
-        _login(client)
-        r = client.post(
-            "/api/abandon",
-            json={"target": "feat/x", "sha": "abc123", "_csrf": _csrf(client)},
-        )
-        assert r.status_code == 200
-        assert "放弃" in r.json()["message"]
-
-        audit = [row for row in _audit_rows(app) if row["action"] == "abandon"]
-        assert len(audit) == 1
-        assert audit[0]["user"] == "alice"
-        assert audit[0]["target"] == "feat/x"
-        assert audit[0]["sha"] == "abc123"
-
-        rows = [
-            dict(row)
-            for row in app.state.db.execute(
-                "SELECT * FROM tasks WHERE kind='abandon' ORDER BY id"
-            ).fetchall()
-        ]
-        assert len(rows) == 1
-        assert rows[0]["target"] == "feat/x"
-        assert rows[0]["state"] == "succeeded"
-        assert "abc123" in (rows[0]["shas"] or "")
-
-    def test_abandon_missing_target_400(self, tmp_path):
-        app = _make_app(tmp_path)
-        client = _client(app)
-        _login(client)
-        r = client.post(
-            "/api/abandon",
-            json={"sha": "abc123", "_csrf": _csrf(client)},
-        )
-        assert r.status_code == 400
-
-    def test_abandon_viewer_forbidden(self, tmp_path):
-        users = {
-            "alice": f"{hash_password('op')}:{OPERATOR}",
-            "bob": f"{hash_password('view')}:{VIEWER}",
-        }
-        app = _make_app(tmp_path, users=users)
-        client = _client(app)
-        _login(client, "bob", "view")
-        r = client.post(
-            "/api/abandon",
-            json={"target": "feat/x", "sha": "abc123", "_csrf": _csrf(client)},
-        )
-        assert r.status_code == 403

@@ -19,6 +19,23 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_tasks_active_target
   ON tasks(target) WHERE state IN ('queued','running');
 """
 
+_ABANDONS_SQL = """
+CREATE TABLE IF NOT EXISTS abandons(
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  cycle_id TEXT NOT NULL,
+  target TEXT NOT NULL,
+  sha TEXT,
+  user TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  UNIQUE(cycle_id, target, sha))
+"""
+
+# SQLite 的 UNIQUE 视 NULL 互不相等，分支级（sha=NULL）幂等靠该表达式唯一索引兜底
+_ABANDONS_IDX_SQL = (
+    "CREATE UNIQUE INDEX IF NOT EXISTS idx_abandons_cycle_target_sha "
+    "ON abandons(cycle_id, target, COALESCE(sha,''))"
+)
+
 
 def init_db(path: str | Path) -> sqlite3.Connection:
     """初始化平台库，返回供多线程共享的连接。
@@ -34,6 +51,7 @@ def init_db(path: str | Path) -> sqlite3.Connection:
     conn.row_factory = sqlite3.Row
     conn.executescript(_SCHEMA)
     _migrate_tasks(conn)
+    _migrate_abandons(conn)
     conn.execute(
         "CREATE UNIQUE INDEX IF NOT EXISTS idx_tasks_active_target "
         "ON tasks(target) WHERE state IN ('queued','running')"
@@ -50,3 +68,42 @@ def _migrate_tasks(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE tasks ADD COLUMN src TEXT")
     if "fresh" not in cols:
         conn.execute("ALTER TABLE tasks ADD COLUMN fresh INTEGER NOT NULL DEFAULT 0")
+
+
+def _migrate_abandons(conn: sqlite3.Connection) -> None:
+    """abandons 表：PRAGMA 探测，旧库缺失则建表；唯一索引幂等补齐。"""
+    cols = {row["name"] for row in conn.execute("PRAGMA table_info(abandons)")}
+    if not cols:
+        conn.execute(_ABANDONS_SQL)
+    conn.execute(_ABANDONS_IDX_SQL)
+
+
+def is_abandoned(
+    conn: sqlite3.Connection,
+    cycle_id: str,
+    target: str,
+    sha: str | None = None,
+) -> bool:
+    """是否已放弃：commit 级先看分支级（sha=NULL 覆盖该分支所有 commit），再看精确 sha。"""
+    if sha is not None:
+        row = conn.execute(
+            "SELECT 1 FROM abandons WHERE cycle_id=? AND target=? AND sha IS NULL",
+            (cycle_id, target),
+        ).fetchone()
+        if row is not None:
+            return True
+    row = conn.execute(
+        "SELECT 1 FROM abandons WHERE cycle_id=? AND target=? AND sha IS ?",
+        (cycle_id, target, sha),
+    ).fetchone()
+    return row is not None
+
+
+def abandoned_keys(
+    conn: sqlite3.Connection, cycle_id: str
+) -> set[tuple[str, str | None]]:
+    """返回该周期已放弃的 (target, sha) 集合，sha=None 表示整分支放弃。"""
+    rows = conn.execute(
+        "SELECT target, sha FROM abandons WHERE cycle_id=?", (cycle_id,)
+    ).fetchall()
+    return {(row["target"], row["sha"]) for row in rows}
