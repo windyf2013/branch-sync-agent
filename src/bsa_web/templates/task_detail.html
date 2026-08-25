@@ -21,9 +21,10 @@
   <a href="/cycle/{{ payload.cycle_id }}">周期概览</a>
 </p>
 
-<section>
-  <h2>操作</h2>
-  {% if branch_abandoned %}
+<section class="panel">
+<div class="panel-head"><h2>操作</h2></div>
+  <div class="panel-body">
+{% if branch_abandoned %}
     <p><span class="badge abandoned">已放弃</span></p>
     {% if user.role == "operator" %}
     <div class="ops-row">
@@ -151,6 +152,7 @@
   })();
   </script>
   {% endif %}
+  </div>
 </section>
 
 {% include "_target_detail.html" %}

@@ -1,16 +1,20 @@
-<section>
-  <h2>分支状态</h2>
-  <p><span class="badge {{ branch.status | lower }}">{{ branch.status }}</span> {{ branch.target_branch }}</p>
-  <p class="muted">worktree：{{ branch.worktree_path }}</p>
-  {% if branch.stop_reason %}<p class="muted">停止原因：{{ branch.stop_reason }}</p>{% endif %}
-  {% if branch.patch_path %}
-    <p><a href="/cycle/{{ payload.cycle_id }}/target/{{ target }}/patch">下载完整 patch</a></p>
-  {% endif %}
+<section class="panel">
+  <div class="panel-head"><h2>分支状态</h2></div>
+  <div class="panel-body">
+    <p><span class="badge {{ branch.status | lower }}">{{ branch.status }}</span> {{ branch.target_branch }}</p>
+    <p class="muted">worktree：{{ branch.worktree_path }}</p>
+    {% if branch.stop_reason %}<p class="muted">停止原因：{{ branch.stop_reason }}</p>{% endif %}
+    {% if branch.patch_path %}
+      <p><a href="/cycle/{{ payload.cycle_id }}/target/{{ target }}/patch">下载完整 patch</a></p>
+    {% endif %}
+  </div>
 </section>
 
-<section>
-  <h2>commit 处理明细</h2>
+<section class="panel">
+  <div class="panel-head"><h2>commit 处理明细</h2></div>
+  <div class="panel-body">
   {% if branch.commits %}
+  <div class="table-wrap">
   <table>
     <thead><tr><th>commit</th><th>cherry-pick</th><th>冲突处理</th><th>build 矩阵</th></tr></thead>
     <tbody>
@@ -32,10 +36,11 @@
             （Agent 修复 {{ o.agent_attempts }} 次）
             {% if o.errors %}<div class="muted">错误：{{ o.errors | join("；") }}</div>{% endif %}
             {% if o.log_preview %}
-              <details>
-                <summary>build 日志（前 500 行{% if o.log_truncated %}，已截断{% endif %}）</summary>
+              <details class="build-log">
+                <summary>build 日志（尾部{% if o.log_truncated %}，截断至 100 行{% endif %}）</summary>
                 <pre>{{ o.log_preview }}</pre>
               </details>
+              <pre class="build-log-tail">{{ o.log_preview.split("\n")[-5:] | join("\n") }}</pre>
             {% endif %}
             {% if o.log_path %}
               <a href="/cycle/{{ payload.cycle_id }}/target/{{ target }}/commit/{{ cr.sha }}/build/{{ model }}/log">下载完整日志</a>
@@ -48,5 +53,7 @@
       {% endfor %}
     </tbody>
   </table>
+  </div>
   {% else %}<p>该目标分支无 commit 记录。</p>{% endif %}
+  </div>
 </section>

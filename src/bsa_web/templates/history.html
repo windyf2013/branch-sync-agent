@@ -3,9 +3,10 @@
 {% block content %}
 <h1>历史报告</h1>
 
-<section>
-  <h2>按结论筛选</h2>
-  <p>
+<section class="panel">
+<div class="panel-head"><h2>按结论筛选</h2></div>
+  <div class="panel-body">
+<p>
     <a href="/history">全部</a>
     {% for value, label in kind_filters %}
     &nbsp;|&nbsp;<a href="/history?kind={{ value }}">{{ label }}</a>
@@ -14,11 +15,13 @@
   {% if kind %}
     <p>当前筛选：<span class="badge">{{ kind }}</span>（仅显示存在该结论的周期）</p>
   {% endif %}
+  </div>
 </section>
 
-<section>
-  <h2>周期列表</h2>
-  {% if cycles %}
+<section class="panel">
+<div class="panel-head"><h2>周期列表</h2></div>
+  <div class="panel-body">
+{% if cycles %}
   <table>
     <thead>
       <tr><th>周期</th><th>状态</th><th>开始时间</th>{% if kind %}<th>计数</th>{% endif %}</tr>
@@ -37,5 +40,6 @@
   {% else %}
     <p>暂无周期记录{% if kind %}（当前筛选下）{% endif %}。</p>
   {% endif %}
+  </div>
 </section>
 {% endblock %}

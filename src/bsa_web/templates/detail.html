@@ -21,9 +21,10 @@
 {% else %}
 <p class="muted"><a href="/history">&larr; 返回历史</a></p>
 
-<section>
-  <h2>Action Required</h2>
-  {% if action_required %}
+<section class="panel">
+<div class="panel-head"><h2>Action Required</h2></div>
+  <div class="panel-body">
+{% if action_required %}
   <ul>
     {% for item in action_required %}
     <li>
@@ -39,11 +40,13 @@
     {% endfor %}
   </ul>
   {% else %}<p>本周期无 Action Required 项。</p>{% endif %}
+  </div>
 </section>
 
-<section>
-  <h2>已成功同步</h2>
-  {% if synced_branches %}
+<section class="panel">
+<div class="panel-head"><h2>已成功同步</h2></div>
+  <div class="panel-body">
+{% if synced_branches %}
   <ul>
     {% for b in synced_branches %}
     <li><span class="badge success">{{ b.status }}</span>
@@ -59,11 +62,13 @@
     <a href="/cycle/{{ payload.cycle_id }}/target/{{ b.target_branch }}">{{ b.target_branch }}</a>（{{ b.status }}）&nbsp;
     {% endfor %}
   </p>
+  </div>
 </section>
 
-<section>
-  <h2>检测信息</h2>
-  {% if detected_commits %}
+<section class="panel">
+<div class="panel-head"><h2>检测信息</h2></div>
+  <div class="panel-body">
+{% if detected_commits %}
   <table>
     <thead><tr><th>commit</th><th>说明</th><th>来源分支</th><th>改动文件</th></tr></thead>
     <tbody>
@@ -78,6 +83,7 @@
     </tbody>
   </table>
   {% else %}<p>本周期未检测到 commit。</p>{% endif %}
+  </div>
 </section>
 {% endif %}
 
@@ -93,16 +99,19 @@
 <h1>commit {{ commit.sha }}</h1>
 <p class="muted"><a href="/cycle/{{ payload.cycle_id }}">&larr; 返回周期概览</a></p>
 
-<section>
-  <h2>基本信息</h2>
-  <p>{{ commit.message }}</p>
+<section class="panel">
+<div class="panel-head"><h2>基本信息</h2></div>
+  <div class="panel-body">
+<p>{{ commit.message }}</p>
   <p class="muted">作者：{{ commit.author }} · 时间：{{ commit.committed_at }} · 来源分支：{{ commit.source_branch }}</p>
   <p>改动文件：{{ commit.changed_files | join(", ") }}</p>
+  </div>
 </section>
 
-<section>
-  <h2>结论</h2>
-  {% if conclusions %}
+<section class="panel">
+<div class="panel-head"><h2>结论</h2></div>
+  <div class="panel-body">
+{% if conclusions %}
   <ul>
     {% for t, concl in conclusions %}
     <li>{{ t }} &rarr; <span class="badge">{{ concl.kind }}</span>（置信度 {{ concl.confidence }}）
@@ -111,15 +120,18 @@
     {% endfor %}
   </ul>
   {% else %}<p>无结论记录。</p>{% endif %}
+  </div>
 </section>
 
-<section>
-  <h2>patch</h2>
-  {% if patch_preview %}
+<section class="panel">
+<div class="panel-head"><h2>patch</h2></div>
+  <div class="panel-body">
+{% if patch_preview %}
     <pre>{{ patch_preview }}</pre>
     <p class="muted">{% if patch_truncated %}已截断至前 500 行。{% endif %}
       <a href="/cycle/{{ payload.cycle_id }}/commit/{{ commit.sha }}/patch">下载完整 patch</a></p>
   {% else %}<p>该 commit 无 patch 内容。</p>{% endif %}
+  </div>
 </section>
 
 {% endif %}

@@ -260,13 +260,14 @@ class TestTargetDetail:
         monkeypatch.setattr("bsa_web.projection.load_cycle", lambda log_dir, cid: payload)
         monkeypatch.setattr(
             "bsa_web.views.detail._read_build_log",
-            lambda log_dir, log_path: ("[LOG] compile error", True),
+            lambda log_dir, log_path: ("line1\nline2\nline3\nline4\nline5\nline6", True),
         )
         r = client.get("/cycle/cycle-2026-08-20/target/t")
         assert r.status_code == 200
-        assert "[LOG] compile error" in r.text
+        assert "line2" in r.text
         assert "下载" in r.text
         assert "/cycle/cycle-2026-08-20/target/t/patch" in r.text
+        assert "build-log" in r.text
 
     def test_target_detail_missing_target_404(self, tmp_path, monkeypatch):
         client = _client(_make_app(tmp_path))
@@ -393,8 +394,8 @@ class TestBuildLogHelper:
         log.write_text("\n".join(f"line {i}" for i in range(600)), encoding="utf-8")
         text, truncated = _read_build_log(str(tmp_path), str(log), max_lines=500)
         assert truncated is True
-        assert text.splitlines()[0] == "line 0"
-        assert text.splitlines()[-1] == "line 499"
+        assert text.splitlines()[0] == "line 100"
+        assert text.splitlines()[-1] == "line 599"
 
     def test_read_build_log_none_when_missing(self, tmp_path):
         from bsa_web.views.detail import _read_build_log

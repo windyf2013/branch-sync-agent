@@ -1,8 +1,9 @@
 {% extends "base.html" %}
 {% block content %}
-<section>
-  <h2>任务 #{{ task_id }}</h2>
-  <ul>
+<section class="panel">
+<div class="panel-head"><h2>任务 #{{ task_id }}</h2></div>
+  <div class="panel-body">
+<ul>
     <li>类型：{{ "同步" if task.kind == "sync" else "重跑" }}</li>
     <li>目标分支：{{ task.target }}</li>
     {% if task.src %}<li>源分支：{{ task.src }}</li>{% endif %}
@@ -22,5 +23,6 @@
   {% if detail_url %}
   <p><a href="{{ detail_url }}">查看任务详情（推送 / WebSSH / 重跑 / 放弃）&rarr;</a></p>
   {% endif %}
+  </div>
 </section>
 {% endblock %}

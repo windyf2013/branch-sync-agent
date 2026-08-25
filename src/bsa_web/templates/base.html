@@ -8,22 +8,33 @@
   {% block extra_head %}{% endblock %}
 </head>
 <body>
-  <header>
-    <span class="brand">BSA 分支维护工作台</span>
-    <nav>
-      <a href="/">工作台</a>
-      <a href="/history">历史</a>
-      <a href="/audit">操作日志</a>
-    </nav>
-    <span class="spacer"></span>
-    <span class="user">当前用户：{{ user.username }}（{{ user.role }}）</span>
-    <form method="post" action="/logout">
-      <input type="hidden" name="_csrf" value="{{ csrf }}">
-      <button type="submit">登出</button>
-    </form>
-  </header>
-  <main>
+  <div class="masthead">
+    <div class="masthead-inner">
+      <div class="brand-mark">
+        <div class="logo">BSA</div>
+        <div class="brand-copy">
+          <p class="eyebrow">Branch Sync Agent</p>
+          <h1>分支维护工作台</h1>
+        </div>
+      </div>
+      <nav class="nav">
+        <a href="/">任务中心</a>
+        <a href="/history">历史报告</a>
+        <a href="/audit">操作日志</a>
+        <span class="user-chip">当前用户：{{ user.username }}（{{ user.role }}）</span>
+        <form method="post" action="/logout" style="margin:0">
+          <input type="hidden" name="_csrf" value="{{ csrf }}">
+          <button type="submit" style="background:rgba(255,255,255,0.12);border:1px solid rgba(255,255,255,0.22);color:#f8fafc">登出</button>
+        </form>
+      </nav>
+    </div>
+  </div>
+  <div class="page">
     {% block content %}{% endblock %}
-  </main>
+  </div>
+  <div class="footer">
+    <span>Branch Sync Agent · 分支维护工作台</span>
+    <span>内部维护工具 · 仅授权用户可访问</span>
+  </div>
 </body>
 </html>

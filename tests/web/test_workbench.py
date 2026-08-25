@@ -256,7 +256,7 @@ class TestWorkbenchView:
     def test_workbench_no_cycle_still_shows_quick_ops_to_operator(
         self, tmp_path, monkeypatch
     ):
-        # 工作台不依赖周期记录：即使无周期，操作者仍可手动触发同步/重跑。
+        # 工作台不依赖周期记录：即使无周期，操作者仍可手动发起同步。
         client = _client(_make_app(tmp_path))
         _login(client, "alice", "op")
         monkeypatch.setattr("bsa_web.projection.list_cycles", lambda log_dir: [])
@@ -267,7 +267,7 @@ class TestWorkbenchView:
         assert r.status_code == 200
         assert 'id="sync-src"' in r.text
         assert 'id="sync-submit"' in r.text
-        assert 'action="/rerun"' in r.text
+        assert 'action="/rerun"' not in r.text
         assert "/api/commits" in r.text
 
     def test_workbench_no_cycle_viewer_sees_quick_ops_hint(
@@ -291,7 +291,7 @@ class TestWorkbenchView:
         )
         r = client.get("/")
         assert r.status_code == 200
-        assert "仅操作者可触发同步与重跑" in r.text
+        assert "仅操作者可发起同步" in r.text
         assert 'action="/sync"' not in r.text
 
     def test_workbench_base_nav_has_history_and_ops_links(self, tmp_path, monkeypatch):

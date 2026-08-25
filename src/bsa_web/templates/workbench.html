@@ -13,121 +13,126 @@
 </label>
 {% endmacro %}
 
-<section class="agent">
-  {% if op_error %}
-    <p class="op-error">{{ op_error }}</p>
-  {% endif %}
-  {% if agent_status == "running" %}
-    <span class="badge running">Agent 进行中（{{ running_cycle_id }}）</span>
-    <p>当前周期正在执行，完成后自动刷新展示详情。</p>
-  {% elif agent_status == "failed" %}
-    <span class="badge failed">周期失败（{{ current_cycle_id }}）</span>
-  {% elif agent_status == "unavailable" %}
-    <p>周期数据暂不可用（{{ current_cycle_id }}）。</p>
-  {% elif agent_status == "done" %}
-    <span class="badge success">周期完成（{{ current_cycle_id }}）</span>
-  {% else %}
-    <p>暂无周期记录，等待首个同步周期。</p>
-  {% endif %}
+<section class="panel">
+  <div class="panel-head"><h2>Agent 状态</h2></div>
+  <div class="panel-body">
+    {% if op_error %}
+      <p class="op-error">{{ op_error }}</p>
+    {% endif %}
+    {% if agent_status == "running" %}
+      <span class="badge running">Agent 进行中（{{ running_cycle_id }}）</span>
+      <p>当前周期正在执行，完成后自动刷新展示详情。</p>
+    {% elif agent_status == "failed" %}
+      <span class="badge failed">周期失败（{{ current_cycle_id }}）</span>
+    {% elif agent_status == "unavailable" %}
+      <p>周期数据暂不可用（{{ current_cycle_id }}）。</p>
+    {% elif agent_status == "done" %}
+      <span class="badge success">周期完成（{{ current_cycle_id }}）</span>
+    {% else %}
+      <p>暂无周期记录，等待首个同步周期。</p>
+    {% endif %}
+  </div>
 </section>
 
-{% if payload or agent_status == "running" %}
-<section>
-  <h2>任务中心</h2>
-
-  <h3>自动任务</h3>
-  {% if agent_status == "running" %}
-    <p>当前周期执行中，完成后自动刷新展示分支任务。</p>
-  {% elif auto_tasks %}
-    <ul class="task-panels">
-      {% for t in auto_tasks %}
-      <li class="task-panel">
-        <span class="badge {{ t.status | lower }}">{{ t.badge }}</span>
-        <a href="/task/{{ t.cycle_id }}/{{ t.target }}">{{ t.target }}</a>
-        <span class="muted">周期 {{ t.cycle_id }} · commit 数 {{ t.commits }} · 发起人 {{ t.user }} · 来源 {{ t.source }}</span>
-        {% if t.abandoned %}
-          <span class="badge abandoned">已放弃</span>
-          {% if user.role == "operator" %}
-          <button type="button" data-restore-cycle="{{ current_cycle_id }}" data-restore-target="{{ t.target }}" data-restore-sha="">恢复</button>
-          <span class="restore-result"></span>
-          {% endif %}
-        {% elif t.status == "SUCCESS" %}
-          {% if user.role == "operator" %}
-          <button type="button" data-push-target="{{ t.target }}" data-push-cycle="{{ t.cycle_id }}">推送</button>
-          <span data-push-result="{{ t.target }}"></span>
+{% if payload or agent_status == "running" or manual_tasks %}
+<section class="panel">
+  <div class="panel-head"><h2>任务中心</h2><span class="panel-note">最近一个周期窗口 · 所有操作见任务详情</span></div>
+  <div class="panel-body">
+    {% if payload or agent_status == "running" %}
+    <h3>自动任务</h3>
+    {% if agent_status == "running" %}
+      <p>当前周期执行中，完成后自动刷新展示分支任务。</p>
+    {% elif auto_tasks %}
+      <ul class="task-panels">
+        {% for t in auto_tasks %}
+        <li class="task-panel">
+          <span class="badge {{ t.status | lower }}">{{ t.badge }}</span>
+          <a href="/task/{{ t.cycle_id }}/{{ t.target }}">{{ t.target }}</a>
+          <span class="muted">周期 {{ t.cycle_id }} · commit 数 {{ t.commits }} · 发起人 {{ t.user }} · 来源 {{ t.source }}</span>
+          {% if t.abandoned %}
+            <span class="badge abandoned">已放弃</span>
+            {% if user.role == "operator" %}
+            <button type="button" data-restore-cycle="{{ current_cycle_id }}" data-restore-target="{{ t.target }}" data-restore-sha="">恢复</button>
+            <span class="restore-result"></span>
+            {% endif %}
+          {% elif t.status == "SUCCESS" %}
+            {% if user.role == "operator" %}
+            <button type="button" data-push-target="{{ t.target }}" data-push-cycle="{{ t.cycle_id }}">推送</button>
+            <span data-push-result="{{ t.target }}"></span>
+            {% else %}
+            <span class="push-result-muted">（可推送，仅操作者）</span>
+            {% endif %}
           {% else %}
-          <span class="push-result-muted">（可推送，仅操作者）</span>
+            <span class="push-result-muted">（{{ t.badge }}，操作见任务详情）</span>
           {% endif %}
+        </li>
+        {% endfor %}
+      </ul>
+    {% else %}
+      <p>当前周期无自动任务。</p>
+    {% endif %}
+
+    {% if review_pending %}
+    <h3>待确认</h3>
+    <ul class="branches">
+      {% for item in review_pending %}
+      <li>
+        {% if item.branch %}
+        <a href="/task/{{ current_cycle_id }}/{{ item.branch }}">{{ item.sha }}</a>
         {% else %}
-          <span class="push-result-muted">（{{ t.badge }}，操作见任务详情）</span>
+        {{ item.sha }}
         {% endif %}
+        — {{ item.kind }}{% if item.reason %}（{{ item.reason }}）{% endif %}
       </li>
       {% endfor %}
     </ul>
-  {% else %}
-    <p>当前周期无自动任务。</p>
-  {% endif %}
-</section>
+    {% endif %}
+    {% endif %}
 
-{% if review_pending %}
-<section>
-  <h2>待确认</h2>
-  <ul>
-    {% for item in review_pending %}
-    <li>
-      {% if item.branch %}
-      <a href="/task/{{ current_cycle_id }}/{{ item.branch }}">{{ item.sha }}</a>
-      {% else %}
-      {{ item.sha }}
-      {% endif %}
-      — {{ item.kind }}{% if item.reason %}（{{ item.reason }}）{% endif %}
-    </li>
-    {% endfor %}
-  </ul>
-</section>
-{% endif %}
-{% endif %}
-
-{% if manual_tasks %}
-<section>
-  <h2>手动任务</h2>
-  <ul class="task-panels">
-    {% for t in manual_tasks %}
-    <li class="task-panel">
-      <span class="badge {{ t.status | lower }}">{{ t.badge }}</span>
-      {% if t.cycle_id %}
-      <a href="/task/{{ t.cycle_id }}/{{ t.target }}">{{ t.target }}</a>
-      {% else %}
-      <a href="/tasks/{{ t.task_id }}">{{ t.target }}</a>
-      {% endif %}
-      <span class="muted">{% if t.task_id %}任务 #{{ t.task_id }} · {% endif %}{% if t.created_at %}{{ t.created_at }}{% endif %}{% if t.kind == "rerun" %} · 重跑{% endif %} · 发起人 {{ t.user or "—" }} · 来源 {{ t.source }}</span>
-    </li>
-    {% endfor %}
-  </ul>
+    {% if manual_tasks %}
+    <h3>手动任务</h3>
+    <ul class="task-panels">
+      {% for t in manual_tasks %}
+      <li class="task-panel">
+        <span class="badge {{ t.status | lower }}">{{ t.badge }}</span>
+        {% if t.cycle_id %}
+        <a href="/task/{{ t.cycle_id }}/{{ t.target }}">{{ t.target }}</a>
+        {% else %}
+        <a href="/tasks/{{ t.task_id }}">{{ t.target }}</a>
+        {% endif %}
+        <span class="muted">{% if t.task_id %}任务 #{{ t.task_id }} · {% endif %}{% if t.created_at %}{{ t.created_at }}{% endif %}{% if t.kind == "rerun" %} · 重跑{% endif %} · 发起人 {{ t.user or "—" }} · 来源 {{ t.source }}</span>
+      </li>
+      {% endfor %}
+    </ul>
+    {% endif %}
+  </div>
 </section>
 {% endif %}
 
 {% if abandoned_items %}
-<section>
-  <h2>已放弃</h2>
-  <ul>
-    {% for item in abandoned_items %}
-    <li>
-      <span class="badge abandoned">已放弃</span>
-      {{ item.target }}{% if item.sha %}（{{ item.sha }}）{% else %}（整分支）{% endif %}
-      {% if user.role == "operator" %}
-      <button type="button" data-restore-cycle="{{ current_cycle_id }}" data-restore-target="{{ item.target }}" data-restore-sha="{{ item.sha or '' }}">恢复</button>
-      <span class="restore-result"></span>
-      {% endif %}
-    </li>
-    {% endfor %}
-  </ul>
+<section class="panel">
+  <div class="panel-head"><h2>已放弃</h2></div>
+  <div class="panel-body">
+    <ul class="branches">
+      {% for item in abandoned_items %}
+      <li>
+        <span class="badge abandoned">已放弃</span>
+        {{ item.target }}{% if item.sha %}（{{ item.sha }}）{% else %}（整分支）{% endif %}
+        {% if user.role == "operator" %}
+        <button type="button" data-restore-cycle="{{ current_cycle_id }}" data-restore-target="{{ item.target }}" data-restore-sha="{{ item.sha or '' }}">恢复</button>
+        <span class="restore-result"></span>
+        {% endif %}
+      </li>
+      {% endfor %}
+    </ul>
+  </div>
 </section>
 {% include "_restore_js.html" %}
 {% endif %}
 
-<section>
-  <h2>快速操作</h2>
+<section class="panel">
+  <div class="panel-head"><h2>快速操作</h2><span class="panel-note">发起同步</span></div>
+  <div class="panel-body">
   {% if user.role == "operator" %}
     {% if not branch_options %}
       <p class="muted">未加载到 RCIOS 分支列表（检查 BRANCH_FILE），请手动输入分支名。</p>
@@ -237,8 +242,6 @@
       });
 
       function redirectAfterSubmit(taskId, attemptsLeft) {
-        // 任务完成后 runner 回写 cycle_id，此时才能跳到任务详情页 /task/{cycle}/{target}；
-        // 未到终态则轮询，超限回退任务状态页。
         fetch("/api/tasks/" + taskId, {
           headers: { "Accept": "application/json" },
         }).then(function (r) {
@@ -289,23 +292,17 @@
       });
     })();
     </script>
-    <form method="post" action="/rerun">
-      <input type="hidden" name="_csrf" value="{{ csrf }}">
-      <div class="form-row">
-        {{ branch_select("target", "重跑目标分支") }}
-        <label class="inline"><input type="checkbox" name="fresh" value="on"> 重建重同步（--fresh）</label>
-        <button type="submit">重跑</button>
-      </div>
-      <p class="muted">对失败/停批分支重跑；勾选 --fresh 为基于当前远端重建重同步。</p>
-    </form>
   {% else %}
-    <p class="muted">仅操作者可触发同步与重跑。</p>
+    <p class="muted">仅操作者可发起同步。</p>
   {% endif %}
+  </div>
 </section>
 
-<section>
-  <h2>历史报告</h2>
-  <p><a href="/history">查看全部周期历史</a></p>
+<section class="panel">
+  <div class="panel-head"><h2>历史报告</h2></div>
+  <div class="panel-body">
+    <p><a href="/history">查看全部周期历史</a></p>
+  </div>
 </section>
 
 {% include "_push_confirm.html" %}

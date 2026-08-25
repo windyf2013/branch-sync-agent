@@ -4,8 +4,10 @@
 <h1>操作日志</h1>
 <p>共 {{ records|length }} 条（最近 {{ records|length }} 条，时间倒序）。</p>
 
-<section>
-  {% if records %}
+<section class="panel">
+
+  <div class="panel-body">
+{% if records %}
   <table>
     <thead>
       <tr><th>时间</th><th>用户</th><th>动作</th><th>周期</th><th>目标</th><th>SHA</th><th>结果</th></tr>
@@ -46,5 +48,6 @@
   {% else %}
     <p>暂无操作记录。</p>
   {% endif %}
+  </div>
 </section>
 {% endblock %}

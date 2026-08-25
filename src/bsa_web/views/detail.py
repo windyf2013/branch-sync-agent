@@ -17,7 +17,7 @@ from bsa_web.auth import make_csrf, require_login
 
 router = APIRouter(prefix="/cycle", tags=["detail"])
 
-_LOG_PREVIEW_LINES = 500
+_LOG_PREVIEW_LINES = 100
 _PATCH_PREVIEW_LINES = 500
 
 
@@ -51,7 +51,7 @@ def _read_build_log(
     log_path: str | None,
     max_lines: int = _LOG_PREVIEW_LINES,
 ) -> tuple[str, bool] | None:
-    """读 build 日志前 N 行；文件缺失 / 越界 / 不可读返回 None。"""
+    """读 build 日志尾部 max_lines 行（失败原因在日志末尾）；文件缺失 / 越界 / 不可读返回 None。"""
     path = _resolve_within_log_dir(log_dir, log_path)
     if path is None or not path.is_file():
         return None
@@ -61,7 +61,7 @@ def _read_build_log(
         return None
     lines = text.splitlines()
     truncated = len(lines) > max_lines
-    return "\n".join(lines[:max_lines]), truncated
+    return "\n".join(lines[-max_lines:]), truncated
 
 
 @router.get("/{cycle_id}")
