@@ -6,7 +6,7 @@ from fastapi.testclient import TestClient
 from bsa_web.app import create_app
 from bsa_web.auth import hash_password
 from bsa_web.projection import latest_completed_cycle, list_cycles, load_cycle
-from bsa_web.rbac import OPERATOR
+from bsa_web.rbac import OPERATOR, VIEWER
 
 # bsa report 子进程需要完整 V1 设置（Settings 必填字段），
 # 测试用与 tests/test_config.valid_env 等价的完整 env 注入。
@@ -198,6 +198,46 @@ class TestWorkbenchView:
         r = client.get("/")
         assert r.status_code == 200
         assert "暂无" in r.text
+
+    def test_workbench_no_cycle_still_shows_quick_ops_to_operator(
+        self, tmp_path, monkeypatch
+    ):
+        # 工作台不依赖周期记录：即使无周期，操作者仍可手动触发同步/重跑。
+        client = _client(_make_app(tmp_path))
+        _login(client, "alice", "op")
+        monkeypatch.setattr("bsa_web.projection.list_cycles", lambda log_dir: [])
+        monkeypatch.setattr(
+            "bsa_web.projection.latest_completed_cycle", lambda log_dir: None
+        )
+        r = client.get("/")
+        assert r.status_code == 200
+        assert 'action="/sync"' in r.text
+        assert 'action="/rerun"' in r.text
+        assert "触发同步" in r.text
+
+    def test_workbench_no_cycle_viewer_sees_quick_ops_hint(
+        self, tmp_path, monkeypatch
+    ):
+        app = create_app(
+            settings_override={
+                "log_dir": str(tmp_path),
+                "secret_key": "test-secret",
+                "users": {
+                    "alice": f"{hash_password('op')}:{OPERATOR}",
+                    "bob": f"{hash_password('view')}:{VIEWER}",
+                },
+            }
+        )
+        client = _client(app)
+        _login(client, "bob", "view")
+        monkeypatch.setattr("bsa_web.projection.list_cycles", lambda log_dir: [])
+        monkeypatch.setattr(
+            "bsa_web.projection.latest_completed_cycle", lambda log_dir: None
+        )
+        r = client.get("/")
+        assert r.status_code == 200
+        assert "仅操作者可触发同步与重跑" in r.text
+        assert 'action="/sync"' not in r.text
 
     def test_workbench_base_nav_has_history_and_ops_links(self, tmp_path, monkeypatch):
         client = _client(_make_app(tmp_path))

@@ -68,28 +68,32 @@
     {% endfor %}
   </ul>
 </section>
+{% endif %}
 
 <section>
   <h2>快速操作</h2>
-  <form method="post" action="/sync">
-    <input type="hidden" name="_csrf" value="{{ csrf }}">
-    <p>
-      <label>源分支 <input type="text" name="src" required></label>
-      <label>目标分支 <input type="text" name="target" required></label>
-      <label>SHA（可选，空格分隔）<input type="text" name="sha"></label>
-      <button type="submit">触发同步</button>
-    </p>
-  </form>
-  <form method="post" action="/rerun">
-    <input type="hidden" name="_csrf" value="{{ csrf }}">
-    <p>
-      <label>目标分支 <input type="text" name="target" required></label>
-      <label><input type="checkbox" name="fresh" value="on"> 重建重同步（--fresh）</label>
-      <button type="submit">重跑</button>
-    </p>
-  </form>
+  {% if user.role == "operator" %}
+    <form method="post" action="/sync">
+      <input type="hidden" name="_csrf" value="{{ csrf }}">
+      <div class="form-row">
+        <label>源分支 <input type="text" name="src" required></label>
+        <label>目标分支 <input type="text" name="target" required></label>
+        <label>SHA（可选，空格分隔）<input type="text" name="sha"></label>
+        <button type="submit">触发同步</button>
+      </div>
+    </form>
+    <form method="post" action="/rerun">
+      <input type="hidden" name="_csrf" value="{{ csrf }}">
+      <div class="form-row">
+        <label>目标分支 <input type="text" name="target" required></label>
+        <label class="inline"><input type="checkbox" name="fresh" value="on"> 重建重同步（--fresh）</label>
+        <button type="submit">重跑</button>
+      </div>
+    </form>
+  {% else %}
+    <p class="muted">仅操作者可触发同步与重跑。</p>
+  {% endif %}
 </section>
-{% endif %}
 
 <section>
   <h2>历史报告</h2>
