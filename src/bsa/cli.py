@@ -5,6 +5,7 @@ import json
 import sys
 from pathlib import Path
 
+from bsa.commands.commits import list_candidate_commits
 from bsa.commands.override import apply_override
 from bsa.commands.rerun import run_rerun_command
 from bsa.commands.sync import (
@@ -58,6 +59,11 @@ def _build_parser() -> argparse.ArgumentParser:
     report_p.add_argument("cycle", help="cycle id, e.g. cycle-2026-08-20")
     report_p.add_argument("--json", action="store_true", help="emit JSON on stdout")
     report_p.set_defaults(handler=_cmd_report)
+
+    commits_p = sub.add_parser("commits", help="列出源分支最近的候选 commit（只读）")
+    commits_p.add_argument("src", help="源分支名")
+    commits_p.add_argument("--limit", type=int, default=50, help="返回条数（默认 50）")
+    commits_p.set_defaults(handler=_cmd_commits)
 
     override_p = sub.add_parser(
         "override", help="人工覆盖 commit 的 is_bug_fix/risk 判定（写 judgments.json）"
@@ -197,6 +203,22 @@ def _cmd_report(args: argparse.Namespace) -> int:
         print(f"周期不存在或未完成: {args.cycle}", file=sys.stderr)
         return 1
     print(json.dumps(projection_payload(state), ensure_ascii=False, indent=2))
+    return 0
+
+
+def _cmd_commits(args: argparse.Namespace) -> int:
+    try:
+        settings = load_settings()
+    except Exception as exc:
+        print(f"配置错误: {exc}", file=sys.stderr)
+        return 2
+    ctx = build_graph_context(settings)
+    try:
+        commits = list_candidate_commits(ctx.git, args.src, limit=args.limit)
+    except Exception as exc:
+        print(f"候选 commit 加载失败: {exc}", file=sys.stderr)
+        return 1
+    print(json.dumps(commits, ensure_ascii=False, indent=2))
     return 0
 
 
