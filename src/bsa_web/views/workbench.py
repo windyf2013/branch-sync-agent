@@ -5,7 +5,10 @@
 收敛到任务详情页 /task/{cycle_id}/{target}。
 """
 
+import getpass
+import sqlite3
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, Request
@@ -123,9 +126,69 @@ def _auto_tasks(payload: dict, cycle_id: str, abandoned: set) -> list[dict]:
                 "worktree_path": branch.get("worktree_path"),
                 "patch_path": branch.get("patch_path"),
                 "abandoned": (target, None) in abandoned,
+                "user": "system",
+                "source": "cron",
             }
         )
     return tasks
+
+
+def _cli_cycles(log_dir: str, exclude: set[str]) -> list[dict]:
+    """枚举 CLI/cron 直启的手动周期（manual-*/rerun-* checkpoint 线程）。
+
+    平台 B 区发起的任务有 tasks 行（含 user/source）；CLI 或 cron 直接调
+    `bsa sync/rerun` 不写 tasks 表，只能从 checkpoint thread_id 枚举，保证
+    "编译中的手动任务在 A 区可见"。每项 user=运行 CLI 的 OS 用户、source=cli。
+    """
+    db = Path(log_dir) / "state.sqlite3"
+    if not db.is_file():
+        return []
+    try:
+        conn = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
+    except sqlite3.Error:
+        return []
+    try:
+        thread_ids = {
+            r[0]
+            for r in conn.execute(
+                "SELECT DISTINCT thread_id FROM checkpoints "
+                "WHERE thread_id LIKE 'manual-%' OR thread_id LIKE 'rerun-%'"
+            )
+        }
+    except sqlite3.Error:
+        return []
+    finally:
+        conn.close()
+    cycles: list[dict] = []
+    os_user = getpass.getuser()
+    for cycle_id in sorted(thread_ids - exclude):
+        payload = projection.load_cycle(log_dir, cycle_id)
+        if not payload:
+            continue
+        for branch in (payload.get("branch_results") or {}).values():
+            target = branch.get("target_branch")
+            status = branch.get("status") or "UNKNOWN"
+            cycles.append(
+                {
+                    "cycle_id": cycle_id,
+                    "target": target,
+                    "kind": "sync",
+                    "state": "running" if status in ("PARTIAL",) else status,
+                    "status": status,
+                    "badge": _STATUS_LABELS.get(status, status),
+                    "commits": len(branch.get("commits") or []),
+                    "worktree_path": branch.get("worktree_path"),
+                    "patch_path": branch.get("patch_path"),
+                    "user": os_user,
+                    "source": "cli",
+                    "created_at": "",
+                    "src": "",
+                    "fresh": False,
+                    "error": None,
+                    "task_id": None,
+                }
+            )
+    return cycles
 
 
 def _manual_tasks(db, log_dir: str, window_start: str | None) -> list[dict]:
@@ -134,14 +197,16 @@ def _manual_tasks(db, log_dir: str, window_start: str | None) -> list[dict]:
     终态手动任务超过最近周期窗口（created_at < window_start）收敛进历史页；
     进行中/排队任务始终展示。状态优先取对应 manual cycle 投影的
     branch_results[target]，无投影/无分支回退 tasks.state（runner 当前未回写
-    cycle_id，实际走回退路径）。
+    cycle_id，实际走回退路径）。CLI/cron 直启的 manual/rerun 周期经
+    _cli_cycles 枚举并入（source=cli）。
     """
     rows = db.execute(
-        "SELECT id, kind, target, src, fresh, state, error, cycle_id, created_at "
+        "SELECT id, kind, target, src, fresh, state, error, cycle_id, user, source, created_at "
         "FROM tasks WHERE kind IN ('sync','rerun') ORDER BY id DESC"
     ).fetchall()
     start = _parse_ts(window_start)
     tasks = []
+    known_cycles: set[str] = set()
     for row in rows:
         task = dict(row)
         created = _parse_ts(task["created_at"])
@@ -153,6 +218,8 @@ def _manual_tasks(db, log_dir: str, window_start: str | None) -> list[dict]:
         ):
             continue
         cycle_id = task.get("cycle_id")
+        if cycle_id:
+            known_cycles.add(cycle_id)
         status = _TASK_STATE_STATUS.get(task["state"], task["state"])
         commits = None
         if cycle_id:
@@ -175,8 +242,12 @@ def _manual_tasks(db, log_dir: str, window_start: str | None) -> list[dict]:
                 "src": task["src"],
                 "fresh": bool(task["fresh"]),
                 "error": task["error"],
+                "user": task["user"],
+                "source": task["source"] or "web",
             }
         )
+    tasks.extend(_cli_cycles(log_dir, known_cycles))
+    tasks.sort(key=lambda t: t.get("created_at") or "", reverse=True)
     return tasks
 
 

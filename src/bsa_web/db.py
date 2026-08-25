@@ -14,7 +14,7 @@ CREATE TABLE IF NOT EXISTS tasks(
   id INTEGER PRIMARY KEY AUTOINCREMENT, kind TEXT NOT NULL, user TEXT NOT NULL,
   cycle_id TEXT, target TEXT, src TEXT, shas TEXT, fresh INTEGER NOT NULL DEFAULT 0,
   state TEXT NOT NULL, error TEXT, created_at TEXT NOT NULL,
-  started_at TEXT, finished_at TEXT);
+  started_at TEXT, finished_at TEXT, source TEXT NOT NULL DEFAULT 'web');
 CREATE UNIQUE INDEX IF NOT EXISTS idx_tasks_active_target
   ON tasks(target) WHERE state IN ('queued','running');
 """
@@ -70,12 +70,16 @@ def init_db(path: str | Path) -> sqlite3.Connection:
 
 
 def _migrate_tasks(conn: sqlite3.Connection) -> None:
-    """旧库 tasks 表补齐 runner 所需列（src/fresh），新库 schema 已含。"""
+    """旧库 tasks 表补齐 runner 所需列（src/fresh/source），新库 schema 已含。"""
     cols = {row["name"] for row in conn.execute("PRAGMA table_info(tasks)")}
     if "src" not in cols:
         conn.execute("ALTER TABLE tasks ADD COLUMN src TEXT")
     if "fresh" not in cols:
         conn.execute("ALTER TABLE tasks ADD COLUMN fresh INTEGER NOT NULL DEFAULT 0")
+    if "source" not in cols:
+        conn.execute(
+            "ALTER TABLE tasks ADD COLUMN source TEXT NOT NULL DEFAULT 'web'"
+        )
 
 
 def _migrate_abandons(conn: sqlite3.Connection) -> None:

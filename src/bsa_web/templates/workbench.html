@@ -44,7 +44,7 @@
       <li class="task-panel">
         <span class="badge {{ t.status | lower }}">{{ t.badge }}</span>
         <a href="/task/{{ t.cycle_id }}/{{ t.target }}">{{ t.target }}</a>
-        <span class="muted">周期 {{ t.cycle_id }} · commit 数 {{ t.commits }}</span>
+        <span class="muted">周期 {{ t.cycle_id }} · commit 数 {{ t.commits }} · 发起人 {{ t.user }} · 来源 {{ t.source }}</span>
         {% if t.abandoned %}
           <span class="badge abandoned">已放弃</span>
           {% if user.role == "operator" %}
@@ -100,7 +100,7 @@
       {% else %}
       <a href="/tasks/{{ t.task_id }}">{{ t.target }}</a>
       {% endif %}
-      <span class="muted">任务 #{{ t.task_id }} · {{ t.created_at }}{% if t.kind == "rerun" %} · 重跑{% endif %}</span>
+      <span class="muted">{% if t.task_id %}任务 #{{ t.task_id }} · {% endif %}{% if t.created_at %}{{ t.created_at }}{% endif %}{% if t.kind == "rerun" %} · 重跑{% endif %} · 发起人 {{ t.user or "—" }} · 来源 {{ t.source }}</span>
     </li>
     {% endfor %}
   </ul>

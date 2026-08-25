@@ -240,6 +240,74 @@ class TestTaskCenter:
         assert 'data-push-target="feat/x"' in r.text
 
 
+class TestTaskUserSource:
+    def test_manual_task_panels_show_user_and_source(self, tmp_path, monkeypatch):
+        app = _make_app(tmp_path)
+        client = _client(app)
+        _login(client)
+        _add_task(app, target="feat/manual", state="running", created_at="2026-08-25T00:00:00Z")
+        monkeypatch.setattr("bsa_web.projection.list_cycles", lambda log_dir: [])
+        monkeypatch.setattr(
+            "bsa_web.projection.latest_completed_cycle", lambda log_dir: None
+        )
+        r = client.get("/")
+        assert r.status_code == 200
+        assert "发起人 alice" in r.text
+        assert "来源 web" in r.text
+        assert "feat/manual" in r.text
+
+    def test_auto_task_panels_show_cron_source(self, tmp_path, monkeypatch):
+        app = _make_app(tmp_path)
+        client = _client(app)
+        _login(client)
+        payload = _payload(
+            branch_results={"feat/auto": _branch("feat/auto", "SUCCESS")}
+        )
+        _mount_cycle(monkeypatch, payload)
+        r = client.get("/")
+        assert r.status_code == 200
+        assert "发起人 system" in r.text
+        assert "来源 cron" in r.text
+
+    def test_cli_cycle_enumerated_with_source_cli(self, tmp_path, monkeypatch):
+        # CLI/cron 直启的 manual-* 周期无 tasks 行，应从 checkpoint 线程枚举并显示。
+        import sqlite3
+        from pathlib import Path
+
+        app = _make_app(tmp_path)
+        client = _client(app)
+        _login(client)
+        # 造一个 state.sqlite3：checkpoints 表含 manual-* 线程
+        db = Path(str(tmp_path)) / "state.sqlite3"
+        db.parent.mkdir(parents=True, exist_ok=True)
+        conn = sqlite3.connect(str(db))
+        conn.execute(
+            "CREATE TABLE checkpoints(thread_id TEXT, checkpoint_ns TEXT, "
+            "checkpoint_id TEXT, parent_checkpoint_id TEXT, type TEXT, "
+            "checkpoint BLOB, metadata BLOB)"
+        )
+        conn.execute(
+            "INSERT INTO checkpoints(thread_id, checkpoint_ns, checkpoint_id, type, checkpoint) "
+            "VALUES ('manual-20260825-123456-99', 'x', 'c1', 'write', '{}')"
+        )
+        conn.commit()
+        conn.close()
+        monkeypatch.setattr(
+            "bsa_web.views.workbench.projection.load_cycle",
+            lambda log_dir, cid: _payload(
+                branch_results={"feat/cli": _branch("feat/cli", "PARTIAL")}
+            ),
+        )
+        monkeypatch.setattr("bsa_web.projection.list_cycles", lambda log_dir: [])
+        monkeypatch.setattr(
+            "bsa_web.projection.latest_completed_cycle", lambda log_dir: None
+        )
+        r = client.get("/")
+        assert r.status_code == 200
+        assert "feat/cli" in r.text
+        assert "来源 cli" in r.text
+
+
 class TestTaskDetail:
     def test_detail_success_shows_push_key(self, tmp_path, monkeypatch):
         app = _make_app(tmp_path)

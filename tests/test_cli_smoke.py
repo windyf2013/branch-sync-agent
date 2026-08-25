@@ -184,8 +184,9 @@ def test_run_cycle_cli_passes_dry_run(monkeypatch):
     assert seen["kwargs"]["dry_run"] is True
 
 
-def test_run_cycle_missing_env_exits_one(monkeypatch):
+def test_run_cycle_missing_env_exits_one(monkeypatch, tmp_path):
     monkeypatch.setattr("bsa.config.settings.os.environ", {})
+    monkeypatch.chdir(tmp_path)  # 隔离 cwd 的 .env，确保配置缺失
 
     assert main(["run-cycle"]) == 1
 

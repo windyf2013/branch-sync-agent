@@ -131,8 +131,8 @@ class TaskRunner:
         shas_json = json.dumps(shas) if shas else None
         try:
             cur = self.db.execute(
-                "INSERT INTO tasks(kind, user, target, src, shas, fresh, state, created_at) "
-                "VALUES (?,?,?,?,?,?, 'queued', ?)",
+                "INSERT INTO tasks(kind, user, target, src, shas, fresh, state, "
+                "created_at, source) VALUES (?,?,?,?,?,?, 'queued', ?, 'web')",
                 (kind, user, target, src, shas_json, 1 if fresh else 0, _now_iso()),
             )
         except sqlite3.IntegrityError:
