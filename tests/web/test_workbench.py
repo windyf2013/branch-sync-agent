@@ -212,9 +212,10 @@ class TestWorkbenchView:
         )
         r = client.get("/")
         assert r.status_code == 200
-        assert 'action="/sync"' in r.text
+        assert 'id="sync-src"' in r.text
+        assert 'id="sync-submit"' in r.text
         assert 'action="/rerun"' in r.text
-        assert "触发同步" in r.text
+        assert "/api/commits" in r.text
 
     def test_workbench_no_cycle_viewer_sees_quick_ops_hint(
         self, tmp_path, monkeypatch

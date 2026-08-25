@@ -1,14 +1,14 @@
 {% extends "base.html" %}
 {% block content %}
-{% macro branch_select(name, label) %}
+{% macro branch_select(name, label, id=None) %}
 <label>{{ label }}
   {% if branch_options %}
-  <select name="{{ name }}" required>
+  <select name="{{ name }}"{% if id %} id="{{ id }}"{% endif %} required>
     <option value="" disabled selected>选择{{ label }}</option>
     {% for b in branch_options %}<option value="{{ b }}">{{ b }}</option>{% endfor %}
   </select>
   {% else %}
-  <input type="text" name="{{ name }}" required>
+  <input type="text" name="{{ name }}"{% if id %} id="{{ id }}"{% endif %} required>
   {% endif %}
 </label>
 {% endmacro %}
@@ -137,16 +137,141 @@
     {% if not branch_options %}
       <p class="muted">未加载到 RCIOS 分支列表（检查 BRANCH_FILE），请手动输入分支名。</p>
     {% endif %}
-    <form method="post" action="/sync">
-      <input type="hidden" name="_csrf" value="{{ csrf }}">
+    <form id="new-sync" class="guided-sync">
       <div class="form-row">
-        {{ branch_select("src", "源分支") }}
-        {{ branch_select("target", "目标分支") }}
-        <label>SHA（可选，空格分隔）<input type="text" name="sha"></label>
-        <button type="submit">触发同步</button>
+        {{ branch_select("sync-src", "源分支", id="sync-src") }}
+        {{ branch_select("sync-target", "目标分支", id="sync-target") }}
       </div>
-      <p class="muted">将源分支的 bug-fix 同步到目标分支（指定 SHA 为直同步）。</p>
+      <div id="sync-commits" class="sync-commits">
+        <p class="muted">选择源分支后加载候选 commit…</p>
+      </div>
+      <p class="muted"><span id="sync-count">未选择 commit</span></p>
+      <div class="form-row">
+        <button type="button" id="sync-submit" disabled>同步所选 commit</button>
+        <span id="sync-status"></span>
+      </div>
     </form>
+    <script>
+    (function () {
+      var csrf = "{{ csrf }}";
+      var srcEl = document.getElementById("sync-src");
+      var targetEl = document.getElementById("sync-target");
+      var container = document.getElementById("sync-commits");
+      var countEl = document.getElementById("sync-count");
+      var submitBtn = document.getElementById("sync-submit");
+      var statusEl = document.getElementById("sync-status");
+
+      var commits = [];
+      var selected = {};
+
+      function updateCount() {
+        var n = Object.keys(selected).length;
+        countEl.textContent = n ? "已选择 " + n + " 个 commit" : "未选择 commit";
+        submitBtn.disabled = n === 0;
+      }
+
+      function renderCommits() {
+        container.replaceChildren();
+        commits.forEach(function (c) {
+          var label = document.createElement("label");
+          label.className = "commit-item";
+          var checkbox = document.createElement("input");
+          checkbox.type = "checkbox";
+          checkbox.value = c.sha;
+          var span = document.createElement("span");
+          span.textContent = (c.sha || "").slice(0, 8) + " " + (c.message || "") +
+            (c.committed_at ? "（" + c.committed_at + "）" : "");
+          label.appendChild(checkbox);
+          label.appendChild(span);
+          label.addEventListener("change", function () {
+            if (checkbox.checked) {
+              selected[c.sha] = true;
+            } else {
+              delete selected[c.sha];
+            }
+            updateCount();
+          });
+          container.appendChild(label);
+        });
+        updateCount();
+      }
+
+      function showHint(text) {
+        container.replaceChildren();
+        var p = document.createElement("p");
+        p.textContent = text;
+        container.appendChild(p);
+      }
+
+      function loadCommits() {
+        var src = srcEl.value;
+        if (!src) {
+          commits = [];
+          selected = {};
+          updateCount();
+          return;
+        }
+        commits = [];
+        selected = {};
+        showHint("加载中…");
+        updateCount();
+        fetch("/api/commits?src=" + encodeURIComponent(src) + "&limit=50", {
+          headers: { "Accept": "application/json" },
+        }).then(function (r) {
+          if (!r.ok) {
+            throw new Error("http " + r.status);
+          }
+          return r.json();
+        }).then(function (list) {
+          commits = list || [];
+          if (commits.length) {
+            renderCommits();
+          } else {
+            showHint("无候选 commit");
+          }
+        }).catch(function () {
+          showHint("候选 commit 加载失败");
+        });
+      }
+
+      srcEl.addEventListener("change", loadCommits);
+      srcEl.addEventListener("input", loadCommits);
+
+      document.getElementById("new-sync").addEventListener("submit", function (e) {
+        e.preventDefault();
+      });
+
+      submitBtn.addEventListener("click", function () {
+        var shas = Object.keys(selected);
+        var src = srcEl.value;
+        var target = targetEl.value;
+        if (!shas.length || !src || !target) {
+          return;
+        }
+        submitBtn.disabled = true;
+        statusEl.textContent = "提交中…";
+        fetch("/api/sync", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ _csrf: csrf, src: src, target: target, shas: shas }),
+        }).then(function (r) {
+          return r.json().then(function (json) {
+            return { ok: r.ok, json: json };
+          });
+        }).then(function (res) {
+          if (res.ok && res.json && res.json.task_id) {
+            window.location.href = "/tasks/" + res.json.task_id;
+          } else {
+            statusEl.textContent = (res.json && res.json.detail) || "提交失败";
+            submitBtn.disabled = false;
+          }
+        }).catch(function () {
+          statusEl.textContent = "提交失败";
+          submitBtn.disabled = false;
+        });
+      });
+    })();
+    </script>
     <form method="post" action="/rerun">
       <input type="hidden" name="_csrf" value="{{ csrf }}">
       <div class="form-row">

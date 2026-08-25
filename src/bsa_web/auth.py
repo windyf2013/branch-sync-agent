@@ -97,11 +97,19 @@ def _session_user(request: Request) -> tuple[str, str] | None:
     )
 
 
+def current_user(request: Request) -> dict | None:
+    """只读当前会话用户；无会话返回 None（API 层复用，JSON 场景不用 302）。"""
+    session = _session_user(request)
+    if session is None:
+        return None
+    return {"username": session[0], "role": session[1]}
+
+
 def require_login(request: Request) -> dict:
-    user = _session_user(request)
+    user = current_user(request)
     if user is None:
         raise HTTPException(status_code=302, headers={"Location": "/login"})
-    return {"username": user[0], "role": user[1]}
+    return user
 
 
 def require_operator(
