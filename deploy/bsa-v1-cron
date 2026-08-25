@@ -1,0 +1,19 @@
+# bsa-v1-cron — BSA V1 每日周期定时任务 crontab 条目
+#
+# 部署位置：/etc/cron.d/bsa-v1-cron
+# 使用：
+#   sudo cp deploy/bsa-v1-cron /etc/cron.d/
+#   sudo chown root:root /etc/cron.d/bsa-v1-cron
+#   sudo chmod 600 /etc/cron.d/bsa-v1-cron
+#
+# 每天 0 点执行一次完整同步周期（bsa run-cycle）。
+# 约定：
+#   - WORKDIR 必须为项目根（load_settings 从 cwd 读 .env）
+#   - 用项目 venv 的 python 直跑 CLI，不依赖 PATH/uv
+#   - stdout/stderr 追加到 logs/run-cycle.cron.log（日志随 logrotate 轮转）
+#   - V1 持全局 bsa.lock：与平台触发的 sync/rerun、worktree 清理互斥串行，
+#     并发触发被锁拒绝（平台任务会排队等待，行为符合需求文档）
+#   - 需替换 <PROJECT_DIR> 与 <VENV_PYTHON> 为实际部署路径（示例见下方）
+
+# 示例（root 用户，替换占位符）：
+# 0 0 * * * root cd /srv/bsa/bsa && /srv/bsa/bsa/.venv/bin/python -m bsa.cli run-cycle >> /srv/bsa/bsa/logs/run-cycle.cron.log 2>&1
