@@ -93,9 +93,8 @@ def test_entry_readable_by_sync_decision_agent(tmp_path):
 
 
 def test_override_cli_writes_judgment(monkeypatch, tmp_path, capsys):
-    from tests.test_config import valid_env
-
     from bsa.cli import main
+    from tests.test_config import valid_env
 
     env = valid_env()
     env["LOG_DIR"] = str(tmp_path)
@@ -114,9 +113,8 @@ def test_override_cli_writes_judgment(monkeypatch, tmp_path, capsys):
 
 
 def test_override_cli_sets_is_bug_fix_false(monkeypatch, tmp_path, capsys):
-    from tests.test_config import valid_env
-
     from bsa.cli import main
+    from tests.test_config import valid_env
 
     env = valid_env()
     env["LOG_DIR"] = str(tmp_path)
@@ -131,9 +129,8 @@ def test_override_cli_sets_is_bug_fix_false(monkeypatch, tmp_path, capsys):
 
 
 def test_override_cli_rejects_invalid_is_bug_fix(monkeypatch, tmp_path):
-    from tests.test_config import valid_env
-
     from bsa.cli import main
+    from tests.test_config import valid_env
 
     env = valid_env()
     env["LOG_DIR"] = str(tmp_path)
@@ -145,9 +142,10 @@ def test_override_cli_rejects_invalid_is_bug_fix(monkeypatch, tmp_path):
     assert not (tmp_path / "judgments.json").exists()
 
 
-def test_override_cli_missing_env_exits_two(monkeypatch):
+def test_override_cli_missing_env_exits_two(monkeypatch, tmp_path):
     from bsa.cli import main
 
     monkeypatch.setattr("bsa.config.settings.os.environ", {})
+    monkeypatch.chdir(tmp_path)  # 隔离 cwd 的 .env，确保配置缺失
 
     assert main(["override", "a1b2c3d4e5f6", "--is-bug-fix", "true"]) == 2

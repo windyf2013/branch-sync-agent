@@ -19,6 +19,7 @@ class WebSettings(BaseSettings):
     session_ttl_sec: int = 8 * 3600
     cookie_secure: bool = False
     users: dict[str, str] = Field(default_factory=dict, validation_alias="BSA_USERS")
+    branch_file: str = ""
 
 
 def load_web_settings(*, env_file: str | None = ".env") -> WebSettings:

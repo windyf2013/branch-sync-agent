@@ -6,11 +6,19 @@ from fastapi import APIRouter, Depends, Request
 
 from bsa_web import projection
 from bsa_web.auth import make_csrf, require_login
+from bsa_web.branches import rcios_branch_names
 
 router = APIRouter(tags=["workbench"])
 
 _PUSH_STATUSES = ("SUCCESS",)
 _RERUN_STATUSES = ("FAILED", "PARTIAL", "MANUAL")
+
+
+def _branch_options(settings) -> list[str]:
+    """RCIOS 仓库分支列表（branch.md），供源/目标分支下拉框；缺失返回空。"""
+    if not settings.branch_file:
+        return []
+    return rcios_branch_names(settings.branch_file)
 
 
 def _build_todo(payload: dict) -> dict:
@@ -31,8 +39,10 @@ def _build_todo(payload: dict) -> dict:
     }
 
 
-def _render(request: Request, **extra) -> object:
-    return request.app.state.templates.TemplateResponse(request, "workbench.html", extra)
+def _render(request: Request, branch_options: list[str], **extra) -> object:
+    return request.app.state.templates.TemplateResponse(
+        request, "workbench.html", {"branch_options": branch_options, **extra}
+    )
 
 
 def _op_error(request: Request) -> str | None:
@@ -49,12 +59,12 @@ def workbench(request: Request, user: Annotated[dict, Depends(require_login)]):
     csrf = make_csrf(settings.secret_key, user["username"])
     records = projection.list_cycles(log_dir)
     op_error = _op_error(request)
+    branch_options = _branch_options(settings)
 
     running = next((r for r in records if r.get("status") == "running"), None)
     if running is not None:
         # 运行中周期：仅显示"进行中"，不渲染详情（实时轮询由前端/后续任务承担）
-        return _render(
-            request,
+        return _render(request, branch_options=branch_options,
             user=user,
             csrf=csrf,
             cycles=records,
@@ -65,8 +75,7 @@ def workbench(request: Request, user: Annotated[dict, Depends(require_login)]):
 
     cycle_id = projection.latest_completed_cycle(log_dir)
     if cycle_id is None:
-        return _render(
-            request,
+        return _render(request, branch_options=branch_options,
             user=user,
             csrf=csrf,
             cycles=records,
@@ -77,8 +86,7 @@ def workbench(request: Request, user: Annotated[dict, Depends(require_login)]):
     payload = projection.load_cycle(log_dir, cycle_id)
     if payload is None:
         # 子进程投影失败（returncode 非 0）→ 平台容错，提示不可用
-        return _render(
-            request,
+        return _render(request, branch_options=branch_options,
             user=user,
             csrf=csrf,
             cycles=records,
@@ -87,8 +95,7 @@ def workbench(request: Request, user: Annotated[dict, Depends(require_login)]):
             op_error=op_error,
         )
 
-    return _render(
-        request,
+    return _render(request, branch_options=branch_options,
         user=user,
         csrf=csrf,
         cycles=records,

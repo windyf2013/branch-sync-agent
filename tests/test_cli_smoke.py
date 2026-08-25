@@ -60,8 +60,9 @@ def test_validate_config_exits_zero_with_env(monkeypatch, tmp_path):
     assert main(["validate-config"]) == 0
 
 
-def test_validate_config_missing_env_exits_two(monkeypatch):
+def test_validate_config_missing_env_exits_two(monkeypatch, tmp_path):
     monkeypatch.setattr("bsa.config.settings.os.environ", {})
+    monkeypatch.chdir(tmp_path)  # 隔离 cwd 的 .env，确保配置缺失
 
     assert main(["validate-config"]) == 2
 

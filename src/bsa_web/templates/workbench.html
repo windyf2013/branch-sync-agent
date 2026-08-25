@@ -1,5 +1,18 @@
 {% extends "base.html" %}
 {% block content %}
+{% macro branch_select(name, label) %}
+<label>{{ label }}
+  {% if branch_options %}
+  <select name="{{ name }}" required>
+    <option value="" disabled selected>选择{{ label }}</option>
+    {% for b in branch_options %}<option value="{{ b }}">{{ b }}</option>{% endfor %}
+  </select>
+  {% else %}
+  <input type="text" name="{{ name }}" required>
+  {% endif %}
+</label>
+{% endmacro %}
+
 <section class="agent">
   {% if op_error %}
     <p class="op-error">{{ op_error }}</p>
@@ -73,11 +86,14 @@
 <section>
   <h2>快速操作</h2>
   {% if user.role == "operator" %}
+    {% if not branch_options %}
+      <p class="muted">未加载到 RCIOS 分支列表（检查 BRANCH_FILE），请手动输入分支名。</p>
+    {% endif %}
     <form method="post" action="/sync">
       <input type="hidden" name="_csrf" value="{{ csrf }}">
       <div class="form-row">
-        <label>源分支 <input type="text" name="src" required></label>
-        <label>目标分支 <input type="text" name="target" required></label>
+        {{ branch_select("src", "源分支") }}
+        {{ branch_select("target", "目标分支") }}
         <label>SHA（可选，空格分隔）<input type="text" name="sha"></label>
         <button type="submit">触发同步</button>
       </div>
@@ -85,7 +101,7 @@
     <form method="post" action="/rerun">
       <input type="hidden" name="_csrf" value="{{ csrf }}">
       <div class="form-row">
-        <label>目标分支 <input type="text" name="target" required></label>
+        {{ branch_select("target", "目标分支") }}
         <label class="inline"><input type="checkbox" name="fresh" value="on"> 重建重同步（--fresh）</label>
         <button type="submit">重跑</button>
       </div>

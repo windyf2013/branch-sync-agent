@@ -7,7 +7,7 @@ from bsa_web.settings import WebSettings, load_web_settings
 
 def test_healthcheck():
     client = TestClient(
-        create_app(settings_override={"secret_key": "test-secret"})
+        create_app(settings_override={"secret_key": "test-secret"}, env_file=None)
     )
     r = client.get("/healthz")
     assert r.status_code == 200
@@ -16,7 +16,8 @@ def test_healthcheck():
 
 def test_settings_override_merged(tmp_path):
     app = create_app(
-        settings_override={"log_dir": str(tmp_path), "secret_key": "test-secret"}
+        settings_override={"log_dir": str(tmp_path), "secret_key": "test-secret"},
+        env_file=None
     )
     assert app.state.settings.log_dir == str(tmp_path)
     assert app.state.settings.bsa_web_port == 8888

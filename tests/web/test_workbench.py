@@ -32,7 +32,8 @@ def _make_app(tmp_path):
             "log_dir": str(tmp_path),
             "secret_key": "test-secret",
             "users": users,
-        }
+        },
+        env_file=None
     )
 
 

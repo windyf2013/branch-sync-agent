@@ -15,7 +15,7 @@ def _make_app(tmp_path, users=None, **kw):
         users = {"alice": f"{hash_password('op')}:{OPERATOR}"}
     overrides = {"log_dir": str(tmp_path), "secret_key": "test-secret", "users": users}
     overrides.update(kw)
-    return create_app(settings_override=overrides)
+    return create_app(settings_override=overrides, env_file=None)
 
 
 def _client(app):
