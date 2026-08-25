@@ -33,7 +33,7 @@
     {% else %}
     <p class="muted">该分支已放弃（仅操作者可恢复）。</p>
     {% endif %}
-  {% elif is_current and status == "SUCCESS" %}
+  {% elif show_push %}
     {% if user.role == "operator" %}
     <div class="ops-row">
       <button type="button" data-push-target="{{ target }}">推送</button>

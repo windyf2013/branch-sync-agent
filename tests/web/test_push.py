@@ -187,6 +187,32 @@ class TestCheckPushGates:
         )
         assert reasons == []
 
+    def test_manual_projection_gates_all_pass(self, tmp_path):
+        # 手动（manual cycle）SUCCESS 投影：worktree 命名 <target>-<manual-cycle>
+        # 且干净 → 四道闸全过（四道闸对手动 cycle 投影同样生效）。
+        manual_cycle = "manual-20260824-101010-4242"
+        payload = _payload(
+            {"feat/x": _branch("feat/x", worktree=_fake_worktree(tmp_path, "feat/x", cycle_id=manual_cycle))}
+        )
+        reasons = push.check_push_gates(
+            payload, "feat/x", forbidden=["main"], status_clean=True,
+            cycle_id=manual_cycle,
+        )
+        assert reasons == []
+
+    def test_manual_projection_wrong_cycle_worktree_rejected(self, tmp_path):
+        # 手动投影的 worktree 命名是其它周期 → 闸②拒绝（绝不错仓库推送）
+        manual_cycle = "manual-20260824-101010-4242"
+        other_cycle = "manual-20260825-101010-4242"
+        payload = _payload(
+            {"feat/x": _branch("feat/x", worktree=_fake_worktree(tmp_path, "feat/x", cycle_id=other_cycle))}
+        )
+        reasons = push.check_push_gates(
+            payload, "feat/x", forbidden=[], status_clean=True,
+            cycle_id=manual_cycle,
+        )
+        assert any("不匹配" in r for r in reasons)
+
 
 class TestExecutePush:
     def test_argv_exact_and_no_force(self):
@@ -315,6 +341,28 @@ class TestConfirmApi:
         assert r.status_code == 302
         assert r.headers["location"].endswith("/login")
 
+    def test_confirm_manual_cycle_200(self, tmp_path, monkeypatch):
+        # 手动（manual cycle）SUCCESS 投影走 confirm：读投影回显 commit 范围
+        # （confirm 只读回显，四道闸在执行端点生效）。
+        manual_cycle = "manual-20260824-101010-4242"
+        app = _make_app(tmp_path)
+        client = _client(app)
+        _login(client)
+        worktree = _fake_worktree(tmp_path, "feat/x", cycle_id=manual_cycle)
+        payload = _payload(
+            {"feat/x": _branch("feat/x", worktree=worktree, shas=["abc123", "def456"])}
+        )
+        _install_projection(monkeypatch, payload, cycle_id=manual_cycle)
+        r = client.post(
+            "/api/push/confirm",
+            json={"target": "feat/x", "_csrf": _csrf(client)},
+        )
+        assert r.status_code == 200
+        body = r.json()
+        assert body["target"] == "feat/x"
+        assert body["commits"] == ["abc123", "def456"]
+        assert body["cycle_id"] == manual_cycle
+
 
 class TestPushApi:
     def test_push_success_200_and_audit(self, tmp_path, monkeypatch):
@@ -343,6 +391,39 @@ class TestPushApi:
         audit = [row for row in _audit_rows(app) if row["action"] == "push"]
         assert len(audit) == 1
         assert audit[0]["user"] == "alice"
+        assert audit[0]["target"] == "feat/x"
+        assert audit[0]["result"] == "ok"
+        assert "abc123" in (audit[0]["sha"] or "")
+
+    def test_push_manual_cycle_success_200_and_audit(self, tmp_path, monkeypatch):
+        # 手动（manual cycle）SUCCESS 投影四道闸通过 + mock push 链执行成功：
+        # 确认推送链对 manual 周期同样生效，审计 cycle_id 落 manual cycle。
+        manual_cycle = "manual-20260824-101010-4242"
+        app = _make_app(tmp_path)
+        client = _client(app)
+        _login(client)
+        worktree = _fake_worktree(tmp_path, "feat/x", cycle_id=manual_cycle)
+        payload = _payload(
+            {"feat/x": _branch("feat/x", worktree=worktree, shas=["abc123"])}
+        )
+        _install_projection(monkeypatch, payload, cycle_id=manual_cycle)
+        monkeypatch.setattr("bsa_web.push.worktree_is_clean", lambda wt: True)
+        calls = []
+        monkeypatch.setattr(
+            "bsa_web.push.execute_push",
+            lambda executor, wt, target: (calls.append((executor, wt, target)) or (0, "推送成功")),
+        )
+        r = client.post(
+            "/api/push",
+            json={"target": "feat/x", "shas": ["abc123"], "_csrf": _csrf(client)},
+        )
+        assert r.status_code == 200
+        assert "推送成功" in r.json()["message"]
+        assert calls and calls[0][1] == str(worktree) and calls[0][2] == "feat/x"
+
+        audit = [row for row in _audit_rows(app) if row["action"] == "push"]
+        assert len(audit) == 1
+        assert audit[0]["cycle_id"] == manual_cycle
         assert audit[0]["target"] == "feat/x"
         assert audit[0]["result"] == "ok"
         assert "abc123" in (audit[0]["sha"] or "")

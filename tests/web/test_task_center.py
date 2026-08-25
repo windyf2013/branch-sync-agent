@@ -102,13 +102,15 @@ def _payload(*, status="REPORTED", branch_results=None, action_required=None, sc
     }
 
 
-def _mount_cycle(monkeypatch, payload, cycle_id=_CYCLE):
+def _mount_cycle(monkeypatch, payload, cycle_id=_CYCLE, latest=None):
+    if latest is None:
+        latest = cycle_id
     monkeypatch.setattr(
         "bsa_web.projection.list_cycles",
         lambda log_dir: [{"cycle_id": cycle_id, "status": "REPORTED"}],
     )
     monkeypatch.setattr(
-        "bsa_web.projection.latest_completed_cycle", lambda log_dir: cycle_id
+        "bsa_web.projection.latest_completed_cycle", lambda log_dir: latest
     )
     monkeypatch.setattr("bsa_web.projection.load_cycle", lambda log_dir, cid: payload)
 
@@ -224,6 +226,47 @@ class TestTaskDetail:
         assert r.status_code == 200
         assert "推送" in r.text
         assert 'data-push-target="feat/ok"' in r.text
+
+    def test_detail_manual_success_shows_push_key(self, tmp_path, monkeypatch):
+        # 手动（manual cycle）SUCCESS 分支任务详情页有推送键：手动周期不写 cycle
+        # record，latest_completed_cycle 仍指向自动周期（非 manual cycle），推送键
+        # 须照常开放（四道闸在 API 侧兜底 worktree/状态校验）。
+        app = _make_app(tmp_path)
+        client = _client(app)
+        _login(client)
+        manual_cycle = "manual-20260821-093000-4242"
+        payload = _payload(branch_results={"feat/manual": _branch("feat/manual", "SUCCESS")})
+        _mount_cycle(monkeypatch, payload, cycle_id=manual_cycle, latest=_CYCLE)
+        r = client.get(f"/task/{manual_cycle}/feat/manual")
+        assert r.status_code == 200
+        assert "推送" in r.text
+        assert 'data-push-target="feat/manual"' in r.text
+
+    def test_detail_rerun_success_shows_push_key(self, tmp_path, monkeypatch):
+        # rerun（retained）独立线程投影 SUCCESS 同样开放推送键。
+        app = _make_app(tmp_path)
+        client = _client(app)
+        _login(client)
+        rerun_cycle = "rerun-release-2.4-20260821-093000-4242"
+        payload = _payload(branch_results={"release-2.4": _branch("release-2.4", "SUCCESS")})
+        _mount_cycle(monkeypatch, payload, cycle_id=rerun_cycle, latest=_CYCLE)
+        r = client.get(f"/task/{rerun_cycle}/release-2.4")
+        assert r.status_code == 200
+        assert "推送" in r.text
+        assert 'data-push-target="release-2.4"' in r.text
+
+    def test_detail_manual_non_success_no_push_key(self, tmp_path, monkeypatch):
+        # 非 SUCCESS 手动任务无推送键（FAILED 显示 WebSSH/重跑而非推送）。
+        app = _make_app(tmp_path)
+        client = _client(app)
+        _login(client)
+        manual_cycle = "manual-20260821-093000-4242"
+        payload = _payload(branch_results={"feat/manual": _branch("feat/manual", "FAILED")})
+        _mount_cycle(monkeypatch, payload, cycle_id=manual_cycle, latest=_CYCLE)
+        r = client.get(f"/task/{manual_cycle}/feat/manual")
+        assert r.status_code == 200
+        assert 'data-push-target="feat/manual"' not in r.text
+        assert "WebSSH" in r.text
 
     def test_detail_failed_with_worktree_shows_webssh_and_rerun(self, tmp_path, monkeypatch):
         app = _make_app(tmp_path)
