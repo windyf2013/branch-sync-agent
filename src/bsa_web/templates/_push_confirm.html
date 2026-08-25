@@ -1,0 +1,81 @@
+{% if push_pending or show_push %}
+<dialog id="push-confirm">
+  <form method="dialog"><button class="dialog-close" aria-label="关闭">×</button></form>
+  <h3>确认推送</h3>
+  <div id="push-confirm-body"></div>
+  <div class="dialog-actions">
+    <button type="button" id="push-confirm-cancel">取消</button>
+    <button type="button" id="push-confirm-ok">确认推送</button>
+  </div>
+</dialog>
+<script>
+(function () {
+  var csrf = "{{ csrf }}";
+  var dialog = document.getElementById("push-confirm");
+  var bodyEl = document.getElementById("push-confirm-body");
+  var okBtn = document.getElementById("push-confirm-ok");
+  var pending = null;
+
+  function post(url, data) {
+    return fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(Object.assign({ _csrf: csrf }, data)),
+    }).then(function (r) {
+      return r.json().then(function (json) {
+        return { ok: r.ok, status: r.status, json: json };
+      });
+    });
+  }
+
+  document.querySelectorAll("[data-push-target]").forEach(function (btn) {
+    btn.addEventListener("click", function () {
+      var target = btn.getAttribute("data-push-target");
+      var result = document.querySelector('[data-push-result="' + target + '"]');
+      result.textContent = "确认中…";
+      post("/api/push/confirm", { target: target }).then(function (res) {
+        if (!res.ok) {
+          result.textContent = res.json.detail || "确认失败";
+          return;
+        }
+        pending = { target: res.json.target, shas: res.json.commits || [] };
+        var pre = document.createElement("pre");
+        pre.textContent = "目标分支：" + res.json.target +
+          "\n周期：" + (res.json.cycle_id || "-") +
+          "\nCommit 范围：" + ((res.json.commits || []).join(", ") || "无") +
+          "\n补丁摘要：" + (res.json.patch_summary || "无");
+        bodyEl.replaceChildren(pre);
+        result.textContent = "";
+        dialog.showModal();
+      });
+    });
+  });
+
+  document.getElementById("push-confirm-cancel").addEventListener("click", function () {
+    dialog.close();
+    pending = null;
+  });
+
+  okBtn.addEventListener("click", function () {
+    if (!pending) return;
+    okBtn.disabled = true;
+    post("/api/push", { target: pending.target, shas: pending.shas }).then(function (res) {
+      var result = document.querySelector('[data-push-result="' + pending.target + '"]');
+      if (res.ok) {
+        result.textContent = res.json.message || "推送成功";
+      } else {
+        var detail = res.json.detail;
+        if (detail && detail.reasons) {
+          result.textContent = "拒绝：" + detail.reasons.join("；");
+        } else {
+          result.textContent = detail || "推送失败";
+        }
+      }
+      dialog.close();
+      pending = null;
+      okBtn.disabled = false;
+    });
+  });
+})();
+</script>
+{% endif %}

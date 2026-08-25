@@ -1,0 +1,52 @@
+<section>
+  <h2>分支状态</h2>
+  <p><span class="badge {{ branch.status | lower }}">{{ branch.status }}</span> {{ branch.target_branch }}</p>
+  <p class="muted">worktree：{{ branch.worktree_path }}</p>
+  {% if branch.stop_reason %}<p class="muted">停止原因：{{ branch.stop_reason }}</p>{% endif %}
+  {% if branch.patch_path %}
+    <p><a href="/cycle/{{ payload.cycle_id }}/target/{{ target }}/patch">下载完整 patch</a></p>
+  {% endif %}
+</section>
+
+<section>
+  <h2>commit 处理明细</h2>
+  {% if branch.commits %}
+  <table>
+    <thead><tr><th>commit</th><th>cherry-pick</th><th>冲突处理</th><th>build 矩阵</th></tr></thead>
+    <tbody>
+      {% for cr in branch.commits %}
+      <tr>
+        <td><a href="/cycle/{{ payload.cycle_id }}/commit/{{ cr.sha }}">{{ cr.sha }}</a></td>
+        <td><span class="badge {{ cr.cherry_pick | lower }}">{{ cr.cherry_pick }}</span></td>
+        <td>
+          {% if cr.conflict_resolution %}
+            <div>冲突文件：{{ cr.conflict_resolution.files | join(", ") }}</div>
+            {% if cr.conflict_resolution.agent_reason %}<div class="muted">Agent 说明：{{ cr.conflict_resolution.agent_reason }}</div>{% endif %}
+            {% if cr.conflict_resolution.diff %}<details><summary>冲突 diff</summary><pre>{{ cr.conflict_resolution.diff }}</pre></details>{% endif %}
+          {% else %}<span class="muted">无</span>{% endif %}
+        </td>
+        <td>
+          {% for model, o in cr.build.items() %}
+          <div>
+            <span class="badge {{ o.status | lower }}">{{ o.status }}</span> {{ model }}
+            （Agent 修复 {{ o.agent_attempts }} 次）
+            {% if o.errors %}<div class="muted">错误：{{ o.errors | join("；") }}</div>{% endif %}
+            {% if o.log_preview %}
+              <details>
+                <summary>build 日志（前 500 行{% if o.log_truncated %}，已截断{% endif %}）</summary>
+                <pre>{{ o.log_preview }}</pre>
+              </details>
+            {% endif %}
+            {% if o.log_path %}
+              <a href="/cycle/{{ payload.cycle_id }}/target/{{ target }}/commit/{{ cr.sha }}/build/{{ model }}/log">下载完整日志</a>
+            {% endif %}
+          </div>
+          {% endfor %}
+          {% if not cr.build %}<span class="muted">无 build 记录</span>{% endif %}
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}<p>该目标分支无 commit 记录。</p>{% endif %}
+</section>

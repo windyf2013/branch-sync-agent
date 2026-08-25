@@ -31,47 +31,77 @@
   {% endif %}
 </section>
 
-{% if payload %}
+{% if payload or agent_status == "running" %}
 <section>
-  <h2>待办</h2>
-  {% if push_pending %}
-    <h3>可推送</h3>
-    <ul>
-      {% for b in push_pending %}
-      <li>{{ b.target_branch }} —
-        {% if user.role == "operator" %}
-        <button type="button" data-push-target="{{ b.target_branch }}">推送</button>
-        <span data-push-result="{{ b.target_branch }}"></span>
+  <h2>任务中心</h2>
+
+  <h3>自动任务</h3>
+  {% if agent_status == "running" %}
+    <p>当前周期执行中，完成后自动刷新展示分支任务。</p>
+  {% elif auto_tasks %}
+    <ul class="task-panels">
+      {% for t in auto_tasks %}
+      <li class="task-panel">
+        <span class="badge {{ t.status | lower }}">{{ t.badge }}</span>
+        <a href="/task/{{ t.cycle_id }}/{{ t.target }}">{{ t.target }}</a>
+        <span class="muted">周期 {{ t.cycle_id }} · commit 数 {{ t.commits }}</span>
+        {% if t.abandoned %}
+          <span class="badge abandoned">已放弃</span>
+          {% if user.role == "operator" %}
+          <button type="button" data-restore-cycle="{{ current_cycle_id }}" data-restore-target="{{ t.target }}" data-restore-sha="">恢复</button>
+          <span class="restore-result"></span>
+          {% endif %}
+        {% elif t.status == "SUCCESS" %}
+          {% if user.role == "operator" %}
+          <button type="button" data-push-target="{{ t.target }}">推送</button>
+          <span data-push-result="{{ t.target }}"></span>
+          {% else %}
+          <span class="push-result-muted">（可推送，仅操作者）</span>
+          {% endif %}
         {% else %}
-        <span class="push-result-muted">（仅操作者可推送）</span>
+          <span class="push-result-muted">（{{ t.badge }}，操作见任务详情）</span>
         {% endif %}
       </li>
       {% endfor %}
     </ul>
+  {% else %}
+    <p>当前周期无自动任务。</p>
   {% endif %}
 
-  {% if review_pending %}
-    <h3>待确认</h3>
-    <ul>
-      {% for item in review_pending %}
-      <li>{{ item.sha }} — {{ item.kind }}{% if item.reason %}（{{ item.reason }}）{% endif %}</li>
+  <h3>手动任务</h3>
+  {% if manual_tasks %}
+    <ul class="task-panels">
+      {% for t in manual_tasks %}
+      <li class="task-panel">
+        <span class="badge {{ t.status | lower }}">{{ t.badge }}</span>
+        <a href="/tasks/{{ t.task_id }}">{{ t.target }}</a>
+        <span class="muted">任务 #{{ t.task_id }} · {{ t.created_at }}{% if t.kind == "rerun" %} · 重跑{% endif %}</span>
+      </li>
       {% endfor %}
     </ul>
-  {% endif %}
-
-  {% if rerun_pending %}
-    <h3>失败/待重跑分支</h3>
-    <ul>
-      {% for b in rerun_pending %}
-      <li>{{ b.target_branch }}（{{ b.status }}）— 重跑</li>
-      {% endfor %}
-    </ul>
-  {% endif %}
-
-  {% if not push_pending and not review_pending and not rerun_pending %}
-    <p>当前周期无待办项。</p>
+  {% else %}
+    <p>暂无手动任务。</p>
   {% endif %}
 </section>
+
+{% if review_pending %}
+<section>
+  <h2>待确认</h2>
+  <ul>
+    {% for item in review_pending %}
+    <li>
+      {% if item.branch %}
+      <a href="/task/{{ current_cycle_id }}/{{ item.branch }}">{{ item.sha }}</a>
+      {% else %}
+      {{ item.sha }}
+      {% endif %}
+      — {{ item.kind }}{% if item.reason %}（{{ item.reason }}）{% endif %}
+    </li>
+    {% endfor %}
+  </ul>
+</section>
+{% endif %}
+{% endif %}
 
 {% if abandoned_items %}
 <section>
@@ -82,53 +112,14 @@
       <span class="badge abandoned">已放弃</span>
       {{ item.target }}{% if item.sha %}（{{ item.sha }}）{% else %}（整分支）{% endif %}
       {% if user.role == "operator" %}
-      <button type="button" data-restore-target="{{ item.target }}" data-restore-sha="{{ item.sha or '' }}">恢复</button>
+      <button type="button" data-restore-cycle="{{ current_cycle_id }}" data-restore-target="{{ item.target }}" data-restore-sha="{{ item.sha or '' }}">恢复</button>
       <span class="restore-result"></span>
       {% endif %}
     </li>
     {% endfor %}
   </ul>
 </section>
-<script>
-(function () {
-  var csrf = "{{ csrf }}";
-  var cycleId = "{{ current_cycle_id }}";
-  document.querySelectorAll("[data-restore-target]").forEach(function (btn) {
-    btn.addEventListener("click", function () {
-      var target = btn.getAttribute("data-restore-target");
-      var sha = btn.getAttribute("data-restore-sha") || null;
-      var result = btn.closest("li").querySelector(".restore-result");
-      result.textContent = "恢复中…";
-      fetch("/api/restore", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ _csrf: csrf, cycle_id: cycleId, target: target, sha: sha }),
-      }).then(function (r) {
-        return r.json().then(function (json) {
-          return { ok: r.ok, json: json };
-        });
-      }).then(function (res) {
-        if (res.ok) {
-          result.textContent = "已恢复";
-          window.location.reload();
-        } else {
-          result.textContent = (res.json && res.json.detail) || "恢复失败";
-        }
-      });
-    });
-  });
-})();
-</script>
-{% endif %}
-
-<section>
-  <h2>当前周期实时总览</h2>
-  <ul class="branches">
-    {% for b in branches %}
-    <li><span class="badge {{ b.status | lower }}">{{ b.status }}</span> {{ b.target_branch }}</li>
-    {% endfor %}
-  </ul>
-</section>
+{% include "_restore_js.html" %}
 {% endif %}
 
 <section>
@@ -291,85 +282,5 @@
   <p><a href="/history">查看全部周期历史</a></p>
 </section>
 
-{% if push_pending %}
-<dialog id="push-confirm">
-  <form method="dialog"><button class="dialog-close" aria-label="关闭">×</button></form>
-  <h3>确认推送</h3>
-  <div id="push-confirm-body"></div>
-  <div class="dialog-actions">
-    <button type="button" id="push-confirm-cancel">取消</button>
-    <button type="button" id="push-confirm-ok">确认推送</button>
-  </div>
-</dialog>
-<script>
-(function () {
-  var csrf = "{{ csrf }}";
-  var dialog = document.getElementById("push-confirm");
-  var bodyEl = document.getElementById("push-confirm-body");
-  var okBtn = document.getElementById("push-confirm-ok");
-  var pending = null;
-
-  function post(url, data) {
-    return fetch(url, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(Object.assign({ _csrf: csrf }, data)),
-    }).then(function (r) {
-      return r.json().then(function (json) {
-        return { ok: r.ok, status: r.status, json: json };
-      });
-    });
-  }
-
-  document.querySelectorAll("[data-push-target]").forEach(function (btn) {
-    btn.addEventListener("click", function () {
-      var target = btn.getAttribute("data-push-target");
-      var result = document.querySelector('[data-push-result="' + target + '"]');
-      result.textContent = "确认中…";
-      post("/api/push/confirm", { target: target }).then(function (res) {
-        if (!res.ok) {
-          result.textContent = res.json.detail || "确认失败";
-          return;
-        }
-        pending = { target: res.json.target, shas: res.json.commits || [] };
-        var pre = document.createElement("pre");
-        pre.textContent = "目标分支：" + res.json.target +
-          "\n周期：" + (res.json.cycle_id || "-") +
-          "\nCommit 范围：" + ((res.json.commits || []).join(", ") || "无") +
-          "\n补丁摘要：" + (res.json.patch_summary || "无");
-        bodyEl.replaceChildren(pre);
-        result.textContent = "";
-        dialog.showModal();
-      });
-    });
-  });
-
-  document.getElementById("push-confirm-cancel").addEventListener("click", function () {
-    dialog.close();
-    pending = null;
-  });
-
-  okBtn.addEventListener("click", function () {
-    if (!pending) return;
-    okBtn.disabled = true;
-    post("/api/push", { target: pending.target, shas: pending.shas }).then(function (res) {
-      var result = document.querySelector('[data-push-result="' + pending.target + '"]');
-      if (res.ok) {
-        result.textContent = res.json.message || "推送成功";
-      } else {
-        var detail = res.json.detail;
-        if (detail && detail.reasons) {
-          result.textContent = "拒绝：" + detail.reasons.join("；");
-        } else {
-          result.textContent = detail || "推送失败";
-        }
-      }
-      dialog.close();
-      pending = null;
-      okBtn.disabled = false;
-    });
-  });
-})();
-</script>
-{% endif %}
+{% include "_push_confirm.html" %}
 {% endblock %}
