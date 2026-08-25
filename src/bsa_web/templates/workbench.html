@@ -53,7 +53,7 @@
           {% endif %}
         {% elif t.status == "SUCCESS" %}
           {% if user.role == "operator" %}
-          <button type="button" data-push-target="{{ t.target }}">推送</button>
+          <button type="button" data-push-target="{{ t.target }}" data-push-cycle="{{ t.cycle_id }}">推送</button>
           <span data-push-result="{{ t.target }}"></span>
           {% else %}
           <span class="push-result-muted">（可推送，仅操作者）</span>

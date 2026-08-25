@@ -31,14 +31,19 @@
   document.querySelectorAll("[data-push-target]").forEach(function (btn) {
     btn.addEventListener("click", function () {
       var target = btn.getAttribute("data-push-target");
+      var cycle = btn.getAttribute("data-push-cycle");
       var result = document.querySelector('[data-push-result="' + target + '"]');
       result.textContent = "确认中…";
-      post("/api/push/confirm", { target: target }).then(function (res) {
+      post("/api/push/confirm", { target: target, cycle_id: cycle }).then(function (res) {
         if (!res.ok) {
           result.textContent = res.json.detail || "确认失败";
           return;
         }
-        pending = { target: res.json.target, shas: res.json.commits || [] };
+        pending = {
+          target: res.json.target,
+          cycle_id: res.json.cycle_id,
+          shas: res.json.commits || []
+        };
         var pre = document.createElement("pre");
         pre.textContent = "目标分支：" + res.json.target +
           "\n周期：" + (res.json.cycle_id || "-") +
@@ -59,7 +64,11 @@
   okBtn.addEventListener("click", function () {
     if (!pending) return;
     okBtn.disabled = true;
-    post("/api/push", { target: pending.target, shas: pending.shas }).then(function (res) {
+    post("/api/push", {
+      target: pending.target,
+      shas: pending.shas,
+      cycle_id: pending.cycle_id
+    }).then(function (res) {
       var result = document.querySelector('[data-push-result="' + pending.target + '"]');
       if (res.ok) {
         result.textContent = res.json.message || "推送成功";

@@ -200,6 +200,7 @@ class TestTaskCenter:
 
         r = client.get("/")
         assert 'data-push-target="feat/x"' in r.text
+        assert f'data-push-cycle="{_CYCLE}"' in r.text
         assert "已放弃" not in r.text
 
         _post(client, "/api/abandon", {"cycle_id": _CYCLE, "target": "feat/x"})
@@ -226,6 +227,7 @@ class TestTaskDetail:
         assert r.status_code == 200
         assert "推送" in r.text
         assert 'data-push-target="feat/ok"' in r.text
+        assert f'data-push-cycle="{_CYCLE}"' in r.text
 
     def test_detail_manual_success_shows_push_key(self, tmp_path, monkeypatch):
         # 手动（manual cycle）SUCCESS 分支任务详情页有推送键：手动周期不写 cycle
@@ -241,6 +243,7 @@ class TestTaskDetail:
         assert r.status_code == 200
         assert "推送" in r.text
         assert 'data-push-target="feat/manual"' in r.text
+        assert f'data-push-cycle="{manual_cycle}"' in r.text
 
     def test_detail_rerun_success_shows_push_key(self, tmp_path, monkeypatch):
         # rerun（retained）独立线程投影 SUCCESS 同样开放推送键。
@@ -254,6 +257,7 @@ class TestTaskDetail:
         assert r.status_code == 200
         assert "推送" in r.text
         assert 'data-push-target="release-2.4"' in r.text
+        assert f'data-push-cycle="{rerun_cycle}"' in r.text
 
     def test_detail_manual_non_success_no_push_key(self, tmp_path, monkeypatch):
         # 非 SUCCESS 手动任务无推送键（FAILED 显示 WebSSH/重跑而非推送）。

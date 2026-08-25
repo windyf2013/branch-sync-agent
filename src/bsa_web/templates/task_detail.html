@@ -36,7 +36,7 @@
   {% elif show_push %}
     {% if user.role == "operator" %}
     <div class="ops-row">
-      <button type="button" data-push-target="{{ target }}">推送</button>
+      <button type="button" data-push-target="{{ target }}" data-push-cycle="{{ cycle_id }}">推送</button>
       <span data-push-result="{{ target }}"></span>
     </div>
     {% else %}

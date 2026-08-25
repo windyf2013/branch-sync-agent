@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import contextlib
 import re
+from types import SimpleNamespace
 
 import pytest
 from fastapi.testclient import TestClient
@@ -66,6 +67,17 @@ def _install_projection(monkeypatch, payload, cycle_id="cycle-2026-08-24"):
     )
     monkeypatch.setattr(
         "bsa_web.projection.load_cycle", lambda log_dir, cid: payload
+    )
+
+
+def _install_load_cycle(monkeypatch, payloads):
+    """只 stub load_cycle（cycle_id→payload），latest_completed_cycle 走真实实现。
+
+    latest_completed_cycle 只 glob cycle-*/cycle.json，manual-/rerun- 不可见——
+    正是 C1 要修的真实接缝，测试不掩盖它。
+    """
+    monkeypatch.setattr(
+        "bsa_web.projection.load_cycle", lambda log_dir, cid: payloads.get(cid)
     )
 
 
@@ -264,6 +276,32 @@ class TestPushExecutor:
         assert rec.calls == [["git", "push", "origin", "HEAD:feat/x"]]
 
 
+class TestLoadPayload:
+    def test_prefers_explicit_cycle_id_over_latest(self, tmp_path, monkeypatch):
+        from bsa_web.api.push import _load_payload
+
+        app = _make_app(tmp_path)
+        request = SimpleNamespace(app=app)
+        auto_cycle = "cycle-2026-08-24"
+        manual_cycle = "manual-20260824-101010-4242"
+        auto_payload = {"cycle_id": auto_cycle, "branch_results": {}}
+        manual_payload = {"cycle_id": manual_cycle, "branch_results": {}}
+        monkeypatch.setattr(
+            "bsa_web.projection.latest_completed_cycle", lambda log_dir: auto_cycle
+        )
+        monkeypatch.setattr(
+            "bsa_web.projection.load_cycle",
+            lambda log_dir, cid: auto_payload if cid == auto_cycle else manual_payload,
+        )
+        cid, payload = _load_payload(request, manual_cycle)
+        assert cid == manual_cycle
+        assert payload == manual_payload
+
+        cid, payload = _load_payload(request)
+        assert cid == auto_cycle
+        assert payload == auto_payload
+
+
 class TestConfirmApi:
     def test_confirm_returns_commit_range_and_patch(self, tmp_path, monkeypatch):
         app = _make_app(tmp_path)
@@ -342,8 +380,9 @@ class TestConfirmApi:
         assert r.headers["location"].endswith("/login")
 
     def test_confirm_manual_cycle_200(self, tmp_path, monkeypatch):
-        # 手动（manual cycle）SUCCESS 投影走 confirm：读投影回显 commit 范围
-        # （confirm 只读回显，四道闸在执行端点生效）。
+        # 手动（manual cycle）SUCCESS 投影走 confirm：请求体显式带 cycle_id，
+        # _load_payload 经 load_cycle 解析 manual 周期（manual- 不写 cycle record、
+        # latest_completed_cycle 真实实现读不到 → 不 stub 它）。
         manual_cycle = "manual-20260824-101010-4242"
         app = _make_app(tmp_path)
         client = _client(app)
@@ -352,15 +391,46 @@ class TestConfirmApi:
         payload = _payload(
             {"feat/x": _branch("feat/x", worktree=worktree, shas=["abc123", "def456"])}
         )
-        _install_projection(monkeypatch, payload, cycle_id=manual_cycle)
+        _install_load_cycle(monkeypatch, {manual_cycle: payload})
         r = client.post(
             "/api/push/confirm",
-            json={"target": "feat/x", "_csrf": _csrf(client)},
+            json={"target": "feat/x", "cycle_id": manual_cycle, "_csrf": _csrf(client)},
         )
         assert r.status_code == 200
         body = r.json()
         assert body["target"] == "feat/x"
         assert body["commits"] == ["abc123", "def456"]
+        assert body["cycle_id"] == manual_cycle
+
+    def test_confirm_prefers_provided_cycle_id_over_latest(self, tmp_path, monkeypatch):
+        # 请求体 cycle_id 优先于 latest_completed_cycle（最近自动周期）：即使
+        # latest 指向另一个周期，显式 cycle_id 仍解析 manual 周期投影。
+        auto_cycle = "cycle-2026-08-24"
+        manual_cycle = "manual-20260824-101010-4242"
+        app = _make_app(tmp_path)
+        client = _client(app)
+        _login(client)
+        auto_wt = _fake_worktree(tmp_path, "feat/x")
+        manual_wt = _fake_worktree(tmp_path, "feat/x", cycle_id=manual_cycle)
+        auto_payload = _payload(
+            {"feat/x": _branch("feat/x", worktree=auto_wt, shas=["auto1"])}
+        )
+        manual_payload = _payload(
+            {"feat/x": _branch("feat/x", worktree=manual_wt, shas=["manual1"])}
+        )
+        monkeypatch.setattr(
+            "bsa_web.projection.latest_completed_cycle", lambda log_dir: auto_cycle
+        )
+        _install_load_cycle(
+            monkeypatch, {auto_cycle: auto_payload, manual_cycle: manual_payload}
+        )
+        r = client.post(
+            "/api/push/confirm",
+            json={"target": "feat/x", "cycle_id": manual_cycle, "_csrf": _csrf(client)},
+        )
+        assert r.status_code == 200
+        body = r.json()
+        assert body["commits"] == ["manual1"]
         assert body["cycle_id"] == manual_cycle
 
 
@@ -397,7 +467,8 @@ class TestPushApi:
 
     def test_push_manual_cycle_success_200_and_audit(self, tmp_path, monkeypatch):
         # 手动（manual cycle）SUCCESS 投影四道闸通过 + mock push 链执行成功：
-        # 确认推送链对 manual 周期同样生效，审计 cycle_id 落 manual cycle。
+        # 请求体显式带 cycle_id 经 load_cycle 解析 manual 周期，闸②按 manual
+        # cycle 校验 worktree 命名，审计 cycle_id 落 manual cycle。
         manual_cycle = "manual-20260824-101010-4242"
         app = _make_app(tmp_path)
         client = _client(app)
@@ -406,7 +477,7 @@ class TestPushApi:
         payload = _payload(
             {"feat/x": _branch("feat/x", worktree=worktree, shas=["abc123"])}
         )
-        _install_projection(monkeypatch, payload, cycle_id=manual_cycle)
+        _install_load_cycle(monkeypatch, {manual_cycle: payload})
         monkeypatch.setattr("bsa_web.push.worktree_is_clean", lambda wt: True)
         calls = []
         monkeypatch.setattr(
@@ -415,7 +486,12 @@ class TestPushApi:
         )
         r = client.post(
             "/api/push",
-            json={"target": "feat/x", "shas": ["abc123"], "_csrf": _csrf(client)},
+            json={
+                "target": "feat/x",
+                "shas": ["abc123"],
+                "cycle_id": manual_cycle,
+                "_csrf": _csrf(client),
+            },
         )
         assert r.status_code == 200
         assert "推送成功" in r.json()["message"]

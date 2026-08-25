@@ -28,20 +28,28 @@ router = APIRouter(prefix="/api", tags=["push"])
 
 class PushConfirmBody(BaseModel):
     target: str | None = None
+    cycle_id: str | None = None
 
 
 class PushBody(BaseModel):
     target: str | None = None
     shas: list[str] | None = None
+    cycle_id: str | None = None
 
 
-def _load_payload(request: Request) -> tuple[str | None, dict | None]:
-    """读最新已完成周期的投影 payload；无完成周期或投影失败返回 (None, None)。"""
+def _load_payload(
+    request: Request, cycle_id: str | None = None
+) -> tuple[str | None, dict | None]:
+    """读指定周期（缺省最近已完成周期）的投影 payload；失败返回 (None, None)。
+
+    手动同步/重跑周期（manual-/rerun- 前缀）不写 cycle record，latest_completed_cycle
+    读不到，须由调用方显式传 cycle_id 才能解析其投影；显式 cycle_id 优先于最近周期。
+    """
     log_dir = request.app.state.settings.log_dir
-    cycle_id = projection.latest_completed_cycle(log_dir)
-    if cycle_id is None:
+    cid = cycle_id or projection.latest_completed_cycle(log_dir)
+    if cid is None:
         return None, None
-    return cycle_id, projection.load_cycle(log_dir, cycle_id)
+    return cid, projection.load_cycle(log_dir, cid)
 
 
 def _commits_of(branch: dict) -> list[str]:
@@ -68,7 +76,7 @@ def api_push_confirm(
 ):
     if not body.target:
         raise HTTPException(status_code=400, detail="缺少 target")
-    cycle_id, payload = _load_payload(request)
+    cycle_id, payload = _load_payload(request, body.cycle_id)
     if payload is None:
         raise HTTPException(status_code=400, detail="当前周期数据不可用")
     branch = _require_success_branch(payload, body.target)
@@ -100,7 +108,7 @@ def api_push(
     # worktree（TOCTOU），否则会从错误/已删除的 worktree 推送（违反硬不变式
     # "推送也在持锁下执行"）。confirm 为只读回显不持锁。
     with flock_acquire(Path(request.app.state.settings.log_dir) / "bsa.lock"):
-        cycle_id, payload = _load_payload(request)
+        cycle_id, payload = _load_payload(request, body.cycle_id)
         if payload is None:
             raise HTTPException(status_code=400, detail="当前周期数据不可用")
         branch = (payload.get("branch_results") or {}).get(body.target)
