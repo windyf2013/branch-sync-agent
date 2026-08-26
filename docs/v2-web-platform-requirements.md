@@ -34,14 +34,31 @@ Branch Sync Agent V1 已交付：每日检测 RCIOS 代码库分支合入的 bug
 - 全局 `flock` 串行化所有 V1 执行：cron `run-cycle`、平台触发的 `sync/rerun`、worktree 清理。V1 本就低频（日一次 + 偶尔手动），串行可接受。
 - 平台触发的任务使用**独立 cycle_id 命名空间**（如 `manual-*`），不与每日周期 checkpoint 冲突。
 
-### 2.4 对接方式（方案 B，独立进程）
+### 2.4 执行与平台完全解耦（executor 守护进程）
+
+- **架构**：任务执行由独立守护进程 `bsa-executor.service` 负责；web 平台（`bsa-web.service`）是纯管理/UI 层——只写任务意图（tasks 表 `queued`）、只读状态，**不 spawn CLI、不持有执行线程**。
+- **平台重启不影响任务**：web 进程重启/崩溃时 executor 独立运行，任务照常执行；executor 自身重启按对账打标记，不自动重放。
+- **统一任务模型**：手动 `sync/rerun` 与 cron `run-cycle` 都进同一 `tasks` 表（`kind=cycle`），同一生命周期状态机（`queued→running→succeeded/failed`，另含 `interrupted`）。
+- **调度器**：executor 内置每日 0:00 周期调度（插入 `kind=cycle` 任务），替代系统 crontab。
+- **重启对账（打标记，不误杀）**：executor 启动时——
+  - `running` 且 `state.sqlite3` 有该 cycle 的 checkpoint 进度 → `interrupted`（保留 cycle_id/worktree，可续跑）
+  - `running` 且无任何进度 → `failed`（真实中断，无现场可续）
+  - `queued` → 保持 queued，认领循环重新处理
+- **续跑**：interrupted 任务由操作者触发，提交 `rerun` + `cycle_id`（retained 保留现场续跑，patch_id/EMPTY 跳过已应用）。
+- **cycle_id 运行期即知**：CLI 支持 `BSA_CYCLE_ID`/`BSA_MANUAL_CYCLE_ID`/`BSA_RERUN_THREAD_ID` 环境覆盖，executor 预生成注入，重启后可重挂。
+- **任务中心单数据源**：任务清单唯一从 `tasks` 表读取，**不枚举 checkpoint 线程**。CLI/cron 直启（不写 tasks 表）的 manual/rerun 周期由 executor 启动对账补登记为 `source=cli` 任务（`kind` 由前缀推导、`target` 取投影、有现场→`interrupted`）。`cycle-*` 自动周期由调度器登记，不补登记。
+- **状态唯一来源**：任务状态以 `tasks.state` 为准；投影 `branch_results` 仅补 `commits` 等详情字段，不覆盖任务状态（消除投影/任务双词汇冲突）。
+- **联动清理**：删除任务记录时一并删除——tasks 行 + 关联 checkpoint 线程（`state.sqlite3` checkpoints/writes）+ 关联 worktree（`bsa cleanup-worktree`，持 flock）。放弃（abandon）不动现场，仅删除任务记录做彻底清理。
+- **checkpoint 线程 = 投影数据源**：已终态任务的 checkpoint 线程保留作 `bsa report`/详情/续跑/推送校验的数据源；失败/停批任务的现场是 worktree（WebSSH/续跑入口），checkpoint 不当作任务实体。
+
+### 2.5 对接方式（方案 B，独立进程）
 
 - 平台独立进程，与 Agent 解耦；平台崩溃不影响 Agent cron 运行。
 - **读**：V1 投影 CLI（`bsa report <cycle> --json`）输出结构化状态，平台只消费 JSON，不解析 LangGraph checkpoint 内部结构。
 - **写**：平台对 V1 的一切写入只经 V1 CLI 子进程（`bsa sync/rerun/override`），绝不直接写 V1 的库。
 - **数据关联**：平台本地库用 V1 标识符（`cycle_id / target_branch / sha / patch_path / worktree_path`）逻辑关联 V1 数据；渲染时聚合"V1 状态 + 平台活动"，形成完整视图（如分支详情页 = V1 同步状态 + 平台推送/处理记录）。V1 数据不自成孤岛。
 
-### 2.5 实时性
+### 2.6 实时性
 
 - 平台页面**实时读状态，不缓存**。长闲置后操作前自动刷新（每次请求从 V1 投影读取最新状态）。
 

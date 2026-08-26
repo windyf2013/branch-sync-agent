@@ -60,9 +60,28 @@ def _audit_rows(app):
 
 
 def _install_runner(app, run_func):
-    runner = TaskRunner(app.state.db, str(app.state.settings.log_dir), run_func=run_func)
+    from bsa.commands.task_reporter import register_finish
+
+    def wrapped(cmd, env):
+        try:
+            result = run_func(cmd)
+        except TypeError:
+            result = run_func(cmd, env)
+        try:
+            register_finish(
+                env["LOG_DIR"], int(env["BSA_TASK_ID"]),
+                state="succeeded", cycle_id="cycle-test",
+            )
+        except Exception:
+            pass
+        return result
+
+    runner = TaskRunner(app.state.db, str(app.state.settings.log_dir), run_func=wrapped)
     runner.start()
-    app.state.runner = runner
+    app.state.enqueue_task = lambda db, kind, user, target, **kw: runner.submit(
+        kind, user, target, **kw
+    )
+    app.state.get_task = lambda db, task_id: runner.get(task_id)
     return runner
 
 

@@ -380,7 +380,7 @@ tbody tr:last-child td { border-bottom: none; }
     background: var(--scope-bg);
     border-color: var(--line);
 }
-.badge.skip, .badge.abandoned { color: var(--muted); background: #f8fafc; border-color: var(--line); }
+.badge.skip, .badge.abandoned, .badge.interrupted { color: var(--muted); background: #f8fafc; border-color: var(--line); }
 .badge-group { display: inline-flex; flex-wrap: wrap; gap: 6px; align-items: center; }
 
 /* —— 按钮 —— */

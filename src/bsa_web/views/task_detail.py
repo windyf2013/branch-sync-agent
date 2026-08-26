@@ -67,6 +67,14 @@ def task_detail(
     abandoned = abandoned_keys(request.app.state.db, cycle_id)
     branch_abandoned = (target, None) in abandoned
     status = branch.get("status") or "UNKNOWN"
+    # 续跑：该 (cycle_id, target) 存在 interrupted 的 tasks 行（executor 重启对账
+    # 打标记）→ 提供保留现场续跑入口（rerun retained + --cycle 来源周期）。
+    interrupted_row = request.app.state.db.execute(
+        "SELECT id FROM tasks WHERE cycle_id=? AND target=? AND state='interrupted' "
+        "LIMIT 1",
+        (cycle_id, target),
+    ).fetchone()
+    show_resume = interrupted_row is not None
     # 推送开放范围：最近完成周期的自动 SUCCESS 现场 + 手动/重跑 SUCCESS 现场
     # （手动/重跑周期不写 cycle record，latest_completed_cycle 不可见，须显式放行）。
     is_current = cycle_id == projection.latest_completed_cycle(settings.log_dir)
@@ -86,6 +94,7 @@ def task_detail(
         status=status,
         is_current=is_current,
         branch_abandoned=branch_abandoned,
+        show_resume=show_resume,
         show_webssh=bool(branch.get("worktree_path")) and status in _SSH_STATUSES,
         review_items=review_items,
         show_push=(

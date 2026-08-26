@@ -52,9 +52,33 @@ def _csrf(client) -> str:
 
 
 def _install_runner(app, run_func):
-    runner = TaskRunner(app.state.db, str(app.state.settings.log_dir), run_func=run_func)
+    """注入内存 TaskRunner 作为执行者：web 提交经 app.state.enqueue_task 委托给它。
+
+    wrapped 模拟 V1 引擎行为：先经 task_reporter 写 succeeded 终态（读 env 注入的
+    BSA_TASK_ID/LOG_DIR），再透传调用原 run_func（兼容单参数）。
+    """
+    from bsa.commands.task_reporter import register_finish
+
+    def wrapped(cmd, env):
+        try:
+            result = run_func(cmd)
+        except TypeError:
+            result = run_func(cmd, env)
+        try:
+            register_finish(
+                env["LOG_DIR"], int(env["BSA_TASK_ID"]),
+                state="succeeded", cycle_id="cycle-test",
+            )
+        except Exception:
+            pass
+        return result
+
+    runner = TaskRunner(app.state.db, str(app.state.settings.log_dir), run_func=wrapped)
     runner.start()
-    app.state.runner = runner
+    app.state.enqueue_task = lambda db, kind, user, target, **kw: runner.submit(
+        kind, user, target, **kw
+    )
+    app.state.get_task = lambda db, task_id: runner.get(task_id)
     return runner
 
 

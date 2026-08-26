@@ -40,6 +40,13 @@
   <div class="panel-body">
     {% if payload or agent_status == "running" %}
     <h3>自动任务</h3>
+    {% if cycle_task %}
+      <p class="muted">
+        <span class="badge {{ cycle_task.status | lower }}">{{ cycle_task.badge }}</span>
+        周期任务 {{ cycle_task.cycle_id }} · 来源 {{ cycle_task.source }}
+        {% if cycle_task.state == "interrupted" %}· 已中断，现场已保留（可续跑）{% endif %}
+      </p>
+    {% endif %}
     {% if agent_status == "running" %}
       <p>当前周期执行中，完成后自动刷新展示分支任务。</p>
     {% elif auto_tasks %}

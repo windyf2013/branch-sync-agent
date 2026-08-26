@@ -5,10 +5,7 @@
 收敛到任务详情页 /task/{cycle_id}/{target}。
 """
 
-import getpass
-import sqlite3
 from datetime import UTC, datetime
-from pathlib import Path
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, Request
@@ -32,6 +29,7 @@ _STATUS_LABELS = {
     "UNKNOWN": "未知",
     "RUNNING": "进行中",
     "QUEUED": "排队中",
+    "INTERRUPTED": "已中断",
 }
 
 # tasks.state → 展示状态（与投影 branch_results.status 语义对齐）
@@ -40,9 +38,12 @@ _TASK_STATE_STATUS = {
     "running": "RUNNING",
     "succeeded": "SUCCESS",
     "failed": "FAILED",
+    "interrupted": "INTERRUPTED",
 }
 
 _ACTIVE_STATES = ("queued", "running")
+# interrupted 任务需保留展示（用户据此续跑），窗口过滤时视作活动。
+_KEEP_STATES = _ACTIVE_STATES + ("interrupted",)
 
 
 def _branch_options(settings) -> list[str]:
@@ -133,78 +134,14 @@ def _auto_tasks(payload: dict, cycle_id: str, abandoned: set) -> list[dict]:
     return tasks
 
 
-def _cli_cycles(log_dir: str, exclude: set[str], active_targets: set[str]) -> list[dict]:
-    """枚举 CLI/cron 直启的手动周期（manual-*/rerun-* checkpoint 线程）。
-
-    平台 B 区发起的任务有 tasks 行（含 user/source）；CLI 或 cron 直接调
-    `bsa sync/rerun` 不写 tasks 表，只能从 checkpoint thread_id 枚举，保证
-    "编译中的手动任务在 A 区可见"。每项 user=运行 CLI 的 OS 用户、source=cli。
-
-    去重：运行中/排队中的 web 任务（tasks 表 queued/running）与对应的
-    manual/rerun 周期是同一份工作，thread_id 未回写 cycle_id 前无法用
-    exclude 去重；此处按 target 跳过重叠项，避免同一工作重复展示。
-    """
-    db = Path(log_dir) / "state.sqlite3"
-    if not db.is_file():
-        return []
-    try:
-        conn = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
-    except sqlite3.Error:
-        return []
-    try:
-        thread_ids = {
-            r[0]
-            for r in conn.execute(
-                "SELECT DISTINCT thread_id FROM checkpoints "
-                "WHERE thread_id LIKE 'manual-%' OR thread_id LIKE 'rerun-%'"
-            )
-        }
-    except sqlite3.Error:
-        return []
-    finally:
-        conn.close()
-    cycles: list[dict] = []
-    os_user = getpass.getuser()
-    for cycle_id in sorted(thread_ids - exclude):
-        payload = projection.load_cycle(log_dir, cycle_id)
-        if not payload:
-            continue
-        for branch in (payload.get("branch_results") or {}).values():
-            target = branch.get("target_branch")
-            if target in active_targets:
-                continue
-            status = branch.get("status") or "UNKNOWN"
-            cycles.append(
-                {
-                    "cycle_id": cycle_id,
-                    "target": target,
-                    "kind": "sync",
-                    "state": "running" if status in ("PARTIAL",) else status,
-                    "status": status,
-                    "badge": _STATUS_LABELS.get(status, status),
-                    "commits": len(branch.get("commits") or []),
-                    "worktree_path": branch.get("worktree_path"),
-                    "patch_path": branch.get("patch_path"),
-                    "user": os_user,
-                    "source": "cli",
-                    "created_at": "",
-                    "src": "",
-                    "fresh": False,
-                    "error": None,
-                    "task_id": None,
-                }
-            )
-    return cycles
-
-
 def _manual_tasks(db, log_dir: str, window_start: str | None) -> list[dict]:
-    """tasks 表（kind=sync/rerun）展开为手动任务面板。
+    """tasks 表展开为手动任务面板（唯一数据源）。
 
-    终态手动任务超过最近周期窗口（created_at < window_start）收敛进历史页；
-    进行中/排队任务始终展示。状态优先取对应 manual cycle 投影的
-    branch_results[target]，无投影/无分支回退 tasks.state（runner 当前未回写
-    cycle_id，实际走回退路径）。CLI/cron 直启的 manual/rerun 周期经
-    _cli_cycles 枚举并入（source=cli）。
+    解耦架构下所有任务（web/executor 发起的 sync/rerun，以及 executor 对账
+    补登记的 CLI 直启周期 source=cli）都统一进 tasks 表；本函数只读 tasks 表，
+    不再枚举 checkpoint 线程。终态任务超过最近周期窗口收敛进历史页；
+    进行中/排队/interrupted 始终展示。状态唯一来自 tasks.state（投影仅补
+    commits 等详情字段，不覆盖任务状态）。
     """
     rows = db.execute(
         "SELECT id, kind, target, src, fresh, state, error, cycle_id, user, source, created_at "
@@ -212,34 +149,23 @@ def _manual_tasks(db, log_dir: str, window_start: str | None) -> list[dict]:
     ).fetchall()
     start = _parse_ts(window_start)
     tasks = []
-    known_cycles: set[str] = set()
-    # 运行中/排队中 web 任务的 target 集合：_cli_cycles 据此跳过同一份工作
-    # （web 任务 CLI 子进程对应的 manual/rerun 周期），避免重复展示。
-    active_targets: set[str] = {
-        row["target"]
-        for row in rows
-        if row["state"] in _ACTIVE_STATES and row["target"]
-    }
     for row in rows:
         task = dict(row)
         created = _parse_ts(task["created_at"])
         if (
             start is not None
-            and task["state"] not in _ACTIVE_STATES
+            and task["state"] not in _KEEP_STATES
             and created is not None
             and created < start
         ):
             continue
         cycle_id = task.get("cycle_id")
-        if cycle_id:
-            known_cycles.add(cycle_id)
         status = _TASK_STATE_STATUS.get(task["state"], task["state"])
         commits = None
         if cycle_id:
             payload = projection.load_cycle(log_dir, cycle_id)
             branch = ((payload or {}).get("branch_results") or {}).get(task["target"])
             if branch:
-                status = branch.get("status") or status
                 commits = len(branch.get("commits") or [])
         tasks.append(
             {
@@ -259,7 +185,6 @@ def _manual_tasks(db, log_dir: str, window_start: str | None) -> list[dict]:
                 "source": task["source"] or "web",
             }
         )
-    tasks.extend(_cli_cycles(log_dir, known_cycles, active_targets))
     tasks.sort(key=lambda t: t.get("created_at") or "", reverse=True)
     return tasks
 
@@ -273,6 +198,28 @@ def _window_start(log_dir: str) -> str | None:
     if payload is None:
         return None
     return (payload.get("scan_window") or [None])[0]
+
+
+def _cycle_task(db, cycle_id: str | None) -> dict | None:
+    """最新 cron 周期任务行（kind=cycle），供自动区块展示运行状态。
+
+    解耦后 cron 周期统一进 tasks 表（source=cron）；自动区块据此显示
+    queued/running/interrupted 等状态徽章，与手动任务同一生命周期。
+    无 cycle 任务行返回 None（历史周期 / 老库未迁移场景回退投影展示）。
+    """
+    row = db.execute(
+        "SELECT id, kind, cycle_id, state, error, source, created_at "
+        "FROM tasks WHERE kind='cycle' "
+        "ORDER BY id DESC LIMIT 1"
+    ).fetchone()
+    if row is None:
+        return None
+    task = dict(row)
+    status = _TASK_STATE_STATUS.get(task["state"], task["state"])
+    task["status"] = status
+    task["badge"] = _STATUS_LABELS.get(status, status)
+    task["is_current"] = task["cycle_id"] == cycle_id
+    return task
 
 
 def _render(request: Request, branch_options: list[str], **extra) -> object:
@@ -308,6 +255,7 @@ def workbench(request: Request, user: Annotated[dict, Depends(require_login)]):
             agent_status="running",
             running_cycle_id=running.get("cycle_id"),
             auto_tasks=[],
+            cycle_task=_cycle_task(db, running.get("cycle_id")),
             manual_tasks=_manual_tasks(db, log_dir, _window_start(log_dir)),
             op_error=op_error,
         )
@@ -320,6 +268,7 @@ def workbench(request: Request, user: Annotated[dict, Depends(require_login)]):
             cycles=records,
             agent_status=None,
             auto_tasks=[],
+            cycle_task=_cycle_task(db, cycle_id),
             manual_tasks=_manual_tasks(db, log_dir, None),
             op_error=op_error,
         )
@@ -334,6 +283,7 @@ def workbench(request: Request, user: Annotated[dict, Depends(require_login)]):
             agent_status="unavailable",
             current_cycle_id=cycle_id,
             auto_tasks=[],
+            cycle_task=_cycle_task(db, cycle_id),
             manual_tasks=_manual_tasks(db, log_dir, None),
             op_error=op_error,
         )
@@ -349,6 +299,7 @@ def workbench(request: Request, user: Annotated[dict, Depends(require_login)]):
         cycle_status=payload.get("status"),
         payload=payload,
         auto_tasks=_auto_tasks(payload, cycle_id, abandoned),
+        cycle_task=_cycle_task(db, cycle_id),
         manual_tasks=_manual_tasks(db, log_dir, window_start),
         abandoned_items=_abandoned_items(cycle_id, abandoned),
         op_error=op_error,

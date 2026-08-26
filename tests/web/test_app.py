@@ -73,7 +73,7 @@ class TestInitDb:
         row = conn.execute(
             "SELECT value FROM meta WHERE key='schema_version'"
         ).fetchone()
-        assert row["value"] == "1"
+        assert row["value"] == "2"
         conn.close()
 
     def test_idempotent(self, tmp_path):

@@ -269,15 +269,40 @@ class TestTaskUserSource:
         assert "发起人 system" in r.text
         assert "来源 cron" in r.text
 
-    def test_cli_cycle_enumerated_with_source_cli(self, tmp_path, monkeypatch):
-        # CLI/cron 直启的 manual-* 周期无 tasks 行，应从 checkpoint 线程枚举并显示。
+    def test_cli_cycle_reconciled_shows_with_source_cli(self, tmp_path, monkeypatch):
+        # CLI/cron 直启的 manual-* 周期由 executor 对账补登记为 tasks 行
+        # （source=cli），workbench 从 tasks 表显示，不再枚举 checkpoint 线程。
+        app = _make_app(tmp_path)
+        client = _client(app)
+        _login(client)
+        # 模拟 executor 对账补登记：tasks 表已有该 CLI 周期行
+        app.state.db.execute(
+            "INSERT INTO tasks(kind, user, target, cycle_id, state, error, created_at, source) "
+            "VALUES ('sync','cli','feat/cli','manual-20260825-123456-99','interrupted',?,?, 'cli')",
+            ("执行中断（CLI 直启），现场已保留，可续跑", "2026-08-25T09:00:00+00:00"),
+        )
+        app.state.db.commit()
+        monkeypatch.setattr("bsa_web.projection.list_cycles", lambda log_dir: [])
+        monkeypatch.setattr(
+            "bsa_web.projection.latest_completed_cycle", lambda log_dir: None
+        )
+        r = client.get("/")
+        assert r.status_code == 200
+        assert "feat/cli" in r.text
+        assert "来源 cli" in r.text
+        assert "已中断" in r.text
+
+    def test_workbench_single_source_no_checkpoint_enumeration(
+        self, tmp_path, monkeypatch
+    ):
+        # 单数据源回归：workbench 只从 tasks 表读任务；即使 state.sqlite3 有
+        # manual-* checkpoint 线程且 tasks 无对应行，也不再枚举为任务。
         import sqlite3
         from pathlib import Path
 
         app = _make_app(tmp_path)
         client = _client(app)
         _login(client)
-        # 造一个 state.sqlite3：checkpoints 表含 manual-* 线程
         db = Path(str(tmp_path)) / "state.sqlite3"
         db.parent.mkdir(parents=True, exist_ok=True)
         conn = sqlite3.connect(str(db))
@@ -304,15 +329,14 @@ class TestTaskUserSource:
         )
         r = client.get("/")
         assert r.status_code == 200
-        assert "feat/cli" in r.text
-        assert "来源 cli" in r.text
+        # 无 tasks 行 → 不显示（checkpoint 线程不再是数据源）；待 executor 对账补登记
+        assert "feat/cli" not in r.text
 
     def test_active_web_task_not_duplicated_as_cli_cycle(
         self, tmp_path, monkeypatch
     ):
-        # 回归：运行中 web 任务（tasks 表 running，cycle_id 未回写）与其对应
-        # manual 周期是同一份工作，_cli_cycles 必须按 target 去重，不能重复展示
-        # 为"来源 cli"的独立任务（曾导致任务中心同时显示 失败任务 + 停批CLI周期）。
+        # 单数据源回归：workbench 只从 tasks 表读任务；即使 state.sqlite3 存在
+        # 同名 manual-* checkpoint 线程，也不作为独立"来源 cli"任务重复展示。
         import sqlite3
         from pathlib import Path
 
@@ -333,7 +357,7 @@ class TestTaskUserSource:
         )
         conn.commit()
         conn.close()
-        # web 任务 running、cycle_id 尚未回写（CLI 仍在执行）
+        # tasks 表有该分支的 web 任务（running，cycle_id 尚未回写）
         app.state.db.execute(
             "INSERT INTO tasks(kind, user, target, state, created_at) "
             "VALUES ('sync','alice','feat/cli','running',?)",
@@ -352,7 +376,7 @@ class TestTaskUserSource:
         )
         r = client.get("/")
         assert r.status_code == 200
-        # 任务中心只出现一次 feat/cli（running 的 web 任务），不再有第二条"来源 cli"
+        # 只出现一次 feat/cli（tasks 表行），checkpoint 线程不再被枚举为"来源 cli"
         assert r.text.count("feat/cli") == 1
         assert "来源 cli" not in r.text
 
@@ -425,6 +449,36 @@ class TestTaskDetail:
         assert f'/ssh/task/{_CYCLE}/feat/bad' in r.text
         assert "重跑" in r.text
         assert 'action="/rerun"' in r.text
+
+    def test_detail_interrupted_shows_resume_button(self, tmp_path, monkeypatch):
+        # 续跑：interrupted 任务（executor 重启对账打标记）详情页提供保留现场续跑
+        app = _make_app(tmp_path)
+        client = _client(app)
+        _login(client)
+        payload = _payload(branch_results={"feat/x": _branch("feat/x", "PARTIAL")})
+        _mount_cycle(monkeypatch, payload)
+        app.state.db.execute(
+            "INSERT INTO tasks(kind, user, target, cycle_id, state, created_at) "
+            "VALUES ('sync','alice','feat/x',?,'interrupted',?)",
+            (_CYCLE, "2026-08-25T09:00:00+00:00"),
+        )
+        app.state.db.commit()
+        r = client.get(f"/task/{_CYCLE}/feat/x")
+        assert r.status_code == 200
+        assert "已中断" in r.text
+        assert "续跑" in r.text
+        assert 'name="cycle"' in r.text
+        assert f'value="{_CYCLE}"' in r.text
+
+    def test_detail_no_interrupted_hides_resume(self, tmp_path, monkeypatch):
+        app = _make_app(tmp_path)
+        client = _client(app)
+        _login(client)
+        payload = _payload(branch_results={"feat/x": _branch("feat/x", "PARTIAL")})
+        _mount_cycle(monkeypatch, payload)
+        r = client.get(f"/task/{_CYCLE}/feat/x")
+        assert r.status_code == 200
+        assert "续跑（保留现场）" not in r.text
 
     def test_detail_abandoned_shows_restore_only(self, tmp_path, monkeypatch):
         app = _make_app(tmp_path)

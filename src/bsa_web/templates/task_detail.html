@@ -34,6 +34,20 @@
     {% else %}
     <p class="muted">该分支已放弃（仅操作者可恢复）。</p>
     {% endif %}
+  {% elif show_resume %}
+    <p><span class="badge interrupted">已中断</span> 执行被中断（executor 重启），现场已保留，可续跑。</p>
+    {% if user.role == "operator" %}
+    <div class="ops-row">
+      <form method="post" action="/rerun">
+        <input type="hidden" name="_csrf" value="{{ csrf }}">
+        <input type="hidden" name="target" value="{{ target }}">
+        <input type="hidden" name="cycle" value="{{ cycle_id }}">
+        <button type="submit">续跑（保留现场）</button>
+      </form>
+    </div>
+    {% else %}
+    <p class="muted">该分支需续跑，仅操作者可操作。</p>
+    {% endif %}
   {% elif show_push %}
     {% if user.role == "operator" %}
     <div class="ops-row">
