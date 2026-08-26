@@ -26,7 +26,7 @@ from bsa_web.auth import (
     require_operator,
 )
 from bsa_web.db import InstanceLock, init_db
-from bsa_web.runner import TaskRunner
+from bsa_web.runner import enqueue_task, get_task
 from bsa_web.settings import WebSettings
 from bsa_web.views.audit_log import router as audit_log_router
 from bsa_web.views.detail import router as detail_router
@@ -150,9 +150,10 @@ def create_app(*, settings_override: dict | None = None, env_file: str | None = 
         name="static",
     )
 
-    runner = TaskRunner(app.state.db, settings.log_dir)
-    runner.start()
-    app.state.runner = runner
+    # 任务执行由独立 bsa_web.executor 守护进程负责（web 不持有执行线程、
+    # 不 spawn CLI）。web 暴露 DB 直读直写工具供提交/查询：
+    app.state.enqueue_task = enqueue_task
+    app.state.get_task = get_task
 
     _configure_access_logger(settings.log_dir)
 

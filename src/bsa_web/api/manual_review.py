@@ -106,8 +106,9 @@ def api_confirm(
     if not body.sha:
         raise HTTPException(status_code=400, detail="缺少 sha")
 
-    task_id = request.app.state.runner.submit(
-        "sync", user["username"], body.target, shas=[body.sha], src=None
+    task_id = request.app.state.enqueue_task(
+        request.app.state.db, "sync", user["username"], body.target,
+        shas=[body.sha], src=None,
     )
     if task_id is None:
         raise HTTPException(status_code=409, detail=_BUSY_MSG)

@@ -45,8 +45,8 @@ def form_sync(
     sha: str | None = Form(None),
 ):
     shas = [s.strip() for s in sha.split() if s.strip()] if sha else None
-    task_id = request.app.state.runner.submit(
-        "sync", user["username"], target, shas=shas, src=src
+    task_id = request.app.state.enqueue_task(
+        request.app.state.db, "sync", user["username"], target, shas=shas, src=src
     )
     if task_id is None:
         return _busy_redirect()
@@ -59,10 +59,12 @@ def form_rerun(
     user: Annotated[dict, Depends(require_operator)],
     target: str = Form(...),
     fresh: str | None = Form(None),
+    cycle: str | None = Form(None),
 ):
     fresh = fresh in ("on", "true", "1")
-    task_id = request.app.state.runner.submit(
-        "rerun", user["username"], target, fresh=fresh
+    task_id = request.app.state.enqueue_task(
+        request.app.state.db, "rerun", user["username"], target,
+        fresh=fresh, cycle_id=cycle,
     )
     if task_id is None:
         return _busy_redirect()
@@ -75,7 +77,7 @@ def task_status_page(
     task_id: int,
     user: Annotated[dict, Depends(require_login)],
 ):
-    task = request.app.state.runner.get(task_id)
+    task = request.app.state.get_task(request.app.state.db, task_id)
     if task is None:
         raise HTTPException(status_code=404, detail="任务不存在")
     csrf = make_csrf(request.app.state.settings.secret_key, user["username"])

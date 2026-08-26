@@ -109,8 +109,9 @@ def api_sync(
         shas = body.shas
     else:
         shas = body.sha if isinstance(body.sha, list) else ([body.sha] if body.sha else None)
-    task_id = request.app.state.runner.submit(
-        "sync", user["username"], body.target, shas=shas, src=body.src
+    task_id = request.app.state.enqueue_task(
+        request.app.state.db, "sync", user["username"], body.target,
+        shas=shas, src=body.src,
     )
     if task_id is None:
         raise HTTPException(status_code=409, detail=_BUSY_MSG)
@@ -123,8 +124,8 @@ def api_rerun(
     body: RerunBody,
     user: Annotated[dict, Depends(require_operator)],
 ):
-    task_id = request.app.state.runner.submit(
-        "rerun", user["username"], body.target, fresh=body.fresh
+    task_id = request.app.state.enqueue_task(
+        request.app.state.db, "rerun", user["username"], body.target, fresh=body.fresh
     )
     if task_id is None:
         raise HTTPException(status_code=409, detail=_BUSY_MSG)
@@ -137,7 +138,7 @@ def api_task_status(
     task_id: int,
     user: Annotated[dict, Depends(require_login)],
 ):
-    task = request.app.state.runner.get(task_id)
+    task = request.app.state.get_task(request.app.state.db, task_id)
     if task is None:
         raise HTTPException(status_code=404, detail="任务不存在")
     return task

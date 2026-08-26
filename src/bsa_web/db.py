@@ -53,11 +53,17 @@ def init_db(path: str | Path) -> sqlite3.Connection:
     请求线程共享同一连接时，跨语句隐式事务被另一线程抢占导致
     ``OperationalError: not an error`` 等竞态（已实测压测消除）。现有写路径
     均为单语句 execute+commit，语义等价。
+
+    ``WAL + busy_timeout``：web 平台与 executor 守护进程共享同一
+    platform.sqlite3，WAL 允许并发读写（writer 唯一、reader 不阻塞），
+    busy_timeout 避免多进程瞬时写冲突直接报锁错。
     """
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(str(path), check_same_thread=False, autocommit=True)
     conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA busy_timeout=5000")
     conn.executescript(_SCHEMA)
     _migrate_tasks(conn)
     _migrate_abandons(conn)
@@ -66,7 +72,11 @@ def init_db(path: str | Path) -> sqlite3.Connection:
         "CREATE UNIQUE INDEX IF NOT EXISTS idx_tasks_active_target "
         "ON tasks(target) WHERE state IN ('queued','running')"
     )
-    conn.execute("INSERT OR IGNORE INTO meta(key,value) VALUES('schema_version','1')")
+    conn.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_tasks_active_cycle "
+        "ON tasks(kind) WHERE kind='cycle' AND state IN ('queued','running')"
+    )
+    conn.execute("INSERT OR IGNORE INTO meta(key,value) VALUES('schema_version','2')")
     conn.commit()
     return conn
 
