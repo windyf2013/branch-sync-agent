@@ -2,18 +2,21 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
+from datetime import datetime
 from pathlib import Path
 
 from bsa.commands.commits import list_candidate_commits
 from bsa.commands.override import apply_override
-from bsa.commands.rerun import run_rerun_command
+from bsa.commands.rerun import cleanup_worktree_command, run_rerun_command
 from bsa.commands.sync import (
     build_sha_batch,
     build_source_target_batch,
     manual_cycle_id,
     run_sync_command,
 )
+from bsa.commands.task_reporter import register_finish, register_start
 from bsa.config.settings import load_settings
 from bsa.executor.exceptions import SafetyViolation
 from bsa.graph.factory import _bundled_rules_dir, build_graph_context
@@ -108,6 +111,14 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     rerun_p.set_defaults(handler=_cmd_rerun)
 
+    cleanup_p = sub.add_parser(
+        "cleanup-worktree",
+        help="删除指定目标分支在某周期的活 worktree（持全局锁，供平台删任务联动清理）",
+    )
+    cleanup_p.add_argument("target", help="目标分支名")
+    cleanup_p.add_argument("cycle", help="周期 id（如 manual-xxx / cycle-xxx）")
+    cleanup_p.set_defaults(handler=_cmd_cleanup_worktree)
+
     return parser
 
 
@@ -117,14 +128,32 @@ def _cmd_run_cycle(args: argparse.Namespace) -> int:
         # 强制新建 checkpoint 避免撞每日周期旧状态（真机测试: 撞旧 checkpoint
         # 只 resume 不执行同步链路）
         manual = bool(args.since or args.until)
-        return run_cycle(
+        # BSA_CYCLE_ID 环境变量优先：executor 守护进程预生成周期 id 注入，
+        # 使运行期即知 cycle_id（可实时查进度、重启后可重挂）。
+        cycle_id = os.environ.get("BSA_CYCLE_ID") or None
+        # 登记（kind=cycle，target=None）：executor 触发回填 cycle_id，CLI 直启自建行
+        settings = load_settings()
+        log_dir = Path(settings.log_dir)
+        log_dir.mkdir(parents=True, exist_ok=True)
+        reg_cycle_id = cycle_id or f"cycle-{datetime.now().date().isoformat()}"
+        task_id = register_start(
+            log_dir, kind="cycle", target=None, cycle_id=reg_cycle_id
+        )
+        code = run_cycle(
             args.date,
             since=args.since,
             until=args.until,
             dry_run=args.dry_run,
             manual=manual,
             force_new=manual,
+            cycle_id=cycle_id,
         )
+        register_finish(
+            log_dir, task_id,
+            state="succeeded" if code == 0 else "failed",
+            cycle_id=cycle_id or reg_cycle_id,
+        )
+        return code
     except Exception as exc:
         print(f"运行失败: {exc}", file=sys.stderr)
         return 1
@@ -261,6 +290,12 @@ def _cmd_sync(args: argparse.Namespace) -> int:
         print(f"配置错误: {exc}", file=sys.stderr)
         return 2
     cycle_id = manual_cycle_id()
+    log_dir = Path(settings.log_dir)
+    log_dir.mkdir(parents=True, exist_ok=True)
+    task_id = register_start(
+        log_dir, kind="sync", target=args.target, cycle_id=cycle_id,
+        src=args.src, shas=args.sha,
+    )
     ctx = build_graph_context(settings, cycle_id=cycle_id)
     try:
         if args.sha:
@@ -277,12 +312,12 @@ def _cmd_sync(args: argparse.Namespace) -> int:
                 )
     except Exception as exc:
         print(f"准备同步失败: {exc}", file=sys.stderr)
+        register_finish(log_dir, task_id, state="failed", cycle_id=cycle_id, error=str(exc))
         return 1
     if not batch:
         print("无需同步")
+        register_finish(log_dir, task_id, state="succeeded", cycle_id=cycle_id)
         return 0
-    log_dir = Path(settings.log_dir)
-    log_dir.mkdir(parents=True, exist_ok=True)
     try:
         with open_checkpointer(str(log_dir / "state.sqlite3")) as checkpointer:
             final = run_sync_command(
@@ -290,6 +325,7 @@ def _cmd_sync(args: argparse.Namespace) -> int:
             )
     except SafetyViolation as exc:
         print(f"同步被拒绝: {exc}", file=sys.stderr)
+        register_finish(log_dir, task_id, state="failed", cycle_id=cycle_id, error=str(exc))
         return 1
     branch = (final.get("branch_results") or {}).get(args.target)
     status = branch.status if branch is not None else final.get("status", "UNKNOWN")
@@ -302,11 +338,13 @@ def _cmd_sync(args: argparse.Namespace) -> int:
             f"patch={patch_path}",
             file=sys.stderr,
         )
+        register_finish(log_dir, task_id, state="failed", cycle_id=cycle_id)
         return 1
     print(
         f"同步完成: cycle={cycle_id} target={args.target} 状态={status} "
         f"patch={patch_path}"
     )
+    register_finish(log_dir, task_id, state="succeeded", cycle_id=cycle_id)
     return 0
 
 
@@ -316,9 +354,16 @@ def _cmd_rerun(args: argparse.Namespace) -> int:
     except Exception as exc:
         print(f"配置错误: {exc}", file=sys.stderr)
         return 2
-    ctx = build_graph_context(settings)
     log_dir = Path(settings.log_dir)
     log_dir.mkdir(parents=True, exist_ok=True)
+    # 登记用 cycle_id 与执行一致：fresh 用 manual_cycle_id，retained 用 rerun 线程 id
+    from bsa.commands.rerun import _rerun_thread_id
+
+    pre_cycle_id = manual_cycle_id() if args.fresh else _rerun_thread_id(args.target)
+    task_id = register_start(
+        log_dir, kind="rerun", target=args.target, cycle_id=pre_cycle_id
+    )
+    ctx = build_graph_context(settings)
     try:
         with open_checkpointer(str(log_dir / "state.sqlite3")) as checkpointer:
             result = run_rerun_command(
@@ -330,6 +375,7 @@ def _cmd_rerun(args: argparse.Namespace) -> int:
             )
     except Exception as exc:
         print(f"重跑失败: {exc}", file=sys.stderr)
+        register_finish(log_dir, task_id, state="failed", cycle_id=pre_cycle_id, error=str(exc))
         return 1
     if result.get("stop"):
         reason = result.get("reason")
@@ -338,6 +384,7 @@ def _cmd_rerun(args: argparse.Namespace) -> int:
                 f"现场有未提交修改，请先提交或清理: {result.get('worktree')}",
                 file=sys.stderr,
             )
+            register_finish(log_dir, task_id, state="failed", cycle_id=pre_cycle_id)
             return 1
         if reason == "no-worktree":
             print(
@@ -345,38 +392,67 @@ def _cmd_rerun(args: argparse.Namespace) -> int:
                 "请使用 --fresh 重新同步。",
                 file=sys.stderr,
             )
+            register_finish(log_dir, task_id, state="failed", cycle_id=pre_cycle_id)
             return 1
         if reason == "no-cycle":
             print(
                 f"未找到包含目标分支 {args.target} 的已完成周期，请先使用 bsa sync 同步。",
                 file=sys.stderr,
             )
+            register_finish(log_dir, task_id, state="failed", cycle_id=pre_cycle_id)
             return 1
         if reason == "no-batch":
             print(
                 f"来源周期 {result.get('cycle_id')} 无目标分支 {args.target} 的待同步批次。",
                 file=sys.stderr,
             )
+            register_finish(log_dir, task_id, state="failed", cycle_id=pre_cycle_id)
             return 1
         if reason == "conclusion-now-included":
             print("该修复已被合入/超出范围，无需重同步。", file=sys.stderr)
+            register_finish(log_dir, task_id, state="succeeded", cycle_id=pre_cycle_id)
             return 0
         if reason == "conclusion-manual-review":
             print(
                 "无需自动重同步（结论非 NeedSync，含人工审核项），请先处理人工项。",
                 file=sys.stderr,
             )
+            register_finish(log_dir, task_id, state="succeeded", cycle_id=pre_cycle_id)
             return 0
         print(f"重跑被拦截: {reason}", file=sys.stderr)
+        register_finish(log_dir, task_id, state="failed", cycle_id=pre_cycle_id)
         return 1
     rerun = result.get("rerun") or {}
     branch = (result.get("branch_results") or {}).get(args.target)
     status = branch.status if branch is not None else result.get("status", "UNKNOWN")
     patch_path = branch.patch_path if branch is not None else None
-    cycle_id = rerun.get("cycle_id") or result.get("cycle_id")
+    cycle_id = rerun.get("cycle_id") or result.get("cycle_id") or pre_cycle_id
     print(
         f"重跑完成: mode={rerun.get('mode')} cycle={cycle_id} "
         f"target={args.target} 状态={status} patch={patch_path}"
+    )
+    final_state = "succeeded" if status == "SUCCESS" else "failed"
+    register_finish(log_dir, task_id, state=final_state, cycle_id=cycle_id)
+    return 0
+
+
+def _cmd_cleanup_worktree(args: argparse.Namespace) -> int:
+    try:
+        settings = load_settings()
+    except Exception as exc:
+        print(f"配置错误: {exc}", file=sys.stderr)
+        return 2
+    ctx = build_graph_context(settings)
+    try:
+        result = cleanup_worktree_command(
+            ctx, target=args.target, cycle_id=args.cycle
+        )
+    except Exception as exc:
+        print(f"清理 worktree 失败: {exc}", file=sys.stderr)
+        return 1
+    print(
+        f"清理完成: target={args.target} cycle={args.cycle} "
+        f"removed={result.get('removed')}"
     )
     return 0
 

@@ -403,3 +403,53 @@ def test_sync_bad_status_returns_nonzero_on_stderr(monkeypatch, tmp_path, capsys
     assert main(["sync", "main", "feat/x"]) == 1
     captured = capsys.readouterr()
     assert status in captured.err
+
+
+def test_sync_cli_direct_registers_task_source_cli(monkeypatch, tmp_path):
+    # CLI 直启（无 BSA_TASK_ID）→ 引擎 task_reporter 登记 source=cli 任务
+    import sqlite3
+
+    _sync_env(monkeypatch, tmp_path, "SUCCESS")
+    assert main(["sync", "main", "feat/x"]) == 0
+    conn = sqlite3.connect(str(tmp_path / "logs" / "platform.sqlite3"))
+    conn.row_factory = sqlite3.Row
+    row = conn.execute("SELECT * FROM tasks").fetchone()
+    assert row is not None
+    assert row["source"] == "cli"
+    assert row["kind"] == "sync"
+    assert row["target"] == "feat/x"
+    assert row["state"] == "succeeded"
+    assert row["cycle_id"] == "cycle-2026-08-24"
+
+
+def test_sync_executor_triggered_reuses_task_id(monkeypatch, tmp_path):
+    # executor 触发（BSA_TASK_ID 存在）→ 引擎复用该行回填 cycle_id，不 INSERT
+    import sqlite3
+
+    from bsa_web.db import init_db
+    from bsa_web.runner import enqueue_task
+
+    db = init_db(tmp_path / "logs" / "platform.sqlite3")
+    tid = enqueue_task(db, "sync", "alice", "feat/x", src="main")
+    _sync_env(monkeypatch, tmp_path, "SUCCESS")
+    monkeypatch.setenv("BSA_TASK_ID", str(tid))
+    assert main(["sync", "main", "feat/x"]) == 0
+    conn = sqlite3.connect(str(tmp_path / "logs" / "platform.sqlite3"))
+    conn.row_factory = sqlite3.Row
+    rows = conn.execute("SELECT * FROM tasks").fetchall()
+    assert len(rows) == 1
+    assert rows[0]["id"] == tid
+    assert rows[0]["source"] == "web"
+    assert rows[0]["cycle_id"] == "cycle-2026-08-24"
+
+
+def test_sync_failed_cli_direct_registers_failed(monkeypatch, tmp_path):
+    import sqlite3
+
+    _sync_env(monkeypatch, tmp_path, "FAILED")
+    assert main(["sync", "main", "feat/x"]) == 1
+    conn = sqlite3.connect(str(tmp_path / "logs" / "platform.sqlite3"))
+    conn.row_factory = sqlite3.Row
+    row = conn.execute("SELECT * FROM tasks").fetchone()
+    assert row["state"] == "failed"
+    assert row["source"] == "cli"

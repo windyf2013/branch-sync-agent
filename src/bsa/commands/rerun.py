@@ -7,6 +7,7 @@ from pathlib import Path
 
 from bsa.commands.sync import manual_cycle_id, run_sync_command
 from bsa.domain.models import CommitInfo, Conclusion4, SyncDecision
+from bsa.executor.lock import flock_acquire
 from bsa.git.service import GitService
 from bsa.graph.nodes import (
     GraphContext,
@@ -26,7 +27,14 @@ def _worktree_path(ctx: GraphContext, target: str, cycle_id: str) -> Path:
 
 
 def _rerun_thread_id(target: str) -> str:
-    """retained 重跑的独立 checkpoint 线程 id：与来源周期隔离，避免污染其投影。"""
+    """retained 重跑的独立 checkpoint 线程 id：与来源周期隔离，避免污染其投影。
+
+    ``BSA_RERUN_THREAD_ID`` 环境变量优先（executor 预生成注入，运行期即知
+    cycle_id），否则本地生成。
+    """
+    override = os.environ.get("BSA_RERUN_THREAD_ID")
+    if override:
+        return override
     ts = datetime.now().strftime("%Y%m%d-%H%M%S%f")
     return f"rerun-{target}-{ts}-{os.getpid()}"
 
@@ -275,3 +283,21 @@ def run_rerun_command(
     if fresh:
         return _rerun_fresh(ctx, target=target, cycle=cycle, checkpointer=checkpointer)
     return _rerun_retained(ctx, target=target, cycle=cycle, checkpointer=checkpointer)
+
+
+def cleanup_worktree_command(
+    ctx: GraphContext, *, target: str, cycle_id: str
+) -> dict:
+    """删除指定目标分支在某周期的活 worktree（供平台删任务联动清理）。
+
+    经全局 flock 串行化，避免与周期执行/清理并发；worktree 不存在时幂等成功。
+    返回 dict：``removed=True``（删除了）/ ``removed=False``（不存在）。
+    """
+    path = _worktree_path(ctx, target, cycle_id)
+    if not path.exists():
+        return {"removed": False, "target": target, "cycle_id": cycle_id}
+    with flock_acquire(Path(ctx.settings.log_dir) / "bsa.lock"):
+        if path.exists():
+            ctx.git.remove_worktree(path)
+            return {"removed": True, "target": target, "cycle_id": cycle_id}
+    return {"removed": False, "target": target, "cycle_id": cycle_id}

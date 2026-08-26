@@ -48,7 +48,8 @@ def _stale_worktree(path: Path, root: Path, cycle_id: str) -> bool:
     """True when ``path`` is a linked worktree under ``root`` from an older cycle.
 
     The main repo is never under ``root``; a worktree belonging to the current
-    cycle is named ``<target>-<cycle_id>`` and is kept.
+    cycle is named ``<target>-<cycle_id>`` and is kept. ``git worktree list``
+    的首条是主仓库路径（在 root 之外），必须保留，故 root 之外一律返回 False。
     """
     try:
         path.relative_to(root)
@@ -178,6 +179,7 @@ def run_cycle(
     context: GraphContext | None = None,
     force_new: bool = False,
     manual: bool = False,
+    cycle_id: str | None = None,
 ) -> int:
     """Run one full sync cycle: build graph, invoke (resume-aware), produce artifacts.
 
@@ -187,18 +189,20 @@ def run_cycle(
     ``manual`` (manual-scan) uses an independent cycle_id derived from the scan
     window and forces a fresh checkpoint, so a re-scan is never short-circuited
     by an existing daily-cycle checkpoint (真机测试发现: manual-scan 撞旧
-    checkpoint 只 resume 不重扫).
+    checkpoint 只 resume 不重扫). ``cycle_id`` 显式指定时覆盖日期推导
+    （executor 守护进程注入，运行期即知周期 id）。
     """
     if context is None:
         settings = load_settings()
-        cycle_id = _derive_cycle_id(date)
+        if cycle_id is None:
+            cycle_id = _derive_cycle_id(date)
         if manual and since and until:
             cycle_id = f"scan-{since}-{until}"
         elif manual:
             cycle_id = f"scan-{datetime.now().strftime('%Y%m%d-%H%M%S')}"
         context = build_graph_context(settings, cycle_id=cycle_id)
     else:
-        cycle_id = _derive_cycle_id(date)
+        cycle_id = cycle_id or _derive_cycle_id(date)
     return _execute(
         context, cycle_id, since=since, until=until, dry_run=dry_run, force_new=force_new
     )

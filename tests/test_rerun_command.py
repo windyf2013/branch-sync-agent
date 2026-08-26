@@ -371,3 +371,43 @@ def test_rerun_cli_manual_review_exits_zero_with_hint(monkeypatch, tmp_path, cap
 
     assert code == 0
     assert "请先处理人工项" in capsys.readouterr().err
+
+
+def test_cleanup_worktree_removes_existing(tmp_path):
+    from bsa.commands.rerun import cleanup_worktree_command
+
+    ctx = make_ctx(tmp_path)
+    worktree = Path(ctx.settings.worktree_root) / f"{TARGET}-manual-20260825-1"
+    worktree.mkdir(parents=True)
+    ctx.git.worktrees = [worktree]
+
+    result = cleanup_worktree_command(
+        ctx, target=TARGET, cycle_id="manual-20260825-1"
+    )
+    assert result["removed"] is True
+    assert ("remove_worktree", (worktree,)) in ctx.git.calls
+
+
+def test_cleanup_worktree_missing_is_idempotent(tmp_path):
+    from bsa.commands.rerun import cleanup_worktree_command
+
+    ctx = make_ctx(tmp_path)
+    result = cleanup_worktree_command(
+        ctx, target=TARGET, cycle_id="manual-20260825-1"
+    )
+    assert result["removed"] is False
+    assert not any(c[0] == "remove_worktree" for c in ctx.git.calls)
+
+
+def test_cleanup_worktree_cli_prints_result(monkeypatch, tmp_path, capsys):
+    monkeypatch.setattr(
+        "bsa.cli.build_graph_context",
+        lambda settings: SimpleNamespace(settings=settings),
+    )
+    monkeypatch.setattr(
+        "bsa.cli.cleanup_worktree_command",
+        lambda ctx, *, target, cycle_id: {"removed": True, "target": target, "cycle_id": cycle_id},
+    )
+    code = main(["cleanup-worktree", TARGET, "manual-20260825-1"])
+    assert code == 0
+    assert "removed=True" in capsys.readouterr().out

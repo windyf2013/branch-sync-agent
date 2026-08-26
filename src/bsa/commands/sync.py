@@ -21,7 +21,15 @@ from bsa.scheduler.cycle import _initial_state
 
 
 def manual_cycle_id() -> str:
-    """手动同步周期 id：manual-<时间戳(微秒)>-<pid>，每次调用唯一，与每日周期隔离。"""
+    """手动同步周期 id：manual-<时间戳(微秒)>-<pid>，每次调用唯一，与每日周期隔离。
+
+    ``BSA_MANUAL_CYCLE_ID`` 环境变量优先：executor 守护进程预生成周期 id 并
+    注入子进程，使运行期即知 cycle_id（可实时查进度、重启后可重挂），
+    否则回退本地生成。
+    """
+    override = os.environ.get("BSA_MANUAL_CYCLE_ID")
+    if override:
+        return override
     ts = datetime.now().strftime("%Y%m%d-%H%M%S%f")
     return f"manual-{ts}-{os.getpid()}"
 
