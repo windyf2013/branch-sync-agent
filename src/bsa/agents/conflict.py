@@ -132,6 +132,7 @@ class ConflictAgent:
         self._safety = safety
         self._max_attempts = max_attempts
         self._target_branch = target_branch
+        self.last_reason: str | None = None
 
     def resolve(
         self,
@@ -150,10 +151,23 @@ class ConflictAgent:
         """
         wgit = git or self._git
         tgt = target_branch or self._target_branch
+        self.last_reason = None
         try:
             self._safety.check_editable(conflict_files)
         except SafetyViolation:
             return None
+        # 冲突文件必须是安全可读的 UTF-8：非 UTF-8（RCIOS 常见 GBK 中文注释）字节级
+        # 往返有损（读 errors=replace 再写回会破坏原文件），无法安全自动解决 → 转人工。
+        for rel in conflict_files:
+            path = wgit.repo_path / rel
+            if path.is_file():
+                try:
+                    path.read_text(encoding="utf-8")
+                except UnicodeDecodeError:
+                    self.last_reason = (
+                        f"冲突文件 {rel} 含非 UTF-8 编码内容，无法安全自动解决，转人工处理"
+                    )
+                    return None
         for _ in range(self._max_attempts):
             snapshots = wgit.snapshot(conflict_files)
             try:

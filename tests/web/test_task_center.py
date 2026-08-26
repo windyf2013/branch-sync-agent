@@ -634,6 +634,40 @@ class TestTaskDetail:
         r = client.get(f"/task/{_CYCLE}/nope")
         assert r.status_code == 404
 
+    def test_detail_partial_conflict_shows_failure_reason(self, tmp_path, monkeypatch):
+        # 显示修复：PARTIAL 分支详情页展示失败原因（node 错误）与冲突解决失败标记
+        app = _make_app(tmp_path)
+        client = _client(app)
+        _login(client)
+        branch = _branch(
+            "feat/x",
+            "PARTIAL",
+            commits=[
+                {
+                    "sha": "a1",
+                    "cherry_pick": "CONFLICT",
+                    "conflict_resolution": None,
+                    "build": {},
+                }
+            ],
+        )
+        payload = _payload(
+            status="FAILED",
+            branch_results={"feat/x": branch},
+            action_required=[
+                {
+                    "node": "resolve_conflict",
+                    "error": "冲突文件含非 UTF-8 编码内容，无法安全自动解决，转人工处理",
+                }
+            ],
+        )
+        _mount_cycle(monkeypatch, payload)
+        r = client.get(f"/task/{_CYCLE}/feat/x")
+        assert r.status_code == 200
+        assert "UTF-8" in r.text
+        assert "冲突解决失败" in r.text
+        assert "resolve_conflict" in r.text
+
     def test_detail_running_task_redirects_to_status_page(self, tmp_path, monkeypatch):
         # 竞态回归：cycle_id 已回写但 state.json 未落盘（任务仍在跑），详情页投影未就绪
         # → 重定向到任务状态页，不再 404 "目标分支不存在"

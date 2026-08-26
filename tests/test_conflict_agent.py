@@ -179,6 +179,25 @@ def test_forbidden_path_returns_none_without_llm_or_git(tmp_path: Path) -> None:
     assert git.status_calls == 0
 
 
+def test_non_utf8_conflict_file_returns_none_with_clear_reason(tmp_path: Path) -> None:
+    # RCIOS 源文件含 GBK 中文注释（非 UTF-8 字节）：不得崩溃，返回 None 转人工并记录清晰原因
+    path = tmp_path / "src" / "net.c"
+    path.parent.mkdir(parents=True)
+    path.write_bytes(b"\xb2\xbb\xca\xc7\xd6\xd0\xce\xc4")  # GBK 字节
+    git = FakeGit(tmp_path)
+    llm = FakeLLM()
+    agent = ConflictAgent(llm, git, make_safety())
+
+    result = agent.resolve(make_commit(), ["src/net.c"])
+
+    assert result is None
+    assert agent.last_reason is not None and "UTF-8" in agent.last_reason
+    assert "转人工" in agent.last_reason
+    assert llm.calls == []
+    assert git.snapshots == []
+    assert git.staged == []
+
+
 def test_successful_resolution_removes_markers_stages_and_returns(tmp_path: Path) -> None:
     write_conflicted(tmp_path)
     git = FakeGit(tmp_path, status_text="UU src/net.c\n")

@@ -582,6 +582,7 @@ def resolve_conflict(state: dict, ctx: GraphContext) -> dict:
     resolution = ctx.conflict_agent.resolve(commit, conflict_files, git=wg, target_branch=target)
     results, branch = _branch_results(state, ctx, target)
     index = _commit_result_index(branch, sha)
+    reason = None if resolution is not None else getattr(ctx.conflict_agent, "last_reason", None)
     if resolution is not None:
         wg.cherry_pick_continue()
         status = "RESOLVED"
@@ -596,7 +597,15 @@ def resolve_conflict(state: dict, ctx: GraphContext) -> dict:
     commits = list(branch.commits)
     commits[index] = updated
     results[target] = branch.model_copy(update={"commits": commits})
-    return {"branch_results": results, "status": status}
+    update: dict[str, Any] = {"branch_results": results, "status": status}
+    if reason:
+        # 转人工原因（如冲突文件非 UTF-8）写入 errors → 进 action_required，详情页可见
+        errors = dict(state.get("errors") or {})
+        errors["resolve_conflict"] = ErrorRecord(
+            node="resolve_conflict", error=reason, ts=_now_iso()
+        )
+        update["errors"] = errors
+    return update
 
 
 def _next_model(state: dict, ctx: GraphContext) -> str | None:

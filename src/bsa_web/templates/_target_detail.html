@@ -7,6 +7,18 @@
     {% if branch.patch_path %}
       <p><a href="/cycle/{{ payload.cycle_id }}/target/{{ target }}/patch">下载完整 patch</a></p>
     {% endif %}
+    {% if branch.status != "SUCCESS" %}
+    <p class="muted">失败原因 / 待处理：</p>
+    <ul>
+      {% for item in payload.get("action_required") or [] %}
+        {% if item.node %}
+        <li><span class="badge failed">节点失败</span> {{ item.node }}：{{ item.error }}</li>
+        {% elif item.kind == "ManualReview" and item.branch == target %}
+        <li><span class="badge manual">{{ item.kind }}</span> {{ item.sha }}{% if item.reason %}（{{ item.reason }}）{% endif %}</li>
+        {% endif %}
+      {% endfor %}
+    </ul>
+    {% endif %}
   </div>
 </section>
 
@@ -27,6 +39,8 @@
             <div>冲突文件：{{ cr.conflict_resolution.files | join(", ") }}</div>
             {% if cr.conflict_resolution.agent_reason %}<div class="muted">Agent 说明：{{ cr.conflict_resolution.agent_reason }}</div>{% endif %}
             {% if cr.conflict_resolution.diff %}<details><summary>冲突 diff</summary><pre>{{ cr.conflict_resolution.diff }}</pre></details>{% endif %}
+          {% elif cr.cherry_pick == "CONFLICT" %}
+            <span class="badge failed">冲突解决失败</span>
           {% else %}<span class="muted">无</span>{% endif %}
         </td>
         <td>

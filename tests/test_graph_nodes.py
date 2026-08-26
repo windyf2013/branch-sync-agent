@@ -1127,6 +1127,35 @@ def test_resolve_conflict_fail_fast(tmp_path):
     assert wg.cherry_pick_continue_calls == 0
 
 
+def test_resolve_conflict_records_last_reason_into_errors(tmp_path):
+    # 非 UTF-8 冲突：ConflictAgent 返回 None 并记录 last_reason → 节点写入 state.errors
+    ctx = make_ctx(tmp_path)
+    wg = FakeGit()
+    wg.unmerged_files_result = ["plat/demo.c"]
+    ctx.worktree_gits[str(Path("/wt"))] = wg
+    ctx.conflict_agent.resolution = None
+    ctx.conflict_agent.last_reason = (
+        "冲突文件 plat/demo.c 含非 UTF-8 编码内容，无法安全自动解决，转人工处理"
+    )
+    state = base_state(
+        current_target=TARGET,
+        current_commit="a1",
+        detected_commits=[commit("a1")],
+        branch_results={
+            TARGET: branch_result(
+                TARGET,
+                commits=[commit_result("a1", cherry_pick_status="CONFLICT")],
+            )
+        },
+    )
+
+    update = resolve_conflict(state, ctx)
+
+    assert update["status"] == "RESOLUTION_FAILED"
+    assert "resolve_conflict" in update["errors"]
+    assert "UTF-8" in update["errors"]["resolve_conflict"].error
+
+
 # --- build ---
 
 
