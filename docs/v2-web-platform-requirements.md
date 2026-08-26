@@ -18,7 +18,7 @@ Branch Sync Agent V1 已交付：每日检测 RCIOS 代码库分支合入的 bug
 ### 2.1 超期即弃原则（核心设计决策）
 
 - 同步结果（worktree 现场）只在**一个周期**内有操作价值：远端会在周期推进时产生新合入，超期重放旧 patch 必然冲突或重复合入。
-- 因此：**worktree 只保留当前周期**，由 V1 cron 开跑时清理（V1 `cleanup_worktrees` 现有行为不变）。
+- 因此：**worktree 只保留当前周期**，由周期执行开跑时清理（V1 `cleanup_worktrees` 现有行为不变；周期触发方现为 executor 调度器）。
 - 超期分支**不做续做/推送**，只提供**只读查看**与**重新同步**（`bsa rerun --fresh`，基于当前远端重做）。
 - **不存在"用 patch 重建旧现场"的机制**。旧 base 重放被明确排除。
 
@@ -31,10 +31,16 @@ Branch Sync Agent V1 已交付：每日检测 RCIOS 代码库分支合入的 bug
 
 ### 2.3 并发模型
 
-- 全局 `flock` 串行化所有 V1 执行：cron `run-cycle`、平台触发的 `sync/rerun`、worktree 清理。V1 本就低频（日一次 + 偶尔手动），串行可接受。
+- 全局 `flock` 串行化所有 V1 执行：每日周期 `run-cycle`、平台触发的 `sync/rerun`、worktree 清理。V1 本就低频（日一次 + 偶尔手动），串行可接受。
 - 平台触发的任务使用**独立 cycle_id 命名空间**（如 `manual-*`），不与每日周期 checkpoint 冲突。
 
-### 2.4 执行与平台完全解耦（executor 守护进程）
+### 2.4 定位分层（V1 引擎 / V2 平台）
+
+- **V1 = 纯执行引擎（agent）**：只关心"给定周期/目标，产出执行证据"（checkpoint、worktree、patch、build 日志、报告）。**不调度、不管理任务生命周期、不做 UI**。引擎在执行时经 `task_reporter` 登记"执行事实"（写 tasks 表），但不参与调度/续跑/放弃等管理语义。
+- **V2 = 编排与视图层（平台）**：唯一拥有"任务"概念的层。负责：任务登记消费（executor）、调度（每日周期）、状态呈现（web）、人工决策入口（推送/续跑/放弃/改判定）。平台**不执行**，只通过 V1 CLI 子进程触发。
+- **谁创建，谁管理**：任务实体 = `tasks` 表行（平台唯一事实源）；checkpoint 线程 = 任务下的执行证据（经 `cycle_id` 关联）；worktree = 失败/停批任务的现场。三者的生命周期由平台统一管理，删除任务记录时联动清理。
+
+### 2.5 执行与平台完全解耦（executor 守护进程）
 
 - **架构**：任务执行由独立守护进程 `bsa-executor.service` 负责；web 平台（`bsa-web.service`）是纯管理/UI 层——只写任务意图（tasks 表 `queued`）、只读状态，**不 spawn CLI、不持有执行线程**。
 - **平台重启不影响任务**：web 进程重启/崩溃时 executor 独立运行，任务照常执行；executor 自身重启按对账打标记，不自动重放。
@@ -46,19 +52,24 @@ Branch Sync Agent V1 已交付：每日检测 RCIOS 代码库分支合入的 bug
   - `queued` → 保持 queued，认领循环重新处理
 - **续跑**：interrupted 任务由操作者触发，提交 `rerun` + `cycle_id`（retained 保留现场续跑，patch_id/EMPTY 跳过已应用）。
 - **cycle_id 运行期即知**：CLI 支持 `BSA_CYCLE_ID`/`BSA_MANUAL_CYCLE_ID`/`BSA_RERUN_THREAD_ID` 环境覆盖，executor 预生成注入，重启后可重挂。
-- **任务中心单数据源**：任务清单唯一从 `tasks` 表读取，**不枚举 checkpoint 线程**。CLI/cron 直启（不写 tasks 表）的 manual/rerun 周期由 executor 启动对账补登记为 `source=cli` 任务（`kind` 由前缀推导、`target` 取投影、有现场→`interrupted`）。`cycle-*` 自动周期由调度器登记，不补登记。
+- **任务中心单数据源**：任务清单唯一从 `tasks` 表读取，**不枚举 checkpoint 线程**。
+- **引擎主动登记（统一任务入口）**：V1 引擎执行 `bsa sync/rerun/run-cycle` 时经 `bsa.commands.task_reporter` 主动向 `tasks` 表登记执行状态——`register_start`（CLI 直启 INSERT `source=cli` 行；executor 触发复用 `BSA_TASK_ID` 行回填 cycle_id）+ `register_finish`（写 succeeded/failed + cycle_id + error）。三条路径统一由引擎登记：
+  - CLI 直启 → 引擎 INSERT `source=cli` → 执行 → 引擎写终态
+  - web 发起 → executor 认领 `queued→running` → spawn 引擎（注入 `BSA_TASK_ID`）→ 引擎写终态
+  - cron 周期 → executor 调度器 INSERT `source=cron` → 同 web 路径
+  - executor 仅兜底：超时 / 引擎未写终态时标 `failed`
 - **状态唯一来源**：任务状态以 `tasks.state` 为准；投影 `branch_results` 仅补 `commits` 等详情字段，不覆盖任务状态（消除投影/任务双词汇冲突）。
 - **联动清理**：删除任务记录时一并删除——tasks 行 + 关联 checkpoint 线程（`state.sqlite3` checkpoints/writes）+ 关联 worktree（`bsa cleanup-worktree`，持 flock）。放弃（abandon）不动现场，仅删除任务记录做彻底清理。
 - **checkpoint 线程 = 投影数据源**：已终态任务的 checkpoint 线程保留作 `bsa report`/详情/续跑/推送校验的数据源；失败/停批任务的现场是 worktree（WebSSH/续跑入口），checkpoint 不当作任务实体。
 
-### 2.5 对接方式（方案 B，独立进程）
+### 2.6 对接方式（方案 B，独立进程）
 
 - 平台独立进程，与 Agent 解耦；平台崩溃不影响 Agent cron 运行。
 - **读**：V1 投影 CLI（`bsa report <cycle> --json`）输出结构化状态，平台只消费 JSON，不解析 LangGraph checkpoint 内部结构。
-- **写**：平台对 V1 的一切写入只经 V1 CLI 子进程（`bsa sync/rerun/override`），绝不直接写 V1 的库。
+- **写**：平台对 V1 的一切写入只经 V1 CLI 子进程（`bsa sync/rerun/override`），绝不直接写 V1 的库。任务执行状态的登记由 V1 引擎经 `task_reporter` 主动写 `platform.sqlite3` 的 `tasks` 表（引擎记录"执行事实"，不参与调度/续跑/放弃等管理语义）。
 - **数据关联**：平台本地库用 V1 标识符（`cycle_id / target_branch / sha / patch_path / worktree_path`）逻辑关联 V1 数据；渲染时聚合"V1 状态 + 平台活动"，形成完整视图（如分支详情页 = V1 同步状态 + 平台推送/处理记录）。V1 数据不自成孤岛。
 
-### 2.6 实时性
+### 2.7 实时性
 
 - 平台页面**实时读状态，不缓存**。长闲置后操作前自动刷新（每次请求从 V1 投影读取最新状态）。
 
@@ -125,7 +136,7 @@ Branch Sync Agent V1 已交付：每日检测 RCIOS 代码库分支合入的 bug
 ### FR7：数据保留（分级）
 - **L1 审计（永久）**：cycle.json / decisions.json / report.html / audit·diff / patch / 推送与操作日志。
 - **L2 体积日志（默认 30 天，可配置，每日清理）**：build log / run.log。
-- **L3 现场（仅当前周期）**：worktree，由 V1 cron 清理。
+- **L3 现场（仅当前周期）**：worktree，由周期执行时清理（`cleanup_worktrees`）。
 - 数据来源：V1 SQLite（checkpoint）+ 周期目录 + worktree；平台经投影 CLI 读取。
 
 ### FR8：导出（可选）
@@ -153,7 +164,7 @@ Branch Sync Agent V1 已交付：每日检测 RCIOS 代码库分支合入的 bug
 - 低并发（10 用户内）；首页 < 3 秒；详情独立路由，patch/编译日志按需加载。
 
 ### NFR4：可靠性
-- 平台崩溃不影响 V1 Agent cron 运行。
+- 平台（web）崩溃不影响任务执行（executor 独立进程）；executor 重启按对账打标记（interrupted/failed），不自动重放。
 - 异步同步任务可查询进度/结果；子进程超时兜底、退出后清理（无僵尸）。
 - 同一 target 并发触发直接拒绝（"已在运行"）。
 - 全局 `flock` 串行化所有 V1 执行（cron / 平台触发 / 清理）。
@@ -224,7 +235,7 @@ Branch Sync Agent V1 已交付：每日检测 RCIOS 代码库分支合入的 bug
 6. 超期分支无推送/续做入口，仅只读查看 + 重新同步。
 7. 推送/操作在日志留痕（永久），审计可查。
 8. Agent 与平台均无自动推送逻辑、推送无 `--force`（代码审查确认）。
-9. 平台崩溃不影响 V1 cron 运行；并发触发被全局锁与"已在运行"拒绝。
+9. 平台（web）崩溃不影响任务执行（executor 独立进程）；并发触发被全局锁与"已在运行"拒绝。
 10. 数据分级保留（L1 永久 / L2 30 天可配 / L3 仅当前周期）。
 
 ## 十、边界（V2 不做）
