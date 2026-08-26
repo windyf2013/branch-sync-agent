@@ -67,7 +67,12 @@ def _install_runner(app, run_func):
             pass
         return result
 
-    runner = TaskRunner(app.state.db, str(app.state.settings.log_dir), run_func=wrapped)
+    from pathlib import Path
+
+    from bsa_web.db import init_db
+
+    runner_db = init_db(Path(app.state.settings.log_dir) / "platform.sqlite3")
+    runner = TaskRunner(runner_db, str(app.state.settings.log_dir), run_func=wrapped)
     runner.start()
     app.state.enqueue_task = lambda db, kind, user, target, **kw: runner.submit(
         kind, user, target, **kw

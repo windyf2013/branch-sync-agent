@@ -12,6 +12,9 @@ CHERRY_PICK_RE = re.compile(
     re.IGNORECASE,
 )
 
+# 默认值仅作兜底：目标类型由 decision_rules.yaml 单一驱动（P2 治理），
+# 经 ``conclude_pair`` 的 ``need_sync_target_types``/``ineligible_target_types``
+# 参数注入（GraphContext 从 ``decision_rules.conclude`` 绑定）。
 INELIGIBLE_TARGET_TYPES = frozenset({"feature", "personal"})
 NEED_SYNC_TARGET_TYPES = frozenset({"develop", "release", "fix"})
 
@@ -90,10 +93,14 @@ def _check_high_similarity(
     return None
 
 
-def _target_role_eligible(target: TargetSnapshot) -> bool:
-    if target.branch_type in INELIGIBLE_TARGET_TYPES:
+def _target_role_eligible(
+    target: TargetSnapshot,
+    need_sync_target_types: frozenset[str],
+    ineligible_target_types: frozenset[str],
+) -> bool:
+    if target.branch_type in ineligible_target_types:
         return False
-    return target.branch_type in NEED_SYNC_TARGET_TYPES
+    return target.branch_type in need_sync_target_types
 
 
 def _release_line_not_synced(source: CommitAnalysis, target: TargetSnapshot) -> bool:
@@ -148,7 +155,11 @@ def conclude_pair(
     *,
     similarity_high: float = 0.90,
     similarity_low: float = 0.50,
+    need_sync_target_types: frozenset[str] | list[str] | tuple[str, ...] = NEED_SYNC_TARGET_TYPES,
+    ineligible_target_types: frozenset[str] | list[str] | tuple[str, ...] = INELIGIBLE_TARGET_TYPES,
 ) -> Conclusion4:
+    need_sync_types = frozenset(need_sync_target_types)
+    ineligible_types = frozenset(ineligible_target_types)
     # Same commit SHA on target is authoritative — do this before any similarity work.
     if target.has_source_sha:
         return Conclusion4(
@@ -196,14 +207,14 @@ def conclude_pair(
             confidence="high",
         )
 
-    if target.branch_type in INELIGIBLE_TARGET_TYPES:
+    if target.branch_type in ineligible_types:
         return Conclusion4(
             kind="OutOfScope",
             evidence=[f"目标分支类型 {target.branch_type} 不是需要同步的目标。"],
             confidence="high",
         )
 
-    if not _target_role_eligible(target):
+    if not _target_role_eligible(target, need_sync_types, ineligible_types):
         return Conclusion4(
             kind="OutOfScope",
             evidence=[f"目标分支类型 {target.branch_type} 不在维护矩阵范围内。"],

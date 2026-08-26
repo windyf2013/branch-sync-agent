@@ -80,7 +80,7 @@ def test_sha_mode_success_path(tmp_path):
         ctx, cycle_id="manual-20260824-101010", target=TARGET, batch=batch, checkpointer=None
     )
 
-    assert final["status"] == "REPORTED"
+    assert final["status"] == "SUCCESS"
     branch = final["branch_results"][TARGET]
     assert branch.status == "SUCCESS"
     assert branch.patch_path is not None
@@ -176,7 +176,7 @@ def test_run_sync_command_thread_id_isolates_checkpoint(tmp_path):
             checkpointer=cp,
         )
 
-    assert final["status"] == "REPORTED"
+    assert final["status"] == "SUCCESS"
     assert read_cycle_state(ctx.settings, "manual-20260824-101010") is None
     fresh = read_cycle_state(ctx.settings, "rerun-fresh-thread")
     assert fresh is not None

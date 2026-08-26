@@ -21,9 +21,13 @@ from bsa.config.settings import load_settings
 from bsa.executor.exceptions import SafetyViolation
 from bsa.graph.factory import _bundled_rules_dir, build_graph_context
 from bsa.graph.workflow import open_checkpointer
-from bsa.report.projection import _cycle_status, projection_payload, read_cycle_state
+from bsa.report.projection import (
+    _cycle_status,
+    read_projection_payload,
+    write_state_json,
+)
 from bsa.rules import load_decision_rules, load_safety_rules
-from bsa.scheduler.cycle import list_cycle_records, run_cycle
+from bsa.scheduler.cycle import list_cycle_records, manual_scan_cycle_id, run_cycle
 
 
 def _parse_bool(value: str) -> bool:
@@ -131,6 +135,9 @@ def _cmd_run_cycle(args: argparse.Namespace) -> int:
         # BSA_CYCLE_ID 环境变量优先：executor 守护进程预生成周期 id 注入，
         # 使运行期即知 cycle_id（可实时查进度、重启后可重挂）。
         cycle_id = os.environ.get("BSA_CYCLE_ID") or None
+        if manual and cycle_id is None:
+            # manual-scan 用独立 scan-* 周期 id，登记与 run_cycle 同源一致（P2-7）
+            cycle_id = manual_scan_cycle_id(args.since, args.until)
         # 登记（kind=cycle，target=None）：executor 触发回填 cycle_id，CLI 直启自建行
         settings = load_settings()
         log_dir = Path(settings.log_dir)
@@ -139,6 +146,9 @@ def _cmd_run_cycle(args: argparse.Namespace) -> int:
         task_id = register_start(
             log_dir, kind="cycle", target=None, cycle_id=reg_cycle_id
         )
+        if task_id is None:
+            print("已有活动周期任务，请稍后再试", file=sys.stderr)
+            return 1
         code = run_cycle(
             args.date,
             since=args.since,
@@ -148,9 +158,13 @@ def _cmd_run_cycle(args: argparse.Namespace) -> int:
             force_new=manual,
             cycle_id=cycle_id,
         )
+        # 折叠周期终态到任务状态（P0-2/G10）：以 cycle.json 终态为准，SUCCESS 才记
+        # succeeded，PARTIAL/FAILED（含分支失败、节点错误）一律记 failed，供平台醒目标记。
+        terminal = _cycle_terminal_status(log_dir, cycle_id or reg_cycle_id)
+        final_state = "succeeded" if terminal == "SUCCESS" else "failed"
         register_finish(
             log_dir, task_id,
-            state="succeeded" if code == 0 else "failed",
+            state=final_state,
             cycle_id=cycle_id or reg_cycle_id,
         )
         return code
@@ -159,16 +173,44 @@ def _cmd_run_cycle(args: argparse.Namespace) -> int:
         return 1
 
 
+def _cycle_terminal_status(log_dir: Path, cycle_id: str) -> str:
+    """读 cycle.json 终态；未找到则回退 UNKNOWN（调用方按 failed 处理）。"""
+    record = next(
+        (r for r in list_cycle_records(log_dir) if r.get("cycle_id") == cycle_id),
+        None,
+    )
+    return (record or {}).get("status", "UNKNOWN")
+
+
 def _cmd_manual_scan(args: argparse.Namespace) -> int:
     try:
-        return run_cycle(
+        settings = load_settings()
+        log_dir = Path(settings.log_dir)
+        log_dir.mkdir(parents=True, exist_ok=True)
+        # 登记（kind=cycle）：与 run_cycle 同源计算 scan-* 周期 id，保证一致（P2-7）
+        cycle_id = manual_scan_cycle_id(args.since, args.until)
+        task_id = register_start(
+            log_dir, kind="cycle", target=None, cycle_id=cycle_id
+        )
+        if task_id is None:
+            print("已有活动周期任务，请稍后再试", file=sys.stderr)
+            return 1
+        code = run_cycle(
             args.date,
             since=args.since,
             until=args.until,
             dry_run=args.dry_run,
             manual=True,
             force_new=True,
+            cycle_id=cycle_id,
         )
+        terminal = _cycle_terminal_status(log_dir, cycle_id)
+        register_finish(
+            log_dir, task_id,
+            state="succeeded" if terminal == "SUCCESS" else "failed",
+            cycle_id=cycle_id,
+        )
+        return code
     except Exception as exc:
         print(f"运行失败: {exc}", file=sys.stderr)
         return 1
@@ -228,15 +270,15 @@ def _cmd_report(args: argparse.Namespace) -> int:
     except Exception as exc:
         print(f"配置错误: {exc}", file=sys.stderr)
         return 2
-    state = read_cycle_state(settings, args.cycle)
-    if state is None:
-        # 无 checkpoint 但周期仍在跑 → 平台侧据此轮询
+    payload = read_projection_payload(settings, args.cycle)
+    if payload is None:
+        # 无 state.json 且无 checkpoint 但周期仍在跑 → 平台侧据此轮询
         if _cycle_status(settings, args.cycle) == "running":
             print(json.dumps({"status": "running"}))
             return 0
         print(f"周期不存在或未完成: {args.cycle}", file=sys.stderr)
         return 1
-    print(json.dumps(projection_payload(state), ensure_ascii=False, indent=2))
+    print(json.dumps(payload, ensure_ascii=False, indent=2))
     return 0
 
 
@@ -296,6 +338,9 @@ def _cmd_sync(args: argparse.Namespace) -> int:
         log_dir, kind="sync", target=args.target, cycle_id=cycle_id,
         src=args.src, shas=args.sha,
     )
+    if task_id is None:
+        print("该目标分支已有任务在运行或排队，请稍后再试", file=sys.stderr)
+        return 1
     ctx = build_graph_context(settings, cycle_id=cycle_id)
     try:
         if args.sha:
@@ -330,6 +375,8 @@ def _cmd_sync(args: argparse.Namespace) -> int:
     branch = (final.get("branch_results") or {}).get(args.target)
     status = branch.status if branch is not None else final.get("status", "UNKNOWN")
     patch_path = branch.patch_path if branch is not None else None
+    # 投影数据源落盘 state.json（G11），同步线程 id = cycle_id。
+    write_state_json(log_dir, cycle_id, final)
     # FAILED/PARTIAL/MANUAL 不是成功：平台任务 runner 依返回码映射终态，
     # 必须非零退出并把最终状态打到 stderr，避免误报 succeeded。
     if status in ("FAILED", "PARTIAL", "MANUAL"):
@@ -356,13 +403,17 @@ def _cmd_rerun(args: argparse.Namespace) -> int:
         return 2
     log_dir = Path(settings.log_dir)
     log_dir.mkdir(parents=True, exist_ok=True)
-    # 登记用 cycle_id 与执行一致：fresh 用 manual_cycle_id，retained 用 rerun 线程 id
+    # 登记用 cycle_id 与执行一致（P2-3 单一线程 id）：fresh 用 manual id，
+    # retained 用 rerun 线程 id；同一值传给 register_start 与 run_rerun_command。
     from bsa.commands.rerun import _rerun_thread_id
 
     pre_cycle_id = manual_cycle_id() if args.fresh else _rerun_thread_id(args.target)
     task_id = register_start(
         log_dir, kind="rerun", target=args.target, cycle_id=pre_cycle_id
     )
+    if task_id is None:
+        print("该目标分支已有任务在运行或排队，请稍后再试", file=sys.stderr)
+        return 1
     ctx = build_graph_context(settings)
     try:
         with open_checkpointer(str(log_dir / "state.sqlite3")) as checkpointer:
@@ -372,6 +423,7 @@ def _cmd_rerun(args: argparse.Namespace) -> int:
                 cycle=args.cycle,
                 fresh=args.fresh,
                 checkpointer=checkpointer,
+                thread_id=pre_cycle_id,
             )
     except Exception as exc:
         print(f"重跑失败: {exc}", file=sys.stderr)
@@ -427,12 +479,17 @@ def _cmd_rerun(args: argparse.Namespace) -> int:
     status = branch.status if branch is not None else result.get("status", "UNKNOWN")
     patch_path = branch.patch_path if branch is not None else None
     cycle_id = rerun.get("cycle_id") or result.get("cycle_id") or pre_cycle_id
+    # 投影数据源落盘 state.json（G11），线程 id = cycle_id。
+    write_state_json(log_dir, cycle_id, result)
     print(
         f"重跑完成: mode={rerun.get('mode')} cycle={cycle_id} "
         f"target={args.target} 状态={status} patch={patch_path}"
     )
     final_state = "succeeded" if status == "SUCCESS" else "failed"
-    register_finish(log_dir, task_id, state=final_state, cycle_id=cycle_id)
+    register_finish(
+        log_dir, task_id, state=final_state, cycle_id=cycle_id,
+        commits=len(branch.commits) if branch is not None else None,
+    )
     return 0
 
 

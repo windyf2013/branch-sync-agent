@@ -25,7 +25,8 @@ CREATE TABLE IF NOT EXISTS tasks(
   id INTEGER PRIMARY KEY AUTOINCREMENT, kind TEXT NOT NULL, user TEXT NOT NULL,
   cycle_id TEXT, target TEXT, src TEXT, shas TEXT, fresh INTEGER NOT NULL DEFAULT 0,
   state TEXT NOT NULL, error TEXT, created_at TEXT NOT NULL,
-  started_at TEXT, finished_at TEXT, source TEXT NOT NULL DEFAULT 'web');
+  started_at TEXT, finished_at TEXT, source TEXT NOT NULL DEFAULT 'web',
+  commits INTEGER, pid INTEGER);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_tasks_active_target
   ON tasks(target) WHERE state IN ('queued','running');
 """
@@ -77,20 +78,24 @@ def register_start(
         conn.execute("UPDATE tasks SET cycle_id=? WHERE id=?", (cycle_id, tid))
         return tid
     conn = _connect(log_dir)
-    cur = conn.execute(
-        "INSERT INTO tasks(kind, user, target, src, shas, fresh, cycle_id, state, "
-        "created_at, source) VALUES (?,?,?,?,?,?,?, 'running', ?, 'cli')",
-        (
-            kind,
-            "cli",
-            target,
-            src,
-            json.dumps(shas) if shas else None,
-            0,
-            cycle_id,
-            _now(),
-        ),
-    )
+    try:
+        cur = conn.execute(
+            "INSERT INTO tasks(kind, user, target, src, shas, fresh, cycle_id, state, "
+            "created_at, source) VALUES (?,?,?,?,?,?,?, 'running', ?, 'cli')",
+            (
+                kind,
+                "cli",
+                target,
+                src,
+                json.dumps(shas) if shas else None,
+                0,
+                cycle_id,
+                _now(),
+            ),
+        )
+    except sqlite3.IntegrityError:
+        # P2-6：与 active 同 target 任务撞唯一索引 → 返回 None，由调用方按忙处理。
+        return None
     return cur.lastrowid
 
 
@@ -101,8 +106,9 @@ def register_finish(
     state: str,
     cycle_id: str,
     error: str | None = None,
+    commits: int | None = None,
 ) -> None:
-    """执行终态登记（succeeded/failed），写入 cycle_id 与 error（可选）。"""
+    """执行终态登记（succeeded/failed），写入 cycle_id、error、commits（可选）。"""
     if task_id is None:
         return
     conn = _connect(log_dir)
@@ -111,5 +117,8 @@ def register_finish(
     if error is not None:
         fields.append("error=?")
         params.append(error)
+    if commits is not None:
+        fields.append("commits=?")
+        params.append(commits)
     params.append(task_id)
     conn.execute(f"UPDATE tasks SET {', '.join(fields)} WHERE id=?", params)

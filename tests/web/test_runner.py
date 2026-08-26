@@ -265,6 +265,71 @@ class TestStaleRecovery:
         assert runner.submit("sync", "alice", "feat/x", src="main") is not None
         runner.join(timeout=5)
 
+    def test_reconcile_converges_cycle_record_zombie_running(self, tmp_path):
+        # P0-1：对账把 running cycle 任务标 interrupted 时，收敛 cycle.json 僵尸 running
+        import json
+
+        log_dir = tmp_path / "logs"
+        db = init_db(log_dir / "platform.sqlite3")
+        db.execute(
+            "INSERT INTO tasks(kind,user,target,cycle_id,state,created_at) "
+            "VALUES ('cycle','system',NULL,'cycle-2026-08-25','running','t')"
+        )
+        db.commit()
+        cycle_dir = log_dir / "cycle-2026-08-25"
+        cycle_dir.mkdir(parents=True)
+        (cycle_dir / "cycle.json").write_text(
+            json.dumps(
+                {
+                    "cycle_id": "cycle-2026-08-25",
+                    "status": "running",
+                    "started_at": "t",
+                    "finished_at": "t",
+                }
+            )
+        )
+        runner = TaskRunner(
+            db, str(log_dir), run_func=_ok_run, cycle_probe=lambda cid: True
+        )
+        runner._reconcile_on_start()
+
+        row = db.execute("SELECT * FROM tasks").fetchone()
+        assert row["state"] == "interrupted"
+        record = json.loads((cycle_dir / "cycle.json").read_text(encoding="utf-8"))
+        assert record["status"] == "interrupted"
+
+
+    def test_reconcile_skips_alive_child(self, tmp_path, monkeypatch):
+        # PID 探活：孤儿子进程仍在跑 → 不标 interrupted/failed，等其 register_finish 自愈
+        db = init_db(tmp_path / "platform.sqlite3")
+        db.execute(
+            "INSERT INTO tasks(kind,user,target,cycle_id,state,created_at,pid) "
+            "VALUES ('sync','alice','feat/x','manual-1','running','t', 99999)"
+        )
+        db.commit()
+        runner = TaskRunner(
+            db, str(tmp_path / "logs"), run_func=_ok_run, cycle_probe=lambda cid: True
+        )
+        monkeypatch.setattr("bsa_web.executor.os.kill", lambda pid, sig: None)
+        runner._reconcile_on_start()
+        row = db.execute("SELECT * FROM tasks").fetchone()
+        assert row["state"] == "running"
+
+    def test_reconcile_marks_dead_child(self, tmp_path):
+        # 子进程已死（pid 不存在）→ 按有无进度标 interrupted/failed
+        db = init_db(tmp_path / "platform.sqlite3")
+        db.execute(
+            "INSERT INTO tasks(kind,user,target,cycle_id,state,created_at,pid) "
+            "VALUES ('sync','alice','feat/x','manual-1','running','t', 999999999)"
+        )
+        db.commit()
+        runner = TaskRunner(
+            db, str(tmp_path / "logs"), run_func=_ok_run, cycle_probe=lambda cid: True
+        )
+        runner._reconcile_on_start()
+        row = db.execute("SELECT * FROM tasks").fetchone()
+        assert row["state"] == "interrupted"
+
 
 class TestSubprocessLifecycle:
     def test_default_cli_kills_process_on_timeout(self, tmp_path, monkeypatch):
@@ -336,6 +401,40 @@ class TestCmdBuilding:
             "abc123",
             "def456",
         ]
+
+    def test_sync_preassigns_cycle_id_and_injects_env(self, tmp_path, monkeypatch):
+        # P2-2：executor 预生成 sync cycle_id 并注入 BSA_MANUAL_CYCLE_ID（运行期即知）
+        seen = {}
+
+        def fake_run(cmd, env):
+            seen["cycle_id"] = env.get("BSA_MANUAL_CYCLE_ID")
+            _engine_finish(env, state="succeeded", cycle_id=env.get("BSA_MANUAL_CYCLE_ID"))
+            return 0, "ok", ""
+
+        monkeypatch.setattr("bsa_web.executor.manual_cycle_id", lambda: "manual-preassigned-1")
+        runner = _make_runner(tmp_path, run_func=fake_run)
+        runner.start()
+        task_id = _submit_sync(runner)
+        runner.join(timeout=5)
+        assert seen["cycle_id"] == "manual-preassigned-1"
+        assert runner.get(task_id)["cycle_id"] == "manual-preassigned-1"
+
+    def test_rerun_fresh_preassigns_cycle_id_and_injects_env(self, tmp_path, monkeypatch):
+        # P2-2：fresh 重跑预生成 manual cycle_id 并注入 BSA_MANUAL_CYCLE_ID
+        seen = {}
+
+        def fake_run(cmd, env):
+            seen["cycle_id"] = env.get("BSA_MANUAL_CYCLE_ID")
+            _engine_finish(env, state="succeeded", cycle_id=env.get("BSA_MANUAL_CYCLE_ID"))
+            return 0, "ok", ""
+
+        monkeypatch.setattr("bsa_web.executor.manual_cycle_id", lambda: "manual-fresh-1")
+        runner = _make_runner(tmp_path, run_func=fake_run)
+        runner.start()
+        task_id = runner.submit("rerun", "alice", "feat/x", fresh=True)
+        runner.join(timeout=5)
+        assert seen["cycle_id"] == "manual-fresh-1"
+        assert runner.get(task_id)["cycle_id"] == "manual-fresh-1"
 
     def test_sync_cmd_without_sha(self, tmp_path):
         calls = []
@@ -426,6 +525,17 @@ class TestTaskReporter:
         row = conn.execute("SELECT * FROM tasks WHERE id=?", (task_id,)).fetchone()
         assert row["state"] == "failed"
         assert row["error"] == "boom"
+
+    def test_register_start_cli_direct_conflict_returns_none(self, tmp_path):
+        # P2-6：CLI 直启 INSERT 与 active 同 target 冲突 → 返回 None，不抛 IntegrityError
+        from bsa.commands.task_reporter import register_start
+
+        db = init_db(tmp_path / "platform.sqlite3")
+        enqueue_task(db, "sync", "alice", "feat/x", src="main")
+        got = register_start(
+            str(tmp_path), kind="sync", target="feat/x", cycle_id="manual-1", src="main",
+        )
+        assert got is None
 
 
 class TestCleanupTask:

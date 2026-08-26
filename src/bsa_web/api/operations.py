@@ -49,6 +49,10 @@ class RerunBody(BaseModel):
     fresh: bool = False
 
 
+class CycleResumeBody(BaseModel):
+    cycle_id: str | None = None
+
+
 def _load_commits(log_dir: str, src: str, limit: int = 50) -> list[dict]:
     """子进程调 `bsa commits <src> --limit N --refresh`，返回候选 commit 列表。
 
@@ -142,3 +146,21 @@ def api_task_status(
     if task is None:
         raise HTTPException(status_code=404, detail="任务不存在")
     return task
+
+
+@router.post("/cycle/resume", status_code=201, dependencies=[Depends(require_csrf)])
+def api_cycle_resume(
+    request: Request,
+    body: CycleResumeBody,
+    user: Annotated[dict, Depends(_require_operator_api)] = None,
+):
+    """续跑 interrupted 周期（P0-1）：同一 cycle_id 重排入 run-cycle（checkpoint 自动 resume）。"""
+    if not body.cycle_id:
+        raise HTTPException(status_code=400, detail="缺少 cycle_id")
+    task_id = request.app.state.enqueue_task(
+        request.app.state.db, "cycle", user["username"], None,
+        source="web", cycle_id=body.cycle_id,
+    )
+    if task_id is None:
+        raise HTTPException(status_code=409, detail="已有活动周期任务，请稍后再试")
+    return {"task_id": task_id, "state": "queued", "wait_reason": QUEUED_WAIT_REASON}

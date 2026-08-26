@@ -34,6 +34,7 @@ import time
 from datetime import UTC, datetime
 from pathlib import Path
 
+from bsa.commands.sync import manual_cycle_id
 from bsa_web.db import InstanceLock
 
 DEFAULT_TIMEOUT_SEC = 3600
@@ -188,6 +189,35 @@ def _cleanup_worktree_cli(log_dir: str, target: str, cycle_id: str) -> dict:
     return {"removed": "removed=True" in proc.stdout or "removed=True" in proc.stderr}
 
 
+def _converge_cycle_record(log_dir: str, cycle_id: str | None, status: str) -> None:
+    """收敛 cycle.json 僵尸 running（P0-1）。
+
+    周期执行被中断（引擎 CLI 崩溃 / 机器重启）时，``cycle.json`` 停留在
+    running，工作台会一直卡"进行中"。executor 对账/兜底把 cycle 任务标
+    interrupted/failed 时，同步把 cycle.json 收敛为终态，解除僵尸。
+    """
+    if not cycle_id:
+        return
+    path = Path(log_dir) / cycle_id / "cycle.json"
+    if not path.is_file():
+        return
+    try:
+        record = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return
+    if not isinstance(record, dict):
+        return
+    record["status"] = status
+    if not record.get("finished_at"):
+        record["finished_at"] = _now_iso()
+    try:
+        path.write_text(
+            json.dumps(record, ensure_ascii=False, indent=2), encoding="utf-8"
+        )
+    except OSError:
+        pass
+
+
 class TaskExecutor:
     """独立执行守护：DB 轮询认领 + worker + 调度器 + 启动对账。
 
@@ -217,6 +247,7 @@ class TaskExecutor:
         self._claim_thread: threading.Thread | None = None
         self._sched_thread: threading.Thread | None = None
         self._started = False
+        self._last_task_id: int | None = None
         try:
             self._lock = InstanceLock(Path(log_dir) / "executor.lock")
         except RuntimeError:
@@ -275,10 +306,13 @@ class TaskExecutor:
         在此枚举 checkpoint 补登记。
         """
         rows = self.db.execute(
-            "SELECT id, cycle_id, kind, target FROM tasks WHERE state='running'"
+            "SELECT id, cycle_id, kind, target, pid FROM tasks WHERE state='running'"
         ).fetchall()
         now = _now_iso()
         for row in rows:
+            if self._child_alive(row["pid"]):
+                # P0-1：孤儿子进程仍在跑 → 不标 interrupted/failed，等其 register_finish 自愈
+                continue
             has_progress = self._cycle_has_progress(row["cycle_id"])
             if has_progress:
                 self._mark(
@@ -287,6 +321,7 @@ class TaskExecutor:
                     error="执行中断（executor 重启），现场已保留，可续跑",
                     finished_at=now,
                 )
+                _converge_cycle_record(self.log_dir, row["cycle_id"], "interrupted")
             else:
                 self._mark(
                     row["id"],
@@ -294,6 +329,17 @@ class TaskExecutor:
                     error="执行中断（executor 重启），无进度现场",
                     finished_at=now,
                 )
+                _converge_cycle_record(self.log_dir, row["cycle_id"], "FAILED")
+
+    def _child_alive(self, pid: int | None) -> bool:
+        """探测子进程是否仍存活（P0-1，kill(pid,0)）。无 pid 或已死返回 False。"""
+        if not pid:
+            return False
+        try:
+            os.kill(pid, 0)
+        except (OSError, ProcessLookupError):
+            return False
+        return True
 
     def _cycle_has_progress(self, cycle_id: str | None) -> bool:
         """state.sqlite3 是否已有该周期 checkpoint 进度（读投影子进程探测）。
@@ -391,9 +437,11 @@ class TaskExecutor:
         row = get_task(self.db, task_id)
         if row is None:
             return
+        self._preassign_cycle_id(row)
         cmd = self._build_cmd(row)
         env = self._run_env(row)
         runner = self._run if self._run is not None else self._run_cli
+        self._last_task_id = task_id
         try:
             # 终态由 V1 引擎 task_reporter 写入 tasks 表（BSA_TASK_ID 注入），
             # executor 不重复写；仅在引擎未写终态时兜底。
@@ -406,19 +454,40 @@ class TaskExecutor:
                 error=f"执行超时（>{self._timeout_sec}s），已终止",
                 finished_at=_now_iso(),
             )
+            _converge_cycle_record(self.log_dir, row.get("cycle_id"), "FAILED")
             return
         # 兜底：引擎未写终态（如配置错误早退，register_start 都未执行）→ 标 failed
         current = get_task(self.db, task_id)
         if current is not None and current["state"] == "running":
             error = (stderr or stdout or "执行失败").strip()[:_ERROR_MAX_LEN]
             self._mark(task_id, "failed", error=error or "执行异常", finished_at=_now_iso())
+            _converge_cycle_record(self.log_dir, current.get("cycle_id"), "FAILED")
+
+    def _preassign_cycle_id(self, row: dict) -> None:
+        """预生成 sync / rerun-fresh 的 cycle_id 并落库（P2-2，运行期即知）。
+
+        sync 与 fresh 重跑都走 ``manual_cycle_id()``；retained 续跑（cycle_id
+        已为来源周期、用于 ``--cycle`` 定位现场）不覆盖。生成后写回任务行，
+        使执行期间任务行 cycle_id 与 checkpoint 线程一致，重启对账可重挂。
+        """
+        if row.get("cycle_id"):
+            return
+        if row["kind"] == "sync":
+            cid = manual_cycle_id()
+        elif row["kind"] == "rerun" and row.get("fresh"):
+            cid = manual_cycle_id()
+        else:
+            return
+        self.db.execute("UPDATE tasks SET cycle_id=? WHERE id=?", (cid, row["id"]))
+        self.db.commit()
+        row["cycle_id"] = cid
 
     def _build_cmd(self, row: dict) -> list[str]:
         """按任务行构造 CLI 命令（注入 sys.executable 保证同解释器）。
 
         cycle 任务（kind='cycle'）跑 ``bsa run-cycle``，并注入 ``BSA_CYCLE_ID``
         让周期 id 在运行期即确定（executor 预生成，重启后可重挂）。
-        sync/rerun 分别注入 BSA_MANUAL_CYCLE_ID / BSA_RERUN_THREAD_ID。
+        sync 注入 BSA_MANUAL_CYCLE_ID；fresh rerun 注入 BSA_MANUAL_CYCLE_ID。
         """
         kind = row["kind"]
         cmd = [sys.executable, "-m", "bsa.cli"]
@@ -458,9 +527,10 @@ class TaskExecutor:
                 env["BSA_CYCLE_ID"] = cycle_id
             elif row["kind"] == "sync":
                 env["BSA_MANUAL_CYCLE_ID"] = cycle_id
-            # rerun：仅 fresh 模式才注入 thread id；续跑走 --cycle retained
+            # rerun fresh 走 manual_cycle_id（读取 BSA_MANUAL_CYCLE_ID）；
+            # retained 续跑走 --cycle，不注入 thread id。
             elif row["kind"] == "rerun" and row.get("fresh"):
-                env["BSA_RERUN_THREAD_ID"] = cycle_id
+                env["BSA_MANUAL_CYCLE_ID"] = cycle_id
         return env
 
     def _mark(
@@ -492,10 +562,15 @@ class TaskExecutor:
         self.db.commit()
 
     def _run_cli(self, cmd: list[str], env: dict[str, str]) -> tuple[int, str, str]:
-        """Popen 调 CLI；超时 kill。env 已含 LOG_DIR + cycle 覆盖。"""
+        """Popen 调 CLI；超时 kill。env 已含 LOG_DIR + cycle 覆盖。记录 child PID。"""
         proc = subprocess.Popen(
             cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=env
         )
+        # P0-1：记录 child PID 到任务行，重启对账据此探活（区分孤儿仍在跑 vs 真死）
+        task_id = getattr(self, "_last_task_id", None)
+        if task_id is not None:
+            self.db.execute("UPDATE tasks SET pid=? WHERE id=?", (proc.pid, task_id))
+            self.db.commit()
         try:
             stdout, stderr = proc.communicate(timeout=self._timeout_sec)
         except subprocess.TimeoutExpired:

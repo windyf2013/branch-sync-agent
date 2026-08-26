@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import shutil
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -82,6 +83,15 @@ class GraphContext:
             path_rules = (self.decision_rules.classify or {}).get("path_rules") or {}
             public_dirs = list(path_rules.get("public_dirs", []))
             self.is_public_file = lambda path: is_public_file(path, public_dirs)
+        if self.conclude is conclude_pair:
+            # 目标类型由 decision_rules.yaml 单一驱动（P2 治理），从 ConcludeThresholds
+            # 注入到 conclude_pair，避免与硬编码常量双源并存。
+            thresholds = self.decision_rules.conclude
+            self.conclude = partial(
+                conclude_pair,
+                need_sync_target_types=list(thresholds.need_sync_target_types),
+                ineligible_target_types=list(thresholds.ineligible_target_types),
+            )
 
 
 def _now_iso() -> str:
@@ -162,6 +172,20 @@ def _derive_window(
     return derived.isoformat(timespec="seconds"), until
 
 
+def _load_judgments(log_dir: Path) -> dict[str, Any]:
+    """加载人工覆盖判定 judgments.json；缺失/损坏返回空（节点级容错，不崩周期）。"""
+    path = log_dir / "judgments.json"
+    if not path.exists():
+        return {}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    if not isinstance(data, dict):
+        return {}
+    return {k: v for k, v in data.items() if isinstance(v, dict)}
+
+
 def _load_matrix(ctx: GraphContext) -> list[HomologousSet]:
     if ctx.matrix is None:
         text = Path(ctx.settings.branch_file).read_text(encoding="utf-8")
@@ -177,6 +201,10 @@ def detect_commits(state: dict, ctx: GraphContext) -> dict:
     since, until = _derive_window(settings.scan_since, settings.scan_until)
 
     ctx.git.fetch_all()
+
+    # 人工覆盖判定贯通全量 commit（G9）：加载 judgments.json 传入 classify，
+    # 使 override 对机器已判定的 commit 也生效（人工判定优先级最高，见 classify_commit）。
+    judgments = _load_judgments(Path(settings.log_dir))
 
     branch_path = Path(settings.branch_file)
     branch_md_text = branch_path.read_text(encoding="utf-8")
@@ -195,7 +223,14 @@ def detect_commits(state: dict, ctx: GraphContext) -> dict:
                 changed_files = ctx.git.changed_files(sha)
                 patch_text = ctx.git.commit_patch(sha)
                 symbols = extract_symbols(patch_text)
-                classification = ctx.classify(message, changed_files, symbols, patch_text, sha=sha)
+                classification = ctx.classify(
+                    message,
+                    changed_files,
+                    symbols,
+                    patch_text,
+                    sha=sha,
+                    agent_judgments=judgments,
+                )
                 severity = classify_severity(message, changed_files)
                 risk = severity if severity in ("low", "medium", "high") else None
                 detected.append(
@@ -707,15 +742,34 @@ def _action_required(state: dict) -> list[dict[str, Any]]:
     return actions
 
 
+def _cycle_terminal_status(state: dict) -> str:
+    """收敛周期终态（P0-2/G10）：全成功 SUCCESS / 部分失败 PARTIAL / 有错误或失败 FAILED。
+
+    供 report 节点写入 state.status，经 cycle.json / tasks.state 传导到平台，
+    使"全成功"与"有失败"可区分（工作台失败醒目标记信号源）。
+    """
+    if state.get("errors"):
+        return "FAILED"
+    statuses = [b.status for b in (state.get("branch_results") or {}).values()]
+    if not statuses:
+        return "SUCCESS"
+    if any(s in ("FAILED", "MANUAL") for s in statuses):
+        return "FAILED"
+    if any(s == "PARTIAL" for s in statuses):
+        return "PARTIAL"
+    return "SUCCESS"
+
+
 def report(state: dict, ctx: GraphContext) -> dict:
     """Assemble the end-of-cycle Report (HTML rendering lands in batch 3.2/3.3)."""
     cycle_id = state["cycle_id"]
     log_root = Path(ctx.settings.log_dir)
+    terminal = _cycle_terminal_status(state)
     rep = Report(
         cycle_id=cycle_id,
         html_path=log_root / cycle_id / "report.html",
         summary={
-            "status": state.get("status", ""),
+            "status": terminal,
             "commits_detected": len(state.get("detected_commits", [])),
             "branches": sorted(state.get("branch_results", {})),
             "decisions": len(state.get("decisions", {})),
@@ -723,4 +777,4 @@ def report(state: dict, ctx: GraphContext) -> dict:
         action_required=_action_required(state),
         decisions_json_path=log_root / cycle_id / "decisions.json",
     )
-    return {"report": rep, "status": "REPORTED"}
+    return {"report": rep, "status": terminal}

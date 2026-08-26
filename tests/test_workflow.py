@@ -142,7 +142,7 @@ def test_empty_check_routes_to_report(tmp_path):
     assert out["report"] is not None
     assert out["report"].summary["commits_detected"] == 1
     assert out["report"].summary["branches"] == []
-    assert out["status"] == "REPORTED"
+    assert out["status"] == "SUCCESS"
 
 
 def test_single_branch_success_patch_and_report(tmp_path):
@@ -151,7 +151,7 @@ def test_single_branch_success_patch_and_report(tmp_path):
 
     out = run(build_workflow(ctx), base_state())
 
-    assert out["status"] == "REPORTED"
+    assert out["status"] == "SUCCESS"
     assert out["report"] is not None
     branch = out["branch_results"][TARGET]
     assert branch.status == "SUCCESS"
@@ -170,7 +170,7 @@ def test_empty_cherry_pick_still_builds(tmp_path):
 
     out = run(build_workflow(ctx), base_state())
 
-    assert out["status"] == "REPORTED"
+    assert out["status"] == "SUCCESS"
     branch = out["branch_results"][TARGET]
     assert branch.commits[0].cherry_pick == "EMPTY"
     assert "RTL9617C" in branch.commits[0].build
@@ -214,7 +214,7 @@ def test_cycle_rerun_prepare_reuses_existing_worktree(tmp_path):
 
     out = run(build_workflow(ctx), base_state())
 
-    assert out["status"] == "REPORTED"
+    assert out["status"] == "SUCCESS"
     assert out["branch_results"][TARGET].status == "SUCCESS"
     assert not any(name == "add_worktree" for name, args in ctx.git.calls)
 
@@ -411,7 +411,7 @@ def test_cherry_pick_failed_routes_to_report_not_failfast(tmp_path):
     out = run(build_workflow(ctx), base_state())
 
     assert ctx.llm.calls == []
-    assert out["status"] == "REPORTED"
+    assert out["status"] == "PARTIAL"
     assert out["branch_results"][TARGET].stop_reason is None
     assert out["branch_results"][TARGET].commits[0].cherry_pick == "FAILED"
 

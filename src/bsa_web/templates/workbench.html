@@ -44,7 +44,13 @@
       <p class="muted">
         <span class="badge {{ cycle_task.status | lower }}">{{ cycle_task.badge }}</span>
         周期任务 {{ cycle_task.cycle_id }} · 来源 {{ cycle_task.source }}
-        {% if cycle_task.state == "interrupted" %}· 已中断，现场已保留（可续跑）{% endif %}
+        {% if cycle_task.state == "interrupted" %}
+          · 已中断，现场已保留（可续跑）
+          {% if user.role == "operator" %}
+          <button type="button" id="cycle-resume" data-resume-cycle="{{ cycle_task.cycle_id }}">续跑</button>
+          <span id="cycle-resume-result"></span>
+          {% endif %}
+        {% endif %}
       </p>
     {% endif %}
     {% if agent_status == "running" %}
@@ -322,4 +328,32 @@
 </section>
 
 {% include "_push_confirm.html" %}
+<script>
+(function () {
+  var btn = document.getElementById("cycle-resume");
+  if (!btn) return;
+  btn.addEventListener("click", function () {
+    btn.disabled = true;
+    var result = document.getElementById("cycle-resume-result");
+    if (result) result.textContent = "提交中…";
+    fetch("/api/cycle/resume", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ _csrf: "{{ csrf }}", cycle_id: btn.getAttribute("data-resume-cycle") }),
+    }).then(function (r) { return r.json().then(function (j) { return { ok: r.ok, json: j }; }); })
+      .then(function (res) {
+        if (res.ok && res.json && res.json.task_id) {
+          window.location.reload();
+        } else {
+          btn.disabled = false;
+          if (result) result.textContent = (res.json && res.json.detail) || "续跑失败";
+        }
+      })
+      .catch(function () {
+        btn.disabled = false;
+        if (result) result.textContent = "续跑失败";
+      });
+  });
+})();
+</script>
 {% endblock %}

@@ -16,7 +16,8 @@ CREATE TABLE IF NOT EXISTS tasks(
   id INTEGER PRIMARY KEY AUTOINCREMENT, kind TEXT NOT NULL, user TEXT NOT NULL,
   cycle_id TEXT, target TEXT, src TEXT, shas TEXT, fresh INTEGER NOT NULL DEFAULT 0,
   state TEXT NOT NULL, error TEXT, created_at TEXT NOT NULL,
-  started_at TEXT, finished_at TEXT, source TEXT NOT NULL DEFAULT 'web');
+  started_at TEXT, finished_at TEXT, source TEXT NOT NULL DEFAULT 'web',
+  commits INTEGER, pid INTEGER);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_tasks_active_target
   ON tasks(target) WHERE state IN ('queued','running');
 """
@@ -129,6 +130,10 @@ def _migrate_tasks(conn: sqlite3.Connection) -> None:
         conn.execute(
             "ALTER TABLE tasks ADD COLUMN source TEXT NOT NULL DEFAULT 'web'"
         )
+    if "commits" not in cols:
+        conn.execute("ALTER TABLE tasks ADD COLUMN commits INTEGER")
+    if "pid" not in cols:
+        conn.execute("ALTER TABLE tasks ADD COLUMN pid INTEGER")
 
 
 def _migrate_abandons(conn: sqlite3.Connection) -> None:

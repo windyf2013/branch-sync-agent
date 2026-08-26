@@ -23,6 +23,7 @@ from bsa.report import (
     write_agent_diffs,
     write_decisions_json,
 )
+from bsa.report.projection import write_state_json
 
 _RUN_LOGGER = logging.getLogger("bsa.cycle")
 
@@ -42,6 +43,17 @@ def _parse_cycle_date(date: str) -> date:
         except ValueError:
             continue
     raise ValueError(f"无效的周期日期 {date!r}，期望格式 YYYY-MM-DD")
+
+
+def manual_scan_cycle_id(since: str | None, until: str | None) -> str:
+    """manual-scan 独立周期 id：与每日周期隔离，重扫不撞旧 checkpoint（决策 38）。
+
+    由 CLI 在登记任务时同源计算，保证任务行 cycle_id 与 checkpoint 线程一致
+    （P2-7）。
+    """
+    if since and until:
+        return f"scan-{since}-{until}"
+    return f"scan-{datetime.now().strftime('%Y%m%d-%H%M%S')}"
 
 
 def _stale_worktree(path: Path, root: Path, cycle_id: str) -> bool:
@@ -195,11 +207,10 @@ def run_cycle(
     if context is None:
         settings = load_settings()
         if cycle_id is None:
-            cycle_id = _derive_cycle_id(date)
-        if manual and since and until:
-            cycle_id = f"scan-{since}-{until}"
-        elif manual:
-            cycle_id = f"scan-{datetime.now().strftime('%Y%m%d-%H%M%S')}"
+            if manual:
+                cycle_id = manual_scan_cycle_id(since, until)
+            else:
+                cycle_id = _derive_cycle_id(date)
         context = build_graph_context(settings, cycle_id=cycle_id)
     else:
         cycle_id = cycle_id or _derive_cycle_id(date)
@@ -300,6 +311,9 @@ def _execute_locked(
 
     report = final.get("report")
     final_status = final.get("status", "UNKNOWN")
+    if final:
+        # 投影数据源落盘为结构化 state.json（G11），平台只消费 JSON。
+        write_state_json(log_dir, cycle_id, final)
     report_path: Path | None = None
     mail_status: str | None = None
     if report is not None:

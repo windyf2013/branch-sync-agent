@@ -157,12 +157,14 @@ def _rejudge_batch(
 
 
 def _rerun_retained(
-    ctx: GraphContext, *, target: str, cycle: str | None, checkpointer
+    ctx: GraphContext, *, target: str, cycle: str | None, checkpointer,
+    thread_id: str | None = None,
 ) -> dict:
     """保留现场续跑：复用活 worktree 与冻结批次，重跑同步验证链路。
 
     已应用的 commit 由 cherry_pick 判 EMPTY 跳过应用、仅全量 build 验证，
-    最终 regenerate patch。
+    最终 regenerate patch。``thread_id`` 由调用方预生成（P2-3 单一线程 id），
+    缺省时内部生成，保证任务登记与实际 checkpoint 线程一致。
     """
     cycle_id, state = _locate_cycle(ctx, target, cycle)
     if cycle_id is None:
@@ -192,7 +194,7 @@ def _rerun_retained(
             "target": target,
             "cycle_id": cycle_id,
         }
-    thread_id = _rerun_thread_id(target)
+    thread_id = thread_id or _rerun_thread_id(target)
     final = run_sync_command(
         ctx,
         cycle_id=cycle_id,
@@ -211,7 +213,8 @@ def _rerun_retained(
 
 
 def _rerun_fresh(
-    ctx: GraphContext, *, target: str, cycle: str | None, checkpointer
+    ctx: GraphContext, *, target: str, cycle: str | None, checkpointer,
+    thread_id: str | None = None,
 ) -> dict:
     """--fresh 重建重同步：先对当前远端重判，仍 NeedSync 才丢弃现场重建。"""
     ctx.git.fetch_all()
@@ -252,7 +255,7 @@ def _rerun_fresh(
             ctx.git.remove_worktree(old_path)
         else:
             shutil.rmtree(old_path, ignore_errors=True)
-    new_cycle_id = manual_cycle_id()
+    new_cycle_id = thread_id or manual_cycle_id()
     final = run_sync_command(
         ctx, cycle_id=new_cycle_id, target=target, batch=remaining, checkpointer=checkpointer
     )
@@ -271,6 +274,7 @@ def run_rerun_command(
     cycle: str | None = None,
     fresh: bool = False,
     checkpointer=None,
+    thread_id: str | None = None,
 ) -> dict:
     """分支级重跑：默认保留现场续跑；--fresh 重建并对当前远端重判。
 
@@ -279,10 +283,20 @@ def run_rerun_command(
     conclusion-manual-review），正常场景返回同步最终 state 并附 ``rerun``
     元信息。retained 模式将 checkpoint 写入独立 ``rerun-*`` 线程
     （``rerun.cycle_id``），不覆盖来源周期投影。
+
+    ``thread_id`` 由调用方预生成（P2-3 单一线程 id）：``_cmd_rerun`` 用它做
+    register_start，与本函数内 checkpoint 线程一致，避免二次生成导致任务行
+    cycle_id 与真实线程错位。缺省时内部生成（兼容直接调用/测试）。
     """
     if fresh:
-        return _rerun_fresh(ctx, target=target, cycle=cycle, checkpointer=checkpointer)
-    return _rerun_retained(ctx, target=target, cycle=cycle, checkpointer=checkpointer)
+        return _rerun_fresh(
+            ctx, target=target, cycle=cycle, checkpointer=checkpointer,
+            thread_id=thread_id,
+        )
+    return _rerun_retained(
+        ctx, target=target, cycle=cycle, checkpointer=checkpointer,
+        thread_id=thread_id,
+    )
 
 
 def cleanup_worktree_command(

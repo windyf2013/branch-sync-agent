@@ -454,6 +454,44 @@ def test_conclude_default_thresholds():
     assert conclusion.kind == "ManualReview"
 
 
+# --- conclude: 目标类型由规则单一驱动（P2 治理） ---
+
+
+def test_conclude_custom_need_sync_target_types():
+    # 决策 2/27 目标类型数据驱动：need_sync 不含 develop 时，develop 目标不再 NeedSync。
+    source = _analysis()
+    target = _target(branch_type="develop", branch_name="br_v4_LineA_develop_b_20260101")
+    conclusion = conclude_pair(
+        source,
+        target,
+        similarity_high=0.90,
+        similarity_low=0.50,
+        need_sync_target_types=["release", "fix"],
+        ineligible_target_types=["feature", "personal"],
+    )
+    assert conclusion.kind == "OutOfScope"
+
+
+def test_conclude_custom_ineligible_target_types():
+    # ineligible 不含 feature 时，feature 目标不再被硬编码 OutOfScope（可进入后续判定）。
+    source = _analysis()
+    target = _target(branch_type="feature", branch_name="br_v4_LineA_feature_20260101")
+    conclusion = conclude_pair(
+        source,
+        target,
+        similarity_high=0.90,
+        similarity_low=0.50,
+        need_sync_target_types=["develop", "release", "fix", "feature"],
+        ineligible_target_types=["personal"],
+    )
+    assert conclusion.kind != "OutOfScope"
+
+
+def test_load_decision_rules_ineligible_target_types():
+    rules = load_decision_rules(DECISION_RULES_PATH)
+    assert rules.conclude.ineligible_target_types == ["feature", "personal"]
+
+
 # --- conclude: 发布线严重性门控（决策 41） ---
 
 

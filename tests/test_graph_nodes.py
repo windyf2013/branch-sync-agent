@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
@@ -658,6 +659,35 @@ def test_detect_commits_leaves_risk_none_when_severity_unknown(tmp_path):
     update = detect_commits(base_state(), ctx)
 
     assert update["classifications"]["a1"].risk is None
+
+
+def test_detect_commits_applies_judgments_override_to_machine_classified(tmp_path):
+    # G9：人工覆盖（judgments.json）必须贯通全量 commit 判定，含机器已判定 [BUG] 的 commit。
+    write_branch_md(tmp_path)
+    ctx = make_ctx(tmp_path)
+    from bsa.rules import classify_commit
+
+    ctx.classify = classify_commit  # 真实 classifier，honor judgments
+    git = ctx.git
+    sha = "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef"
+    git.window_shas = {f"origin/{DEVELOP}": [sha]}
+    git.changed = {sha: ["plat/demo.c"]}
+    git.patches = {sha: "+x"}
+    git.patch_ids = {sha: "pid1"}
+    git.metadata_results = {
+        sha: ("dev", "2026-01-01T10:00:00+08:00", "[BUG] CQ999 fix null deref")
+    }
+    log_dir = Path(ctx.settings.log_dir)
+    log_dir.mkdir(parents=True, exist_ok=True)
+    (log_dir / "judgments.json").write_text(
+        json.dumps({sha: {"is_bug_fix": False, "reason": "人工判定非 bug-fix"}}),
+        encoding="utf-8",
+    )
+
+    update = detect_commits(base_state(), ctx)
+
+    assert update["classifications"][sha].is_bug_fix is False
+    assert update["classifications"][sha].needs_agent is False
 
 
 def test_sync_decision_resolves_pending_and_builds_batches(tmp_path):
@@ -1446,7 +1476,7 @@ def test_report_assembles_basic_report(tmp_path):
     assert rep.summary["commits_detected"] == 1
     assert len(rep.action_required) == 1
     assert rep.action_required[0]["sha"] == "a1"
-    assert update["status"] == "REPORTED"
+    assert update["status"] == "PARTIAL"
 
 
 def test_report_includes_errors_in_action_required(tmp_path):
@@ -1456,3 +1486,108 @@ def test_report_includes_errors_in_action_required(tmp_path):
     )
     update = report(state, ctx)
     assert update["report"].action_required[0]["node"] == "detect_commits"
+
+
+# --- report: 周期终态可区分（P0-2/G10） ---
+
+
+def test_report_terminal_status_all_success(tmp_path):
+    ctx = make_ctx(tmp_path)
+    state = base_state(
+        branch_results={
+            TARGET: BranchResult(
+                target_branch=TARGET,
+                worktree_path="/wt",
+                status="SUCCESS",
+                commits=[commit_result("a1")],
+                patch_path=None,
+                stop_reason=None,
+            )
+        }
+    )
+    update = report(state, ctx)
+    assert update["status"] == "SUCCESS"
+
+
+def test_report_terminal_status_partial(tmp_path):
+    ctx = make_ctx(tmp_path)
+    state = base_state(branch_results={TARGET: branch_result(TARGET)})
+    update = report(state, ctx)
+    assert update["status"] == "PARTIAL"
+
+
+def test_report_terminal_status_failed_on_branch_failure(tmp_path):
+    ctx = make_ctx(tmp_path)
+    state = base_state(
+        branch_results={
+            TARGET: BranchResult(
+                target_branch=TARGET,
+                worktree_path="/wt",
+                status="FAILED",
+                commits=[commit_result("a1", cherry_pick_status="FAILED")],
+                patch_path=None,
+                stop_reason=None,
+            )
+        }
+    )
+    update = report(state, ctx)
+    assert update["status"] == "FAILED"
+
+
+def test_report_terminal_status_failed_on_node_error(tmp_path):
+    ctx = make_ctx(tmp_path)
+    state = base_state(
+        errors={"detect_commits": ErrorRecord(node="detect_commits", error="boom", ts="t")}
+    )
+    update = report(state, ctx)
+    assert update["status"] == "FAILED"
+
+
+# --- GraphContext 注入 decision_rules.conclude 目标类型（P2 治理） ---
+
+
+def test_graph_context_injects_conclude_target_types(tmp_path):
+    from bsa.rules.conclude import TargetSnapshot, conclude_pair
+
+    settings = make_settings(tmp_path)
+    ctx = GraphContext(
+        settings=settings,
+        executor=SimpleNamespace(),
+        git=FakeGit(),
+        runner=FakeRunner(),
+        sync_decision_agent=FakeSyncDecisionAgent(),
+        conflict_agent=FakeConflictAgent(),
+        build_agent=FakeBuildAgent(),
+        safety=FakeSafety(),
+        decision_rules=DecisionRules(
+            classify={},
+            conclude=ConcludeThresholds(
+                need_sync_target_types=["release"],
+                ineligible_target_types=["feature", "personal"],
+            ),
+            branch_mapping={},
+        ),
+    )
+    # 未显式传 conclude → __post_init__ 绑定为注入目标类型的 partial，不再是裸函数。
+    assert ctx.conclude is not conclude_pair
+
+    analysis = _to_analysis(
+        commit("a1"),
+        SyncDecision(
+            sha="a1",
+            is_bug_fix=True,
+            reason=None,
+            recognition_source="machine:[BUG]",
+            needs_agent=False,
+        ),
+        {},
+    )
+    snapshot = TargetSnapshot(
+        branch_name="br_v4_LineA_develop_b_20260101",
+        branch_type="develop",
+        fix_clearly_missing=True,
+        files_on_target={"plat/demo.c"},
+        symbols_on_target={},
+    )
+    conclusion = ctx.conclude(analysis, snapshot, similarity_high=0.90, similarity_low=0.50)
+    assert conclusion.kind == "OutOfScope"

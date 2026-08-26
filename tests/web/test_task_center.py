@@ -641,3 +641,77 @@ class TestTaskDetail:
         r = client.get(f"/task/{_CYCLE}/x")
         assert r.status_code == 302
         assert r.headers["location"].endswith("/login")
+
+
+def test_manual_tasks_commits_from_row_no_subprocess(tmp_path, monkeypatch):
+    # P2-5：commit 数从任务行取（sync 用 shas 长度），不再 spawn bsa report 子进程
+    import json as _json
+
+    from bsa_web.views.workbench import _manual_tasks
+
+    app = _make_app(tmp_path)
+    app.state.db.execute(
+        "INSERT INTO tasks(kind, user, target, src, shas, state, created_at) "
+        "VALUES ('sync','alice','feat/x','main',?, 'succeeded', ?)",
+        (_json.dumps(["a1", "a2", "a3"]), "2026-08-25T09:00:00+00:00"),
+    )
+    app.state.db.commit()
+
+    def _boom(*args, **kwargs):
+        raise AssertionError("load_cycle 不应被调用")
+
+    monkeypatch.setattr("bsa_web.projection.load_cycle", _boom)
+
+    tasks = _manual_tasks(app.state.db, str(tmp_path), None)
+
+    assert tasks[0]["commits"] == 3
+
+
+def test_manual_tasks_rerun_commits_from_column(tmp_path, monkeypatch):
+    from bsa_web.views.workbench import _manual_tasks
+
+    app = _make_app(tmp_path)
+    app.state.db.execute(
+        "INSERT INTO tasks(kind, user, target, state, created_at, commits) "
+        "VALUES ('rerun','alice','feat/x','succeeded','2026-08-25T09:00:00+00:00', 5)",
+    )
+    app.state.db.commit()
+    monkeypatch.setattr(
+        "bsa_web.projection.load_cycle",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("no subprocess")),
+    )
+
+    tasks = _manual_tasks(app.state.db, str(tmp_path), None)
+
+    assert tasks[0]["commits"] == 5
+
+
+def test_cycle_resume_endpoint_enqueues_cycle_task(tmp_path, monkeypatch):
+    # P0-1：续跑 interrupted 周期 = 以同一 cycle_id 重排入 run-cycle
+    app = _make_app(tmp_path)
+    client = _client(app)
+    _login(client)
+    r = _post(client, "/api/cycle/resume", {"cycle_id": "cycle-2026-08-25"})
+    assert r.status_code == 201
+    row = app.state.db.execute("SELECT * FROM tasks").fetchone()
+    assert row["kind"] == "cycle"
+    assert row["cycle_id"] == "cycle-2026-08-25"
+    assert row["state"] == "queued"
+    assert row["source"] == "web"
+
+
+def test_workbench_shows_resume_button_for_interrupted_cycle(tmp_path, monkeypatch):
+    app = _make_app(tmp_path)
+    client = _client(app)
+    _login(client)
+    app.state.db.execute(
+        "INSERT INTO tasks(kind,user,target,cycle_id,state,created_at,source) "
+        "VALUES ('cycle','system',NULL,'cycle-2026-08-25','interrupted','t','cron')"
+    )
+    app.state.db.commit()
+    monkeypatch.setattr("bsa_web.projection.list_cycles", lambda log_dir: [])
+    monkeypatch.setattr("bsa_web.projection.latest_completed_cycle", lambda log_dir: None)
+    r = client.get("/")
+    assert r.status_code == 200
+    assert "cycle-resume" in r.text
+    assert "续跑" in r.text

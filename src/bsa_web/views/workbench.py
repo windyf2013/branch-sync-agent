@@ -5,6 +5,7 @@
 收敛到任务详情页 /task/{cycle_id}/{target}。
 """
 
+import json
 from datetime import UTC, datetime
 from typing import Annotated
 
@@ -134,6 +135,16 @@ def _auto_tasks(payload: dict, cycle_id: str, abandoned: set) -> list[dict]:
     return tasks
 
 
+def _task_commits(task: dict) -> int | None:
+    """从任务行取 commit 数（P2-5）：sync 用 shas 长度；rerun 用引擎落库 commits。"""
+    if task["kind"] == "sync" and task.get("shas"):
+        try:
+            return len(json.loads(task["shas"]))
+        except (TypeError, json.JSONDecodeError):
+            return None
+    return task.get("commits")
+
+
 def _manual_tasks(db, log_dir: str, window_start: str | None) -> list[dict]:
     """tasks 表展开为手动任务面板（唯一数据源）。
 
@@ -144,8 +155,8 @@ def _manual_tasks(db, log_dir: str, window_start: str | None) -> list[dict]:
     commits 等详情字段，不覆盖任务状态）。
     """
     rows = db.execute(
-        "SELECT id, kind, target, src, fresh, state, error, cycle_id, user, source, created_at "
-        "FROM tasks WHERE kind IN ('sync','rerun') ORDER BY id DESC"
+        "SELECT id, kind, target, src, fresh, state, error, cycle_id, user, source, "
+        "created_at, shas, commits FROM tasks WHERE kind IN ('sync','rerun') ORDER BY id DESC"
     ).fetchall()
     start = _parse_ts(window_start)
     tasks = []
@@ -161,12 +172,9 @@ def _manual_tasks(db, log_dir: str, window_start: str | None) -> list[dict]:
             continue
         cycle_id = task.get("cycle_id")
         status = _TASK_STATE_STATUS.get(task["state"], task["state"])
-        commits = None
-        if cycle_id:
-            payload = projection.load_cycle(log_dir, cycle_id)
-            branch = ((payload or {}).get("branch_results") or {}).get(task["target"])
-            if branch:
-                commits = len(branch.get("commits") or [])
+        # P2-5：commit 数从任务行取（sync 用 shas 长度 / rerun 用引擎落库的 commits），
+        # 不再为每个手动任务 spawn `bsa report` 子进程（威胁首页 <3s）。
+        commits = _task_commits(task)
         tasks.append(
             {
                 "task_id": task["id"],
@@ -295,7 +303,7 @@ def workbench(request: Request, user: Annotated[dict, Depends(require_login)]):
         csrf=csrf,
         cycles=records,
         current_cycle_id=cycle_id,
-        agent_status="failed" if payload.get("status") == "FAILED" else "done",
+        agent_status="failed" if payload.get("status") in ("FAILED", "PARTIAL") else "done",
         cycle_status=payload.get("status"),
         payload=payload,
         auto_tasks=_auto_tasks(payload, cycle_id, abandoned),

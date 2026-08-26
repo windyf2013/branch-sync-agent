@@ -73,7 +73,14 @@ def _install_runner(app, run_func):
             pass
         return result
 
-    runner = TaskRunner(app.state.db, str(app.state.settings.log_dir), run_func=wrapped)
+    from pathlib import Path
+
+    from bsa_web.db import init_db
+
+    # 用独立连接（与生产 executor 独立进程一致），避免与 web 请求线程共享同一
+    # 连接导致的并发 execute 竞态（sqlite3.InterfaceError 偶发）。
+    runner_db = init_db(Path(app.state.settings.log_dir) / "platform.sqlite3")
+    runner = TaskRunner(runner_db, str(app.state.settings.log_dir), run_func=wrapped)
     runner.start()
     app.state.enqueue_task = lambda db, kind, user, target, **kw: runner.submit(
         kind, user, target, **kw

@@ -83,6 +83,21 @@ def branch_ok(target: str, patch_path: str) -> BranchResult:
 # --- 默认：保留现场续跑 ---
 
 
+def test_rerun_retained_honors_thread_id_param(tmp_path, monkeypatch):
+    # P2-3：retained 重跑接受显式 thread_id，不再内部二次生成（单一线程 id）
+    ctx = make_ctx(tmp_path)
+    ctx.git.tips = {TARGET: ("origin/" + TARGET, "tip1")}
+    patch_cycle_lookup(monkeypatch, [cycle_record(RETAINED_CYCLE)])
+    wt = make_valid_worktree(ctx, TARGET, RETAINED_CYCLE)
+    wg = ok_worktree_git()
+    ctx.worktree_gits[str(wt)] = wg
+
+    final = run_rerun_command(ctx, target=TARGET, thread_id="rerun-custom-thread")
+
+    assert final["rerun"]["mode"] == "retained"
+    assert final["rerun"]["cycle_id"] == "rerun-custom-thread"
+
+
 def test_rerun_retained_reuses_worktree_and_updates_patch(tmp_path, monkeypatch):
     ctx = make_ctx(tmp_path)
     ctx.git.tips = {TARGET: ("origin/" + TARGET, "tip1")}
@@ -288,7 +303,7 @@ def test_rerun_cli_prints_result(monkeypatch, tmp_path, capsys):
     )
     monkeypatch.setattr(
         "bsa.cli.run_rerun_command",
-        lambda ctx, *, target, cycle, fresh, checkpointer: {
+        lambda ctx, *, target, cycle, fresh, checkpointer, thread_id=None: {
             "status": "REPORTED",
             "cycle_id": RETAINED_CYCLE,
             "rerun": {"mode": "retained", "cycle_id": RETAINED_CYCLE, "worktree": "/wt"},
@@ -316,7 +331,7 @@ def test_rerun_cli_dirty_reports_error(monkeypatch, tmp_path, capsys):
     )
     monkeypatch.setattr(
         "bsa.cli.run_rerun_command",
-        lambda ctx, *, target, cycle, fresh, checkpointer: {
+        lambda ctx, *, target, cycle, fresh, checkpointer, thread_id=None: {
             "stop": True,
             "reason": "dirty",
             "worktree": "/wt",
@@ -339,7 +354,7 @@ def test_rerun_cli_conclusion_now_included_exits_zero(monkeypatch, tmp_path, cap
     )
     monkeypatch.setattr(
         "bsa.cli.run_rerun_command",
-        lambda ctx, *, target, cycle, fresh, checkpointer: {
+        lambda ctx, *, target, cycle, fresh, checkpointer, thread_id=None: {
             "stop": True,
             "reason": "conclusion-now-included",
         },
@@ -361,7 +376,7 @@ def test_rerun_cli_manual_review_exits_zero_with_hint(monkeypatch, tmp_path, cap
     )
     monkeypatch.setattr(
         "bsa.cli.run_rerun_command",
-        lambda ctx, *, target, cycle, fresh, checkpointer: {
+        lambda ctx, *, target, cycle, fresh, checkpointer, thread_id=None: {
             "stop": True,
             "reason": "conclusion-manual-review",
         },
