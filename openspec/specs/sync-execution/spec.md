@@ -111,6 +111,13 @@ cherry-pick 冲突由 Conflict Agent 安全解决。
 - **则** 基于当前远端重建现场并先重判结论：若该 commit 已被合入（AlreadyIncluded/OutOfScope）则停止并提示
 - **且** 重判后仍需同步时才执行同步链路，不产空 patch
 
+#### Scenario: 重跑单一线程 id（P2-3）
+
+- **当** 调用 `bsa rerun <target>`
+- **则** retained 重跑生成**一个** rerun 线程 id，任务登记（register_start）与实际
+  checkpoint 线程一致
+- **且** fresh 重跑生成**一个** manual cycle id，登记与重建现场一致
+
 ### Requirement: 超期即弃
 
 超过当前周期的分支现场不再提供续做与推送，仅支持重新同步。
@@ -120,3 +127,14 @@ cherry-pick 冲突由 Conflict Agent 安全解决。
 - **当** 某分支属于上一周期或更早
 - **则** 其现场仅可只读查看（patch/日志），不提供续做/推送入口
 - **且** 处理方式为基于当前远端重新同步（`bsa rerun --fresh`），不存在旧现场重建/重放机制
+
+### Requirement: manual-scan 登记任务
+
+manual-scan 与每日周期统一进 tasks 表，cycle_id 一致。
+
+#### Scenario: manual-scan 登记（P2-7）
+
+- **当** 调用 `bsa manual-scan --since/--until`（或 `bsa run-cycle --since/--until`）
+- **则** 引擎登记 kind=cycle 任务（source=cli）
+- **且** 登记的 cycle_id 与 `run_cycle` 实际使用的 scan-* 周期 id 同源一致
+- **且** 周期终态按 fold 规则折叠到 tasks.state
