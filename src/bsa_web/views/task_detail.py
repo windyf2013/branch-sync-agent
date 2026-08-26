@@ -17,6 +17,7 @@
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi.responses import RedirectResponse
 
 from bsa_web import projection
 from bsa_web.auth import make_csrf, require_login
@@ -26,6 +27,21 @@ from bsa_web.views import detail
 router = APIRouter(prefix="/task", tags=["task_detail"])
 
 _SSH_STATUSES = ("FAILED", "PARTIAL", "MANUAL")
+_ACTIVE_STATES = ("queued", "running")
+
+
+def _active_task_id(db, cycle_id: str) -> int | None:
+    """cycle_id 下是否有活动任务（排队/执行中）。
+
+    详情页投影未就绪（cycle_id 已回写但 state.json 未落盘 / checkpoint 未含该分支）
+    时，若有活动任务则重定向到任务状态页，避免误 404 "目标分支不存在"。
+    """
+    row = db.execute(
+        "SELECT id FROM tasks WHERE cycle_id=? AND state IN ('queued','running') "
+        "ORDER BY id DESC LIMIT 1",
+        (cycle_id,),
+    ).fetchone()
+    return row["id"] if row is not None else None
 
 # 手动同步（manual-）与 retained 重跑线程（rerun-）的周期 id 前缀：
 # 这两类周期不写 cycle record（latest_completed_cycle 读不到），须显式放行推送。
@@ -52,9 +68,16 @@ def task_detail(
     csrf = make_csrf(settings.secret_key, user["username"])
     payload = projection.load_cycle(settings.log_dir, cycle_id)
     if payload is None:
+        # 周期投影不可用：任务仍在排队/执行（state.json 未落盘且 checkpoint 未就绪）
+        active_id = _active_task_id(request.app.state.db, cycle_id)
+        if active_id is not None:
+            return RedirectResponse(f"/tasks/{active_id}", status_code=303)
         raise HTTPException(status_code=404, detail="周期不存在或数据不可用")
     branch = (payload.get("branch_results") or {}).get(target)
     if branch is None:
+        active_id = _active_task_id(request.app.state.db, cycle_id)
+        if active_id is not None:
+            return RedirectResponse(f"/tasks/{active_id}", status_code=303)
         raise HTTPException(status_code=404, detail="目标分支不存在")
 
     # 按需读取各 commit build 日志前 N 行（复用 detail.target_detail 的读取逻辑）

@@ -31,9 +31,10 @@ def _busy_redirect() -> RedirectResponse:
 
 
 def _task_redirect(db, task_id: int) -> RedirectResponse:
-    """提交后跳转：cycle_id 已可用（极端同步完成）→ 任务详情页，否则任务状态页。"""
-    url = task_detail_url(db, task_id) or f"/tasks/{task_id}"
-    return RedirectResponse(url, status_code=303)
+    """提交后跳转任务状态页：详情页需要已完成投影（state.json），任务可能仍在排队/执行，
+    先落状态页（自动刷新，完成后自动跳详情），避免 cycle_id 已回写但投影未就绪时
+    详情页误 404 "目标分支不存在"。"""
+    return RedirectResponse(f"/tasks/{task_id}", status_code=303)
 
 
 @router.post("/sync", dependencies=[Depends(require_csrf)])

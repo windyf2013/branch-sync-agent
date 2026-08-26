@@ -25,4 +25,14 @@
   {% endif %}
   </div>
 </section>
+{% if task.state in ("queued", "running") %}
+<script>
+setTimeout(function () { window.location.reload(); }, 2000);
+</script>
+{% elif detail_url %}
+<script>
+// 任务已完成且投影就绪 → 自动进入详情页（避免手动点击时投影未就绪误 404）
+window.location.href = "{{ detail_url }}";
+</script>
+{% endif %}
 {% endblock %}

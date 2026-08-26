@@ -634,6 +634,54 @@ class TestTaskDetail:
         r = client.get(f"/task/{_CYCLE}/nope")
         assert r.status_code == 404
 
+    def test_detail_running_task_redirects_to_status_page(self, tmp_path, monkeypatch):
+        # 竞态回归：cycle_id 已回写但 state.json 未落盘（任务仍在跑），详情页投影未就绪
+        # → 重定向到任务状态页，不再 404 "目标分支不存在"
+        app = _make_app(tmp_path)
+        client = _client(app)
+        _login(client)
+        payload = _payload(branch_results={})  # 投影尚未包含目标分支
+        _mount_cycle(monkeypatch, payload)
+        app.state.db.execute(
+            "INSERT INTO tasks(kind, user, target, cycle_id, state, created_at) "
+            "VALUES ('sync','alice','feat/x',?,'running',?)",
+            (_CYCLE, "2026-08-25T09:00:00+00:00"),
+        )
+        app.state.db.commit()
+        task_id = app.state.db.execute(
+            "SELECT id FROM tasks WHERE cycle_id=?", (_CYCLE,)
+        ).fetchone()["id"]
+
+        r = client.get(f"/task/{_CYCLE}/feat/x")
+
+        assert r.status_code == 303
+        assert r.headers["location"] == f"/tasks/{task_id}"
+
+    def test_detail_payload_none_running_task_redirects_to_status_page(
+        self, tmp_path, monkeypatch
+    ):
+        # payload 为 None（state.json 未落盘且无 checkpoint）但有 running 任务 → 重定向
+        app = _make_app(tmp_path)
+        client = _client(app)
+        _login(client)
+        monkeypatch.setattr("bsa_web.projection.list_cycles", lambda log_dir: [])
+        monkeypatch.setattr("bsa_web.projection.latest_completed_cycle", lambda log_dir: None)
+        monkeypatch.setattr("bsa_web.projection.load_cycle", lambda log_dir, cid: None)
+        app.state.db.execute(
+            "INSERT INTO tasks(kind, user, target, cycle_id, state, created_at) "
+            "VALUES ('sync','alice','feat/x',?,'queued',?)",
+            (_CYCLE, "2026-08-25T09:00:00+00:00"),
+        )
+        app.state.db.commit()
+        task_id = app.state.db.execute(
+            "SELECT id FROM tasks WHERE cycle_id=?", (_CYCLE,)
+        ).fetchone()["id"]
+
+        r = client.get(f"/task/{_CYCLE}/feat/x")
+
+        assert r.status_code == 303
+        assert r.headers["location"] == f"/tasks/{task_id}"
+
     def test_detail_unauthenticated_redirects_to_login(self, tmp_path, monkeypatch):
         app = _make_app(tmp_path)
         client = _client(app)

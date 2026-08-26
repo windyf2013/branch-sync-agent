@@ -264,23 +264,8 @@
       });
 
       function redirectAfterSubmit(taskId, attemptsLeft) {
-        fetch("/api/tasks/" + taskId, {
-          headers: { "Accept": "application/json" },
-        }).then(function (r) {
-          return r.json();
-        }).then(function (task) {
-          if (task && task.cycle_id && task.target) {
-            window.location.href = "/task/" + task.cycle_id + "/" + task.target;
-          } else if (attemptsLeft > 0) {
-            setTimeout(function () {
-              redirectAfterSubmit(taskId, attemptsLeft - 1);
-            }, 2000);
-          } else {
-            window.location.href = "/tasks/" + taskId;
-          }
-        }).catch(function () {
-          window.location.href = "/tasks/" + taskId;
-        });
+        // 详情页需已完成投影（state.json）；先落任务状态页，由其自动刷新并在完成后跳详情。
+        window.location.href = "/tasks/" + taskId;
       }
 
       submitBtn.addEventListener("click", function () {
