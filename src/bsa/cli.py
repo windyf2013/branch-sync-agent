@@ -312,11 +312,29 @@ def _cmd_override(args: argparse.Namespace) -> int:
     except Exception as exc:
         print(f"配置错误: {exc}", file=sys.stderr)
         return 2
+    # 尝试从 repo 查 message + patch_id，写 fingerprint 键（决策 5.1：rebase 后
+    # sha 漂移仍命中人工覆盖）。查询失败不阻塞 override，只写 sha。
+    message = patch_id = None
+    try:
+        from bsa.executor.subprocess import SubprocessExecutor
+        from bsa.executor.whitelist import WhitelistExecutor
+        from bsa.git.service import GitService
+
+        git = GitService(
+            executor=WhitelistExecutor(SubprocessExecutor()),
+            repo_path=Path(settings.repo_path),
+        )
+        _, _, message = git.commit_metadata(args.sha)
+        patch_id = git.patch_id(args.sha)
+    except Exception:  # noqa: BLE001 — 查询失败仅降级，不阻塞人工覆盖
+        message = patch_id = None
     entry = apply_override(
         settings.log_dir,
         args.sha,
         is_bug_fix=args.is_bug_fix,
         risk=args.risk,
+        message=message,
+        patch_id=patch_id,
     )
     print(json.dumps(entry, ensure_ascii=False, indent=2))
     return 0

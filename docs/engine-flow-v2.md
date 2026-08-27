@@ -177,13 +177,15 @@ branch.md section 标题 —— 含"主分支" → 目标，含"业务分支" �
 ### 5.2 同步台账 ledger（append-only，已实现）
 
 `{log_dir}/ledger.json`，每行一条：
-`{patch_id, target_branch, source_sha, status(synced), ts}`。
+`{patch_id, target_branch, source_sha, status(synced/failed/blocked/review), ts, reason?}`。
 
 - 检测时按 `(patch_id, target_branch)` 查台账（`is_synced`）：synced → AlreadyIncluded，
   跳过快照构建与相似度/LLM 判定，跨天/跨周期幂等（已接入 `sync_decision`）
-- `generate_patch` 对成功同步的 commit 记录 synced（append-only）
-- **全操作记录 / LLM 修改 diff 归档**：规划中（当前仅 synced 一条；failed/blocked/review
-  与 llm_diffs 归档尚未实现）
+- 写入时机：`generate_patch` 对成功 commit 记 synced、失败 commit 记 failed；
+  `baseline_build` 基线失败 → 该分支批次全部记 blocked
+- `record_status` 通用记录（含 reason）；仅 synced 参与幂等短路，failed/blocked 供审计
+- **LLM 修改 diff 归档**：规划中（当前 ledger 不含 llm_diffs；冲突/build 修复的
+  diff 由独立报告落盘，未并入台账）
 
 ### 5.3 互斥（flock，部分实现）
 

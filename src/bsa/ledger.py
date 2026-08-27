@@ -26,20 +26,28 @@ def _now_iso() -> str:
     return datetime.now(UTC).isoformat()
 
 
-def record_synced(
+def record_status(
     log_dir: str | Path,
     patch_id: str,
     target_branch: str,
     source_sha: str,
+    status: str,
+    reason: str | None = None,
 ) -> None:
-    """追加一条 synced 记录（幂等：重复调用不报错，可能重复写但 is_synced 仍 True）。"""
-    entry = {
+    """追加一条台账记录（append-only，决策 5.2）。
+
+    ``status`` ∈ synced / failed / blocked / review；重复调用不报错（is_synced
+    只看 synced 记录）。
+    """
+    entry: dict[str, str] = {
         "patch_id": patch_id,
         "target_branch": target_branch,
         "source_sha": source_sha,
-        "status": "synced",
+        "status": status,
         "ts": _now_iso(),
     }
+    if reason:
+        entry["reason"] = reason
     path = _ledger_path(log_dir)
     path.parent.mkdir(parents=True, exist_ok=True)
     with _lock:
@@ -55,6 +63,16 @@ def record_synced(
             if lines and not lines[-1].endswith("\n"):
                 fh.write("\n")
             fh.write(json.dumps(entry, ensure_ascii=False) + "\n")
+
+
+def record_synced(
+    log_dir: str | Path,
+    patch_id: str,
+    target_branch: str,
+    source_sha: str,
+) -> None:
+    """追加一条 synced 记录（record_status 便捷封装）。"""
+    record_status(log_dir, patch_id, target_branch, source_sha, "synced")
 
 
 def is_synced(log_dir: str | Path, patch_id: str, target_branch: str) -> bool:

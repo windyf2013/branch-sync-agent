@@ -75,6 +75,35 @@ def test_holds_global_flock_while_writing(tmp_path):
             apply_override(tmp_path, sha, is_bug_fix=True, timeout=0.2)
 
 
+def test_writes_fingerprint_key_when_provided(tmp_path):
+    from bsa.rules.classify import compute_fingerprint
+
+    sha = "a1b2c3d4e5f6"
+    fp = compute_fingerprint("[BUG] fix null deref\n\nrefactor it", "pid123")
+    apply_override(
+        tmp_path,
+        sha,
+        is_bug_fix=True,
+        message="[BUG] fix null deref\n\nrefactor it",
+        patch_id="pid123",
+    )
+
+    data = _read(tmp_path)
+    assert data[sha]["is_bug_fix"] is True
+    assert data[sha]["recognition_source"] == "manual-override"
+    # fingerprint 键存在，rebase 后 sha 漂移仍命中
+    assert data[f"fp:{fp}"] == data[sha]
+
+
+def test_no_fingerprint_key_without_patch_id(tmp_path):
+    sha = "a1b2c3d4e5f6"
+    apply_override(tmp_path, sha, is_bug_fix=True)
+
+    data = _read(tmp_path)
+    assert set(data) == {sha}
+    assert "fp:" not in "".join(data.keys())
+
+
 def test_entry_readable_by_sync_decision_agent(tmp_path):
     from bsa.agents.sync_decision import SyncDecisionAgent
 

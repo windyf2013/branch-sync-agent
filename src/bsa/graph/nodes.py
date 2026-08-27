@@ -752,6 +752,21 @@ def baseline_build(state: dict, ctx: GraphContext) -> dict:
             fix_diff=None,
         )
         if not ok:
+            # 台账记录（决策 5.2）：基线失败 → 该分支批次 commit 全部 blocked。
+            from bsa.ledger import record_status
+
+            by_sha = {c.sha: c for c in state.get("detected_commits") or []}
+            for sha in (state.get("batches") or {}).get(target, []):
+                src = by_sha.get(sha)
+                if src and src.patch_id:
+                    record_status(
+                        Path(ctx.settings.log_dir),
+                        src.patch_id,
+                        target,
+                        sha,
+                        "blocked",
+                        reason=f"baseline build failed on {model}",
+                    )
             results[target] = branch.model_copy(
                 update={
                     "baseline": baseline,
@@ -863,14 +878,20 @@ def generate_patch(state: dict, ctx: GraphContext) -> dict:
             "status": _final_branch_status(branch.commits),
         }
     )
-    # 台账记录（决策 5.2）：成功同步的 commit 按 (patch_id, target) 记 synced，
-    # 供后续周期检测短路 AlreadyIncluded（跨天幂等）。
+    # 台账记录（决策 5.2）：成功同步的 commit 记 synced，失败的记 failed，
+    # 按 (patch_id, target) 落台账（跨天幂等 + 审计）。
     by_sha = {commit.sha: commit for commit in state.get("detected_commits") or []}
-    from bsa.ledger import record_synced
+    from bsa.ledger import record_status, record_synced
 
+    log_dir = Path(ctx.settings.log_dir)
     for result in branch.commits:
-        if _commit_ok(result) and (src := by_sha.get(result.sha)) and src.patch_id:
-            record_synced(Path(ctx.settings.log_dir), src.patch_id, target, result.sha)
+        src = by_sha.get(result.sha)
+        if not (src and src.patch_id):
+            continue
+        if _commit_ok(result):
+            record_synced(log_dir, src.patch_id, target, result.sha)
+        else:
+            record_status(log_dir, src.patch_id, target, result.sha, "failed")
     return {"branch_results": results, "status": "PATCHED"}
 
 
