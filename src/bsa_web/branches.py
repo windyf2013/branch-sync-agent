@@ -5,8 +5,11 @@ branch.md 采用多仓库清单（inventory）格式：
     ## 1 RCIOS代码库
     - 路径：rcios
 
-    ### 1.1 组网产品分支
-    - br_v4.33_5200_CU_develop_20260518
+    ### 1.1 4.34 主分支
+    - br_v4.34_develop_20260130
+
+    ### 1.2 4.34 业务分支
+    - br_v4.34_develop_fttr_20260811
 
 仓库归属由 ``- 路径：<repo>`` 标记界定；RCIOS 仓库路径为 ``rcios``。
 本模块只返回 RCIOS 仓库下的分支名（产品线小节内 bullet），供 SSR 渲染。

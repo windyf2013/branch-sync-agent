@@ -22,6 +22,7 @@ class TaskState(TypedDict):
     classifications: dict[str, SyncDecision]
     decisions: dict[str, dict[str, Conclusion4]]
     batches: dict[str, list[str]]
+    build_models: dict[str, list[str]]
     current_target: str | None
     current_commit: str | None
     branch_results: dict[str, BranchResult]

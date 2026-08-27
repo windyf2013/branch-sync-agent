@@ -7,6 +7,7 @@ from bsa.build.runner import BuildResult, BuildRunner
 from bsa.config.settings import Settings
 from bsa.executor import CompletedProcess, FakeExecutor
 from bsa.executor.exceptions import InfrastructureError
+from bsa.rules.build_rules import BuildType
 
 SPEC_LOG = (
     Path(__file__).resolve().parent.parent / "spec" / "rcios-compiling-log-info.md"
@@ -195,6 +196,42 @@ class TestBuildCommit:
             "cd /workspace/rcios/build/platform/RTL9617C "
             "&& ./RTL9617C_build_cmcc.sh 2600"
         ) in inner
+
+    def test_explicit_build_type_selects_custom_script(self, tmp_path):
+        executor = FakeExecutor([ok(), ok(), ok()])
+        runner = BuildRunner(
+            executor,
+            make_settings(tmp_path),
+            cycle_id="c1",
+            build_types={"5200B": BuildType(script="X86.sh", product="5200B")},
+        )
+        runner.build_commit(tmp_path / "wt", "5200B", clean=False, module=None)
+        inner = executor.calls[1][0][-1]
+        assert "./X86.sh 5200B" in inner
+
+    def test_build_streams_docker_output_to_log_path(self, tmp_path):
+        def respond(args, kwargs):
+            if kwargs.get("stream_to"):
+                Path(kwargs["stream_to"]).write_text(
+                    "streamed build output", encoding="utf-8"
+                )
+            return CompletedProcess(returncode=0, stdout="", stderr="")
+
+        executor = FakeExecutor([ok(), respond, ok()])
+        runner = BuildRunner(executor, make_settings(tmp_path), cycle_id="c1")
+        log_path = tmp_path / "logs" / "build.log"
+        runner.build_commit(
+            tmp_path / "wt", "5200", clean=False, module=None, log_path=log_path
+        )
+        assert log_path.read_text(encoding="utf-8") == "streamed build output"
+        assert executor.calls[1][1]["stream_to"] == str(log_path)
+
+    def test_unknown_model_without_build_types_legacy_inference(self, tmp_path):
+        executor = FakeExecutor([ok(), ok(), ok()])
+        runner = BuildRunner(executor, make_settings(tmp_path), cycle_id="c1")
+        runner.build_commit(tmp_path / "wt", "2600_CMCC", clean=False, module=None)
+        inner = executor.calls[1][0][-1]
+        assert "./RTL9617C_build_cmcc.sh 2600" in inner
 
     def test_no_sudo_prefix(self, tmp_path):
         executor = FakeExecutor([ok(), ok(), ok()])

@@ -179,11 +179,59 @@ def test_forbidden_path_returns_none_without_llm_or_git(tmp_path: Path) -> None:
     assert git.status_calls == 0
 
 
-def test_non_utf8_conflict_file_returns_none_with_clear_reason(tmp_path: Path) -> None:
-    # RCIOS 源文件含 GBK 中文注释（非 UTF-8 字节）：不得崩溃，返回 None 转人工并记录清晰原因
+def _gbk_resolution() -> ConflictResolution:
+    return ConflictResolution(
+        files=["src/cell_lib.c"],
+        diff=(
+            "diff --git a/src/cell_lib.c b/src/cell_lib.c\n"
+            "--- a/src/cell_lib.c\n"
+            "+++ b/src/cell_lib.c\n"
+            "@@ -1,7 +1,4 @@\n"
+            " int x;\n"
+            " /* 项目中文注释 */\n"
+            "-<<<<<<< HEAD\n"
+            " int x = 0;\n"
+            "-=======\n"
+            "-int x = 1;\n"
+            "->>>>>>> develop\n"
+        ),
+        agent_reason="keep HEAD side",
+    )
+
+
+def test_gbk_conflict_file_resolved_losslessly(tmp_path: Path) -> None:
+    # RCIOS 源文件含 GBK 中文注释（非 UTF-8 字节）：conflict.py 自行处理，
+    # LLM 解决冲突后非冲突行的 GBK 注释字节必须无损保留
+    gbk_comment = "/* 项目中文注释 */".encode("gbk")
+    conflicted = (
+        b"int x;\n"
+        + gbk_comment
+        + b"\n<<<<<<< HEAD\nint x = 0;\n=======\nint x = 1;\n>>>>>>> develop\n"
+    )
+    target = tmp_path / "src" / "cell_lib.c"
+    target.parent.mkdir(parents=True)
+    target.write_bytes(conflicted)
+    git = FakeGit(tmp_path, status_text="UU src/cell_lib.c\n")
+    llm = FakeLLM([_gbk_resolution()])
+    agent = ConflictAgent(llm, git, make_safety())
+
+    result = agent.resolve(make_commit(), ["src/cell_lib.c"])
+
+    assert result is not None
+    assert len(llm.calls) == 1
+    data = target.read_bytes()
+    assert b"<<<<<<<" not in data
+    assert b"=======" not in data
+    assert b">>>>>>>" not in data
+    assert gbk_comment in data
+    assert data == b"int x;\n" + gbk_comment + b"\nint x = 0;\n"
+
+
+def test_undecodable_conflict_file_returns_none_with_clear_reason(tmp_path: Path) -> None:
+    # UTF-8 与 GB18030 均无法解码的真二进制：返回 None 转人工并记录清晰原因
     path = tmp_path / "src" / "net.c"
     path.parent.mkdir(parents=True)
-    path.write_bytes(b"\xb2\xbb\xca\xc7\xd6\xd0\xce\xc4")  # GBK 字节
+    path.write_bytes(b"\xff\xff")
     git = FakeGit(tmp_path)
     llm = FakeLLM()
     agent = ConflictAgent(llm, git, make_safety())
@@ -194,7 +242,6 @@ def test_non_utf8_conflict_file_returns_none_with_clear_reason(tmp_path: Path) -
     assert agent.last_reason is not None and "UTF-8" in agent.last_reason
     assert "转人工" in agent.last_reason
     assert llm.calls == []
-    assert git.snapshots == []
     assert git.staged == []
 
 
@@ -261,8 +308,6 @@ def test_retries_restores_then_returns_none_after_max_attempts(tmp_path: Path) -
 
     assert result is None
     assert len(llm.calls) == 3
-    assert len(git.snapshots) == 3
-    assert len(git.restored) == 3
     assert git.staged == []
     assert (tmp_path / "src/net.c").read_text(encoding="utf-8") == CONFLICT_TEXT
 
@@ -294,8 +339,8 @@ def test_out_of_bounds_file_in_resolution_rejected(tmp_path: Path) -> None:
 
     assert result is None
     assert git.staged == []
-    assert len(git.restored) == 3
     assert not (tmp_path / "src/evil.c").exists()
+    assert (tmp_path / "src/net.c").read_text(encoding="utf-8") == CONFLICT_TEXT
 
 
 def test_modified_file_outside_conflict_files_rejected(tmp_path: Path) -> None:
@@ -308,7 +353,7 @@ def test_modified_file_outside_conflict_files_rejected(tmp_path: Path) -> None:
 
     assert result is None
     assert git.staged == []
-    assert len(git.restored) == 3
+    assert (tmp_path / "src/net.c").read_text(encoding="utf-8") == CONFLICT_TEXT
 
 
 def test_diff_check_failure_rejected(tmp_path: Path) -> None:
@@ -321,7 +366,7 @@ def test_diff_check_failure_rejected(tmp_path: Path) -> None:
 
     assert result is None
     assert git.staged == []
-    assert len(git.restored) == 3
+    assert (tmp_path / "src/net.c").read_text(encoding="utf-8") == CONFLICT_TEXT
 
 
 def test_unresolved_conflict_file_causes_retry(tmp_path: Path) -> None:
@@ -337,8 +382,8 @@ def test_unresolved_conflict_file_causes_retry(tmp_path: Path) -> None:
     result = agent.resolve(make_commit(), ["src/net.c", "src/udp.c"])
 
     assert result is None
-    assert len(git.restored) == 3
     assert git.staged == []
+    assert (tmp_path / "src/net.c").read_text(encoding="utf-8") == CONFLICT_TEXT
     assert (tmp_path / "src/udp.c").read_text(encoding="utf-8") == CONFLICT_TEXT
 
 
@@ -369,7 +414,7 @@ def test_worktree_modified_file_outside_conflict_rejected(tmp_path: Path) -> Non
 
     assert result is None
     assert git.staged == []
-    assert len(git.restored) == 3
+    assert (tmp_path / "src/net.c").read_text(encoding="utf-8") == CONFLICT_TEXT
 
 
 def test_apply_patch_rejects_context_mismatch() -> None:
@@ -434,7 +479,6 @@ def test_context_mismatch_diff_causes_invalid_attempt(tmp_path: Path) -> None:
 
     assert result is None
     assert git.staged == []
-    assert len(git.restored) == 3
     assert (tmp_path / "src/net.c").read_text(encoding="utf-8") == CONFLICT_TEXT
 
 
@@ -447,7 +491,6 @@ def test_infrastructure_error_during_diff_check_rolls_back(tmp_path: Path) -> No
     result = agent.resolve(make_commit(), CONFLICT_FILES)
 
     assert result is None
-    assert len(git.restored) == 3
     assert git.staged == []
     assert (tmp_path / "src/net.c").read_text(encoding="utf-8") == CONFLICT_TEXT
 
@@ -461,7 +504,6 @@ def test_infrastructure_error_during_status_rolls_back(tmp_path: Path) -> None:
     result = agent.resolve(make_commit(), CONFLICT_FILES)
 
     assert result is None
-    assert len(git.restored) == 3
     assert git.staged == []
     assert (tmp_path / "src/net.c").read_text(encoding="utf-8") == CONFLICT_TEXT
 
@@ -475,7 +517,6 @@ def test_infrastructure_error_during_stage_rolls_back(tmp_path: Path) -> None:
     result = agent.resolve(make_commit(), CONFLICT_FILES)
 
     assert result is None
-    assert len(git.restored) == 3
     assert git.staged == []
     assert (tmp_path / "src/net.c").read_text(encoding="utf-8") == CONFLICT_TEXT
 
@@ -494,5 +535,4 @@ def test_oversized_resolution_diff_is_invalid_attempt(tmp_path: Path) -> None:
 
     assert result is None
     assert git.staged == []
-    assert len(git.restored) == 3
     assert (tmp_path / "src/net.c").read_text(encoding="utf-8") == content

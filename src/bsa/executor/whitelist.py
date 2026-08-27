@@ -39,10 +39,11 @@ class WhitelistExecutor:
         cwd: str | Path | None = None,
         timeout_sec: int = 300,
         env: dict[str, str] | None = None,
+        stream_to: str | Path | None = None,
     ) -> CompletedProcess:
         if not args or args[0] not in self.ALLOWED_GIT:
             cmd = args[0] if args else ""
             raise SafetyViolation(f"git command not whitelisted: {cmd!r}")
         return self.inner.run(
-            ["git", *args], cwd=cwd, timeout_sec=timeout_sec, env=env
+            ["git", *args], cwd=cwd, timeout_sec=timeout_sec, env=env, stream_to=stream_to
         )

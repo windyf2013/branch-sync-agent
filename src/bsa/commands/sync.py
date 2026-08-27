@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import os
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 
 from bsa.domain.models import CommitInfo, Conclusion4, SyncDecision
@@ -15,8 +15,13 @@ from bsa.graph.nodes import (
 )
 from bsa.graph.single_target import build_single_target_workflow
 from bsa.graph.workflow import thread_config
-from bsa.rules import classify_severity, extract_symbols, resolve_branch_type
-from bsa.rules.branch_md import BranchRef
+from bsa.rules import (
+    classify_severity,
+    extract_symbols,
+    resolve_branch_type,
+    resolve_build_models,
+)
+from bsa.rules.branch_md import BranchRef, first_occurrence_sections, parse_branch_md
 from bsa.scheduler.cycle import _initial_state
 
 
@@ -55,9 +60,26 @@ def _commit_info_from_git(ctx: GraphContext, source: str, sha: str) -> CommitInf
     )
 
 
+def _committed_at_key(committed_at: str) -> tuple[int, object]:
+    """committed_at 排序键：ISO 解析后按 UTC 比较；解析失败退化字符串比较。"""
+    try:
+        dt = datetime.fromisoformat(committed_at)
+        if dt.tzinfo is not None:
+            dt = dt.astimezone(UTC).replace(tzinfo=None)
+        return (0, dt)
+    except (TypeError, ValueError):
+        return (1, committed_at)
+
+
 def build_sha_batch(ctx: GraphContext, source: str, shas: list[str]) -> list[CommitInfo]:
-    """--sha 直同步：按用户给定 sha 构造 batch，不做决策直接同步。"""
-    return [_commit_info_from_git(ctx, source, sha) for sha in shas]
+    """--sha 直同步：按用户给定 sha 构造 batch，不做决策直接同步。
+
+    批次按合入时间（committed_at 从旧到新）重排，与方案"按合入顺序逐个
+    cherry-pick"一致；web 展示顺序不变，仅在执行前重排。
+    """
+    batch = [_commit_info_from_git(ctx, source, sha) for sha in shas]
+    batch.sort(key=lambda c: _committed_at_key(c.committed_at))
+    return batch
 
 
 def _detect_source_commits(
@@ -199,6 +221,19 @@ def build_source_target_batch(
     return batch, conclusions
 
 
+def resolve_target_models(ctx: GraphContext, target: str) -> list[str]:
+    """目标分支的编译型号列表（产品线 = branch.md section）。
+
+    ``build_rules`` 未注入时回退 safety_rules 全局默认；已注入但产品线未配置
+    或分支不在 branch.md → 抛 BuildConfigError（任务报错停止，不静默用错脚本）。
+    """
+    if ctx.build_rules is None:
+        return ctx.safety.required_models()
+    text = Path(ctx.settings.branch_file).read_text(encoding="utf-8")
+    doc = parse_branch_md(text, branch_mapping=ctx.decision_rules.branch_mapping)
+    return resolve_build_models(first_occurrence_sections(doc), target, ctx.build_rules)
+
+
 def run_sync_command(
     ctx: GraphContext,
     *,
@@ -218,6 +253,7 @@ def run_sync_command(
     """
     if not ctx.safety.check_sync_branch(target):
         raise SafetyViolation(f"目标分支 {target} 命中禁止同步清单，拒绝同步。")
+    models = resolve_target_models(ctx, target)
     initial = _initial_state(cycle_id)
     initial.update(
         {
@@ -231,6 +267,7 @@ def run_sync_command(
                 for commit in batch
             },
             "batches": {target: [commit.sha for commit in batch]},
+            "build_models": {target: models},
             "current_target": target,
         }
     )

@@ -24,6 +24,7 @@ from bsa.graph.nodes import (
     GraphContext,
     _derive_window,
     _to_analysis,
+    baseline_build,
     build,
     cherry_pick,
     default_window,
@@ -48,10 +49,14 @@ DEVELOP = "br_v4.33_5200_CU_develop_20260518"
 TARGET = "br_v4.33_5200_CU_develop_release_p360_20260625"
 
 BRANCH_MD = f"""# 分支清单
+## 1 RCIOS代码库
+- 路径：rcios
 
-## 组网
-- {DEVELOP}
+### 1.1 4.34 主分支
 - {TARGET}
+
+### 1.2 4.34 业务分支
+- {DEVELOP}
 """
 
 SOURCE_FIX_TEXT = """#include <stdio.h>
@@ -273,11 +278,18 @@ class FakeSyncDecisionAgent:
 
 
 class FakeRunner:
-    def __init__(self, success: bool = True) -> None:
+    def __init__(self, success: bool = True, *, success_until: int | None = None) -> None:
         self.success = success
+        self.success_until = success_until
         self.build_calls: list[dict] = []
 
+    def _succeeded(self, prior_calls: int) -> bool:
+        if self.success_until is None:
+            return self.success
+        return prior_calls < self.success_until
+
     def build_commit(self, worktree, model, *, clean, module=None, log_path=None):
+        prior_calls = len(self.build_calls)
         self.build_calls.append(
             {
                 "worktree": worktree,
@@ -287,12 +299,13 @@ class FakeRunner:
                 "log_path": log_path,
             }
         )
+        ok = self._succeeded(prior_calls)
         return BuildResult(
             model=model,
-            returncode=0 if self.success else 1,
+            returncode=0 if ok else 1,
             log_path=log_path or Path("build.log"),
-            succeeded=self.success,
-            errors=[] if self.success else ["compile error"],
+            succeeded=ok,
+            errors=[] if ok else ["compile error"],
         )
 
     def is_success(self, result: BuildResult) -> bool:
@@ -598,7 +611,7 @@ def test_detect_commits_populates_commits_and_classifications(tmp_path):
     assert [c.sha for c in update["detected_commits"]] == ["a1", "a2"]
     first = update["detected_commits"][0]
     assert first.source_branch == DEVELOP
-    assert first.homologous_section == "组网"
+    assert first.homologous_section == "4.34"
     assert first.issue_ids == ["CQ1"]
     assert first.patch_id == "pid1"
     assert update["classifications"]["a1"].is_bug_fix is True
@@ -1012,6 +1025,28 @@ def test_prepare_worktree_reuses_existing_worktree(tmp_path):
     assert ctx.worktree_path == worktree_path
 
 
+def test_prepare_worktree_preserves_existing_branch_progress(tmp_path):
+    # resume 幂等：复用已建好的 worktree 时，不能清空已算好的 baseline/commits。
+    ctx = make_ctx(tmp_path)
+    git = ctx.git
+    git.tips = {TARGET: ("origin/" + TARGET, "tip1")}
+    worktree_path = Path(ctx.settings.worktree_root) / f"{TARGET}-cycle-20260101"
+    worktree_path.mkdir(parents=True)
+    gitdir = worktree_path / ".gitdir"
+    gitdir.mkdir()
+    (worktree_path / ".git").write_text(f"gitdir: {gitdir}\n", encoding="utf-8")
+    prior = branch_result(TARGET, commits=[commit_result("a1")])
+    prior.worktree_path = str(worktree_path)
+    prior.baseline = {"RTL9617C": failed_outcome()}
+    state = base_state(current_target=TARGET, branch_results={TARGET: prior})
+
+    update = prepare_worktree(state, ctx)
+
+    kept = update["branch_results"][TARGET]
+    assert kept.baseline is not None
+    assert kept.commits == [commit_result("a1")]
+
+
 def test_prepare_worktree_rebuilds_invalid_existing_worktree(tmp_path):
     # 残缺 worktree（.git 指向不存在的 gitdir）→ 删除重建（真机测试:
     # 残留目录复用后 cherry_pick 报 "not a git repository"）
@@ -1135,7 +1170,8 @@ def test_resolve_conflict_records_last_reason_into_errors(tmp_path):
     ctx.worktree_gits[str(Path("/wt"))] = wg
     ctx.conflict_agent.resolution = None
     ctx.conflict_agent.last_reason = (
-        "冲突文件 plat/demo.c 含非 UTF-8 编码内容，无法安全自动解决，转人工处理"
+        "冲突文件 plat/demo.c 编码无法识别（非 UTF-8/GBK 文本），"
+        "无法安全自动解决，转人工处理"
     )
     state = base_state(
         current_target=TARGET,
@@ -1156,10 +1192,92 @@ def test_resolve_conflict_records_last_reason_into_errors(tmp_path):
     assert "UTF-8" in update["errors"]["resolve_conflict"].error
 
 
+# --- baseline_build ---
+
+
+def test_baseline_build_success_records_baseline(tmp_path):
+    ctx = make_ctx(tmp_path)
+    ctx.runner = FakeRunner(success=True)
+    ctx.worktree_path = Path("/wt")
+    ctx.safety = FakeSafety(models=("RTL9617C",))
+    state = base_state(
+        current_target=TARGET,
+        build_models={TARGET: ["RTL9617C"]},
+        branch_results={TARGET: branch_result(TARGET)},
+    )
+
+    update = baseline_build(state, ctx)
+
+    assert ctx.runner.build_calls[0]["clean"] is True
+    assert ctx.runner.build_calls[0]["worktree"] == Path("/wt")
+    assert ctx.runner.build_calls[0]["model"] == "RTL9617C"
+    branch = update["branch_results"][TARGET]
+    assert branch.baseline["RTL9617C"].status == "OK"
+    assert update["status"] == "BASELINE_OK"
+
+
+def test_baseline_build_failure_marks_branch_failed(tmp_path):
+    ctx = make_ctx(tmp_path)
+    ctx.runner = FakeRunner(success=False)
+    ctx.worktree_path = Path("/wt")
+    ctx.safety = FakeSafety(models=("RTL9617C",))
+    state = base_state(
+        current_target=TARGET,
+        build_models={TARGET: ["RTL9617C"]},
+        branch_results={TARGET: branch_result(TARGET)},
+    )
+
+    update = baseline_build(state, ctx)
+
+    branch = update["branch_results"][TARGET]
+    assert branch.status == "FAILED"
+    assert branch.baseline["RTL9617C"].status == "FAILED"
+    assert "baseline build failed" in (branch.stop_reason or "")
+    assert update["status"] == "BASELINE_FAILED"
+
+
+def test_baseline_build_idempotent_skips_rebuild(tmp_path):
+    ctx = make_ctx(tmp_path)
+    ctx.runner = FakeRunner(success=True)
+    ctx.worktree_path = Path("/wt")
+    ctx.safety = FakeSafety(models=("RTL9617C",))
+    prior = branch_result(TARGET)
+    prior.baseline = {"RTL9617C": failed_outcome()}
+    state = base_state(
+        current_target=TARGET,
+        build_models={TARGET: ["RTL9617C"]},
+        branch_results={TARGET: prior},
+    )
+
+    update = baseline_build(state, ctx)
+
+    assert ctx.runner.build_calls == []
+    assert update["status"] == "BASELINE_OK"
+
+
+def test_baseline_build_multiple_models_serial(tmp_path):
+    ctx = make_ctx(tmp_path)
+    ctx.runner = FakeRunner(success=True)
+    ctx.worktree_path = Path("/wt")
+    ctx.safety = FakeSafety(models=("RTL9617C", "2600"))
+    state = base_state(
+        current_target=TARGET,
+        build_models={TARGET: ["RTL9617C", "2600"]},
+        branch_results={TARGET: branch_result(TARGET)},
+    )
+
+    update = baseline_build(state, ctx)
+
+    assert [c["model"] for c in ctx.runner.build_calls] == ["RTL9617C", "2600"]
+    branch = update["branch_results"][TARGET]
+    assert branch.baseline["RTL9617C"].status == "OK"
+    assert branch.baseline["2600"].status == "OK"
+
+
 # --- build ---
 
 
-def test_build_success_records_outcome_and_clean_first_in_batch(tmp_path):
+def test_build_success_records_outcome_and_incremental(tmp_path):
     ctx = make_ctx(tmp_path)
     ctx.runner = FakeRunner(success=True)
     ctx.worktree_path = Path("/wt")
@@ -1179,7 +1297,8 @@ def test_build_success_records_outcome_and_clean_first_in_batch(tmp_path):
     update = build(state, ctx)
 
     call = ctx.runner.build_calls[0]
-    assert call["clean"] is True
+    # 基线编译已在 prepare 后全量验证，批次首个 commit 也走增量编译（决策 V2）。
+    assert call["clean"] is False
     assert call["worktree"] == Path("/wt")
     assert call["model"] == "RTL9617C"
     assert call["log_path"] == (
@@ -1188,6 +1307,30 @@ def test_build_success_records_outcome_and_clean_first_in_batch(tmp_path):
     outcome = update["branch_results"][TARGET].commits[0].build["RTL9617C"]
     assert outcome.status == "OK"
     assert update["status"] == "BUILD_OK"
+
+
+def test_build_public_file_triggers_clean(tmp_path):
+    # 决策 2：改动公共文件（component/ 等）→ 全量编译降级，基线编译不豁免。
+    ctx = make_ctx(tmp_path)
+    ctx.runner = FakeRunner(success=True)
+    ctx.worktree_path = Path("/wt")
+    ctx.is_public_file = lambda path: True
+    state = base_state(
+        current_target=TARGET,
+        current_commit="a1",
+        detected_commits=[commit("a1", changed_files=["component/dhcp.c"])],
+        batches={TARGET: ["a1"]},
+        branch_results={
+            TARGET: branch_result(
+                TARGET,
+                commits=[commit_result("a1")],
+            )
+        },
+    )
+
+    build(state, ctx)
+
+    assert ctx.runner.build_calls[0]["clean"] is True
 
 
 def test_build_incremental_when_not_first_in_batch(tmp_path):
@@ -1336,6 +1479,7 @@ def test_fix_build_persists_agent_fix_diff(tmp_path):
 
     outcome = update["branch_results"][TARGET].commits[0].build["RTL9617C"]
     assert outcome.fix_diff == "@@ -1 +1 @@"
+    assert outcome.reason == "fixed"
 
 
 def test_fix_build_still_failed_after_attempts(tmp_path):

@@ -8,6 +8,13 @@ from bsa.rules.branch_md import (
     parse_branch_md,
     resolve_branch_type,
 )
+from bsa.rules.build_rules import (
+    BuildConfigError,
+    BuildRules,
+    BuildType,
+    load_build_rules,
+    resolve_build_models,
+)
 from bsa.rules.classify import Classification, classify_commit, classify_severity
 from bsa.rules.conclude import CommitAnalysis, TargetSnapshot, conclude_pair
 from bsa.rules.decision_rules import (
@@ -24,6 +31,9 @@ __all__ = [
     "BranchMdDocument",
     "BranchRef",
     "BranchSection",
+    "BuildConfigError",
+    "BuildRules",
+    "BuildType",
     "Classification",
     "CommitAnalysis",
     "ConcludeThresholds",
@@ -41,8 +51,10 @@ __all__ = [
     "conclude_pair",
     "extract_symbols",
     "is_public_file",
+    "load_build_rules",
     "load_decision_rules",
     "load_safety_rules",
     "parse_branch_md",
     "resolve_branch_type",
+    "resolve_build_models",
 ]

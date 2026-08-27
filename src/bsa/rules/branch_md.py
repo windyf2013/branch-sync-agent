@@ -195,31 +195,76 @@ def first_occurrence_sections(doc: BranchMdDocument) -> dict[str, str]:
     return first_seen
 
 
-def build_matrix(doc: BranchMdDocument) -> list[HomologousSet]:
-    """同源矩阵（决策 35/36 修订）。
+_MAIN_SECTION_MARKERS = ("主分支",)
+_BUSINESS_SECTION_MARKERS = ("业务分支",)
 
-    同源 = branch.md section（产品线人工标注）；section 内 develop/release/fix
-    分支全互联，互为源和目标（feature/personal 排除，决策 20）。不靠前缀血缘方向。
-    自身分支排除由 conclude_pair 的「目标分支与源分支相同」检查处理。
+
+def _section_role(title: str) -> str | None:
+    """Section 标题 → 角色：含"主分支"→main，含"业务分支"→business，否则 None。
+
+    纯解析 branch.md 的人工标注，不做分支名推断（写死语义：业务→主单向）。
+    """
+    for marker in _MAIN_SECTION_MARKERS:
+        if marker in title:
+            return "main"
+    for marker in _BUSINESS_SECTION_MARKERS:
+        if marker in title:
+            return "business"
+    return None
+
+
+def _section_product_key(title: str, role: str) -> str | None:
+    """从 section 标题提取产品线配对键：剥编号前缀（如 ``1.1 ``）与角色后缀。
+
+    ``1.1 4.34 主分支`` → ``4.34``；``1.2 4.34 业务分支`` → ``4.34``。
+    同一产品线的主/业务 section 由此配对。解析失败返回 None（不配对）。
+    """
+    rest = title
+    for prefix in ("主分支", "业务分支"):
+        if prefix in rest:
+            rest = rest.replace(prefix, "").strip()
+            break
+    rest = re.sub(r"^\s*\d+(?:\.\d+)*\s*", "", rest).strip()
+    return rest or None
+
+
+def build_matrix(doc: BranchMdDocument) -> list[HomologousSet]:
+    """同源矩阵（V3 写死语义：业务→主单向）。
+
+    branch.md 用 section 标题人工标注角色：标题含"主分支"→目标（只收不扫），
+    含"业务分支"→源（只扫不收）。同一产品线前缀（剥编号与角色后缀后）的
+    业务 section 分支 → 主 section 分支，单向；业务之间互不同步，主不向业务
+    回灌。未标注角色的 section 不产出任何同步边（安全默认：宁可不同步）。
+    依赖 conclude_pair 的 AlreadyIncluded 判定消除重复同步。
     """
     first_seen = first_occurrence_sections(doc)
-    homologous_sets: list[HomologousSet] = []
+    by_product: dict[str, dict[str, list[BranchRef]]] = {}
     for section in doc.sections:
+        role = _section_role(section.title)
+        if role is None:
+            continue
+        product = _section_product_key(section.title, role)
+        if product is None:
+            continue
         branches = [
             branch
             for branch in section.branches
             if first_seen.get(branch.name) == section.title
+            if branch.branch_type in SOURCE_TYPES
         ]
-        eligible = [branch for branch in branches if branch.branch_type in SOURCE_TYPES]
+        by_product.setdefault(product, {}).setdefault(role, []).extend(branches)
+
+    homologous_sets: list[HomologousSet] = []
+    for product, roles in by_product.items():
+        main_branches = roles.get("main", [])
+        business_branches = roles.get("business", [])
+        if not main_branches or not business_branches:
+            continue
         homologous_sets.append(
             HomologousSet(
-                section=section.title,
-                sources=list(eligible),
-                need_sync_targets=[
-                    branch
-                    for branch in eligible
-                    if branch.branch_type in TARGET_TYPES
-                ],
+                section=product,
+                sources=list(business_branches),
+                need_sync_targets=list(main_branches),
             )
         )
     return homologous_sets

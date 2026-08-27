@@ -19,3 +19,6 @@ test_branch.md
 # 平台运行时产物
 logs/
 logs-demo/
+
+# 手动备份
+*.bak

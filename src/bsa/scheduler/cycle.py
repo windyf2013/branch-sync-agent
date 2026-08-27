@@ -99,6 +99,7 @@ def _initial_state(cycle_id: str) -> dict:
         "classifications": {},
         "decisions": {},
         "batches": {},
+        "build_models": {},
         "current_target": None,
         "current_commit": None,
         "branch_results": {},

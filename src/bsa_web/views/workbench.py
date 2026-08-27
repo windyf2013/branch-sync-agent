@@ -72,9 +72,12 @@ def _section_options(sections: dict) -> list[str]:
 
 
 def _section_short(section: str) -> str:
-    """产品线短名：'1.1 组网产品分支' → '组网'（剥掉编号与'产品分支'后缀）。"""
+    """产品线短名：'1.1 4.34 主分支' → '4.34'（剥掉编号与角色后缀）。
+
+    主/业务 section 共属同一产品线，短名取公共前缀（如 4.34），供工作台分组。
+    """
     name = re.sub(r"^\d+(\.\d+)*\s*", "", section or "").strip()
-    for suffix in ("产品分支", "产品主线分支", "分支"):
+    for suffix in ("主分支", "业务分支", "产品分支", "产品主线分支", "分支"):
         if name.endswith(suffix):
             name = name[: -len(suffix)]
             break

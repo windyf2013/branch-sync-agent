@@ -51,6 +51,7 @@ class BuildOutcome(BaseModel):
     errors: list[str]
     agent_attempts: int
     fix_diff: str | None
+    reason: str | None = None
 
 
 class CommitResult(BaseModel):
@@ -67,6 +68,7 @@ class BranchResult(BaseModel):
     commits: list[CommitResult]
     patch_path: str | None
     stop_reason: str | None
+    baseline: dict[str, BuildOutcome] | None = None
 
 
 class ErrorRecord(BaseModel):

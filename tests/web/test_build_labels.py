@@ -12,7 +12,7 @@ def test_enrich_sets_model_label_and_ok_has_no_log_preview(tmp_path):
     fail_log.write_text("line1\nline2\n", encoding="utf-8")
     branch = _branch(
         {
-            "5200": {
+            "2600m": {
                 "status": "OK",
                 "agent_attempts": 0,
                 "log_path": "/logs/ok.log",
@@ -29,11 +29,12 @@ def test_enrich_sets_model_label_and_ok_has_no_log_preview(tmp_path):
 
     enrich_build_outcomes(branch, str(tmp_path))
 
-    ok = branch["commits"][0]["build"]["5200"]
+    ok = branch["commits"][0]["build"]["2600m"]
     fail = branch["commits"][0]["build"]["5200B"]
-    assert ok["model_label"] == "RTL9617C_build.sh 5200"
+    # 显式配置的型号 → build_rules.yaml 的 script；未配置的型号 → 旧格式推断。
+    assert ok["model_label"] == "RTL9617C_build_ci.sh 2600m"
     assert ok["log_preview"] is None  # OK 结果不拖全量日志
-    assert fail["model_label"] == "X86.sh 5200B"
+    assert fail["model_label"] == "RTL9617C_build.sh 5200B"
     assert fail["log_preview"] is not None  # FAILED 才读尾部日志
 
 

@@ -89,11 +89,20 @@ class BuildRunner:
         is_public_file: Callable[[str], bool] | None = None,
         *,
         cycle_id: str | None = None,
+        build_types: dict[str, object] | None = None,
     ) -> None:
         self.executor = executor
         self.settings = settings
         self.is_public_file = is_public_file
         self.cycle_id = cycle_id
+        self.build_types = build_types or {}
+
+    def _resolve_script(self, model: str) -> tuple[str, str]:
+        """型号 → (build 脚本, 产品参数)：显式 build_types 优先，旧格式推断兜底。"""
+        bt = self.build_types.get(model)
+        if bt is not None:
+            return bt.script, bt.product
+        return _resolve_build_script(model)
 
     def _container_name(self) -> str:
         if self.cycle_id:
@@ -155,7 +164,7 @@ class BuildRunner:
             "./code_update.sh -d",
             f"cd {shlex.quote(f'{mount}/{script_dir}')}",
         ]
-        build_script, product = _resolve_build_script(model)
+        build_script, product = self._resolve_script(model)
         if clean:
             steps.append(f"./{build_script} {shlex.quote(product)} clean")
         build_cmd = f"./{build_script} {shlex.quote(product)}"
@@ -163,6 +172,9 @@ class BuildRunner:
             build_cmd = f"{build_cmd} {shlex.quote(module)}"
         steps.append(build_cmd)
 
+        streaming = log_path is not None
+        if log_path is not None:
+            log_path.parent.mkdir(parents=True, exist_ok=True)
         try:
             proc: CompletedProcess = self.executor.run(
                 [
@@ -177,15 +189,18 @@ class BuildRunner:
                     " && ".join(steps),
                 ],
                 timeout_sec=_BUILD_EXEC_TIMEOUT_SEC,
+                stream_to=str(log_path) if streaming else None,
             )
         finally:
             self.executor.run([*prefix, "docker", "rm", "-f", container])
 
+        # stream_to 时输出已实时落盘 build.log；未传 log_path（或注入 executor
+        # 返回了捕获输出）时按 stdout/stderr 组装。
         log = proc.stdout + ("\n" if proc.stderr else "") + proc.stderr
         log_path = log_path or Path(self.settings.log_dir) / f"build_{model}.log"
         log_path.parent.mkdir(parents=True, exist_ok=True)
-        log_path.write_text(log, encoding="utf-8", errors="replace")
-
+        if log or not streaming:
+            log_path.write_text(log or "", encoding="utf-8", errors="replace")
         return BuildResult(
             model=model,
             returncode=proc.returncode,

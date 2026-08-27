@@ -6,6 +6,7 @@ from langgraph.graph.state import CompiledStateGraph
 
 from bsa.graph.nodes import (
     GraphContext,
+    baseline_build,
     build,
     cherry_pick,
     fix_build,
@@ -20,6 +21,7 @@ from bsa.graph.workflow import (
     _END_NODE,
     _make_route_after_build,
     _make_route_after_fix_build,
+    _route_after_baseline,
     _route_after_cherry_pick,
     _route_after_failfast,
     _route_after_next_branch,
@@ -50,6 +52,7 @@ def build_single_target_workflow(
 
     ctx_nodes = {
         "prepare_worktree": prepare_worktree,
+        "baseline_build": baseline_build,
         "cherry_pick": cherry_pick,
         "resolve_conflict": resolve_conflict,
         "build": build,
@@ -72,7 +75,16 @@ def build_single_target_workflow(
     graph.add_conditional_edges(
         "prepare_worktree",
         _route_after_prepare,
-        {"next_commit": "next_commit", _END_NODE: _END_NODE},
+        {"baseline_build": "baseline_build", _END_NODE: _END_NODE},
+    )
+    graph.add_conditional_edges(
+        "baseline_build",
+        _route_after_baseline,
+        {
+            "next_commit": "next_commit",
+            "next_branch": "next_branch",
+            _END_NODE: _END_NODE,
+        },
     )
     graph.add_conditional_edges(
         "next_commit",

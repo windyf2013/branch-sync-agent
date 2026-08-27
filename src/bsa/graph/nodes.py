@@ -30,6 +30,8 @@ from bsa.executor.base import CommandExecutor
 from bsa.executor.exceptions import InfrastructureError
 from bsa.git.service import GitService
 from bsa.rules import (
+    BuildConfigError,
+    BuildRules,
     DecisionRules,
     HomologousSet,
     TargetSnapshot,
@@ -39,6 +41,7 @@ from bsa.rules import (
     conclude_pair,
     parse_branch_md,
     resolve_branch_type,
+    resolve_build_models,
 )
 from bsa.rules.conclude import CommitAnalysis
 from bsa.rules.paths import is_public_file
@@ -75,6 +78,7 @@ class GraphContext:
     build_snapshot: Callable = build_target_snapshot
     is_public_file: Callable[[str], bool] | None = None
     matrix: list[HomologousSet] | None = None
+    build_rules: BuildRules | None = None
     worktree_path: Path | None = None
     worktree_gits: dict[str, GitService] = field(default_factory=dict)
 
@@ -193,6 +197,24 @@ def _load_matrix(ctx: GraphContext) -> list[HomologousSet]:
             parse_branch_md(text, branch_mapping=ctx.decision_rules.branch_mapping)
         )
     return ctx.matrix
+
+
+def _matrix_section_of(ctx: GraphContext) -> dict[str, str]:
+    """分支名 → branch.md section（首个出现），等价 first_occurrence_sections。"""
+    section_of: dict[str, str] = {}
+    for hs in _load_matrix(ctx):
+        for branch in hs.sources + hs.need_sync_targets:
+            section_of.setdefault(branch.name, hs.section)
+    return section_of
+
+
+def _target_models(state: dict, ctx: GraphContext) -> list[str]:
+    """当前目标分支的编译型号列表；未解析（无 build_rules）回退 safety 全局默认。"""
+    target = state.get("current_target")
+    models = (state.get("build_models") or {}).get(target) if target else None
+    if models:
+        return list(models)
+    return ctx.safety.required_models()
 
 
 def detect_commits(state: dict, ctx: GraphContext) -> dict:
@@ -374,12 +396,33 @@ def sync_decision(state: dict, ctx: GraphContext) -> dict:
             if conclusion.kind == "NeedSync":
                 batches.setdefault(target_name, []).append(sha)
 
-    return {
+    # 产品线 → 编译型号：每目标解析一次；未配置/未知产品线报错并移出批次，
+    # 错误进 errors → action_required（绝不静默用错脚本或静默跳过编译）。
+    build_models: dict[str, list[str]] = {}
+    errors = dict(state.get("errors") or {})
+    if ctx.build_rules is not None:
+        section_of = _matrix_section_of(ctx)
+        for target_name in list(batches.keys()):
+            try:
+                models = resolve_build_models(section_of, target_name, ctx.build_rules)
+            except BuildConfigError as exc:
+                errors[f"build_models:{target_name}"] = ErrorRecord(
+                    node="decide", error=str(exc), ts=_now_iso()
+                )
+                batches.pop(target_name)
+                continue
+            build_models[target_name] = models
+
+    update: dict[str, Any] = {
         "classifications": classifications,
         "decisions": decisions,
         "batches": batches,
+        "build_models": build_models,
         "status": "DECIDED",
     }
+    if errors:
+        update["errors"] = errors
+    return update
 
 
 def _worktree_git(state: dict, ctx: GraphContext) -> GitService:
@@ -504,13 +547,17 @@ def prepare_worktree(state: dict, ctx: GraphContext) -> dict:
 
     Idempotent for resume/re-run: if the worktree path already exists on disk
     (from an interrupted cycle or a previous run), it is reused instead of
-    failing ``git worktree add`` (I5).
+    failing ``git worktree add`` (I5). When reusing a valid worktree, an
+    existing branch_result (baseline / commits) is preserved so resume never
+    re-does completed work. Only a fresh worktree or a rebuilt (invalid) one
+    resets the branch record.
     """
     target = state["current_target"]
     if target is None:
         raise ValueError("current_target is not set")
     resolved, _ = ctx.git.branch_tip(target)
     worktree_path = Path(ctx.settings.worktree_root) / f"{target}-{state['cycle_id']}"
+    fresh = False
     if worktree_path.exists():
         # 路径存在但可能是残缺 worktree（.git 指向的 gitdir 已删/无效）——
         # 真机测试: git worktree remove 后残留目录, prepare 复用后
@@ -518,8 +565,10 @@ def prepare_worktree(state: dict, ctx: GraphContext) -> dict:
         if not _is_valid_worktree(worktree_path):
             shutil.rmtree(worktree_path, ignore_errors=True)
             ctx.git.add_worktree(resolved, worktree_path)
+            fresh = True
     else:
         ctx.git.add_worktree(resolved, worktree_path)
+        fresh = True
     ctx.worktree_path = worktree_path
     if str(worktree_path) not in ctx.worktree_gits:
         ctx.worktree_gits[str(worktree_path)] = GitService(
@@ -527,14 +576,16 @@ def prepare_worktree(state: dict, ctx: GraphContext) -> dict:
         )
 
     results = dict(state.get("branch_results") or {})
-    results[target] = BranchResult(
-        target_branch=target,
-        worktree_path=str(worktree_path),
-        status="PARTIAL",
-        commits=[],
-        patch_path=None,
-        stop_reason=None,
-    )
+    existing = results.get(target)
+    if fresh or existing is None or existing.worktree_path != str(worktree_path):
+        results[target] = BranchResult(
+            target_branch=target,
+            worktree_path=str(worktree_path),
+            status="PARTIAL",
+            commits=[],
+            patch_path=None,
+            stop_reason=None,
+        )
     return {"branch_results": results, "status": "PREPARED"}
 
 
@@ -610,9 +661,9 @@ def resolve_conflict(state: dict, ctx: GraphContext) -> dict:
 
 def _next_model(state: dict, ctx: GraphContext) -> str | None:
     """Next required model not yet built for current_commit (决策 14 serial)."""
-    models = ctx.safety.required_models()
+    models = _target_models(state, ctx)
     if not models:
-        raise ValueError("safety_rules defines no required_models")
+        raise ValueError("未解析到该目标分支的编译型号（build_models 为空）")
     built: set[str] = set()
     target = state.get("current_target")
     sha = state.get("current_commit")
@@ -636,16 +687,79 @@ def _log_path(ctx: GraphContext, state: dict, target: str, sha: str) -> Path:
     )
 
 
+def _baseline_log_path(ctx: GraphContext, state: dict, target: str, model: str) -> Path:
+    return (
+        Path(ctx.settings.log_dir)
+        / state["cycle_id"]
+        / "build"
+        / target
+        / "baseline"
+        / f"{model}.log"
+    )
+
+
+def baseline_build(state: dict, ctx: GraphContext) -> dict:
+    """Baseline full compile on the target's untouched worktree (决策 V2).
+
+    Runs after ``prepare_worktree`` and before the first cherry-pick: proves the
+    target branch tip compiles clean before any sync work. Each model is built
+    with ``clean=True`` on the raw worktree. On any model failure the branch is
+    marked FAILED with a stop_reason (blocked) and the graph routes to the next
+    branch — no commits are applied. Idempotent for resume: a branch whose
+    ``baseline`` dict already holds records is not rebuilt.
+    """
+    target = state["current_target"]
+    results, branch = _branch_results(state, ctx, target)
+    models = _target_models(state, ctx)
+    if branch.baseline and all(
+        branch.baseline.get(model) is not None for model in models
+    ):
+        return {"branch_results": results, "status": "BASELINE_OK"}
+
+    baseline: dict[str, BuildOutcome] = dict(branch.baseline or {})
+    for model in models:
+        if model in baseline:
+            continue
+        log_path = _baseline_log_path(ctx, state, target, model)
+        result = ctx.runner.build_commit(
+            _worktree_path(state, ctx), model, clean=True, module=None, log_path=log_path
+        )
+        ok = ctx.runner.is_success(result)
+        baseline[model] = BuildOutcome(
+            model=model,
+            status="OK" if ok else "FAILED",
+            log_path=str(log_path),
+            errors=result.errors,
+            agent_attempts=0,
+            fix_diff=None,
+        )
+        if not ok:
+            results[target] = branch.model_copy(
+                update={
+                    "baseline": baseline,
+                    "status": "FAILED",
+                    "stop_reason": f"baseline build failed on {model}",
+                }
+            )
+            return {"branch_results": results, "status": "BASELINE_FAILED"}
+
+    results[target] = branch.model_copy(update={"baseline": baseline})
+    return {"branch_results": results, "status": "BASELINE_OK"}
+
+
 def build(state: dict, ctx: GraphContext) -> dict:
-    """Build current_commit/model in the worktree; clean per batch start / public file."""
+    """Build current_commit/model in the worktree; clean only on public files.
+
+    基线编译（prepare 后 baseline_build）已全量验证 worktree，批次首个 commit
+    不再重复 clean 编译；改动公共文件仍降级全量编译（决策 2）。
+    """
     target = state["current_target"]
     sha = state["current_commit"]
     commit = _find_commit(state, sha)
     model = _next_model(state, ctx)
     if model is None:
         return {"status": "BUILD_OK"}
-    batch = (state.get("batches") or {}).get(target, [])
-    clean = batch[:1] == [sha] or bool(
+    clean = bool(
         ctx.is_public_file is not None and any(ctx.is_public_file(f) for f in commit.changed_files)
     )
     log_path = _log_path(ctx, state, target, sha)
@@ -690,6 +804,7 @@ def fix_build(state: dict, ctx: GraphContext) -> dict:
         errors=result.errors,
         agent_attempts=failed.agent_attempts + 1,
         fix_diff=attribution.fix_diff,
+        reason=attribution.reason,
     )
     results = _record_build(state, ctx, outcome)
     return {"branch_results": results, "status": "BUILD_OK" if ok else "BUILD_FAILED"}

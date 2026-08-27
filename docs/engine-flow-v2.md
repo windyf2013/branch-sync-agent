@@ -49,21 +49,27 @@
 ## 3. 同步内核（V2 核心改动）
 
 ```
-prepare_worktree（远端 tip 建/复用）
-  → 基线全量编译                # V2 新增：分支 tip 先证可编译
-      ├─ 失败 → 分支 blocked → action_required → 移下一分支
-      └─ 通过 →
-          for commit in 批次（合入时间升序）:
-            cherry-pick
-              ├─ EMPTY   → 记录已含，跳过编译        # V2：基线已证，EMPTY 不改变树
-              ├─ CONFLICT→ resolve（LLM+安全闸门+字节快照+3轮）
-              └─ OK      → 增量编译
-                             ├─ 通过 → 下一 commit
-                             └─ 失败 → fix_build（归因+最小修复）
-                                         → 3 轮失败 → 回滚
-            回滚先行 → 关联判断（文件/区域/LLM/编译兜底）
-                      → 相关停批 / 无关继续
-  → generate_patch + 状态汇总
+# 同步拓扑（V3 写死语义）：branch.md 标题人工标注角色
+#   含"主分支"的 section → 目标（只收不扫，建 worktree + 基线编译 + 逐 commit）
+#   含"业务分支"的 section → 源（只扫判定，不建 worktree / 不编译 / 不出 patch）
+#   业务 → 主 单向；业务之间互不同步；主不向业务回灌。
+
+for 主分支（目标）:
+  prepare_worktree（远端 tip 建/复用）
+    → baseline_build（主分支 tip 全量编译，未改动基线）   # V3 落地：先证可编译
+        ├─ 失败 → 分支 blocked（status=FAILED + stop_reason）→ 移下一主分支
+        └─ 通过 →
+            for commit in 批次（合入时间升序）:
+              cherry-pick
+                ├─ EMPTY   → 记录已含，跳过编译        # 基线已证，EMPTY 不改变树
+                ├─ CONFLICT→ resolve（LLM+安全闸门+字节快照+3轮）
+                └─ OK      → 增量编译（不再批次首 commit 全量，基线已证）
+                               ├─ 通过 → 下一 commit
+                               └─ 失败 → fix_build（归因+最小修复）
+                                           → 3 轮失败 → 回滚
+              回滚先行 → 关联判断（文件/区域/LLM/编译兜底）
+                        → 相关停批 / 无关继续
+            → generate_patch + 状态汇总
   → report / action_required
 ```
 
@@ -86,6 +92,8 @@ prepare_worktree（远端 tip 建/复用）
 - 时间字段用 **committer date**（合入时间），不用 author date（rebased commit 会漂移）
 - **merge 提交展开**：`--first-parent` 定位窗口内 merge → `merge^1..merge` 取 PR 引入的
   commit → patch-id 去重后分类
+- **只扫业务分支**（branch.md 标题含"业务分支"的 section）：主分支作为目标不被扫描，
+  消除 V2 全互联的回声重检与平方级无效工作（V3 写死语义）
 - 历史积压不在周期范围内，由平台手动任务兜底（用户自处理）
 
 ### 4.2 决策模块（sync_decision）
@@ -103,6 +111,13 @@ prepare_worktree（远端 tip 建/复用）
 - risk 分级参与展示（显著标识），供事后审核排序
 - 手动同步跳过此步（用户勾选 = 人工审核通过）
 
+**同步拓扑（V3 写死语义，`build_matrix`）**：不靠分支名推断方向，直接读
+branch.md section 标题 —— 含"主分支" → 目标，含"业务分支" → 源。同一产品线
+（剥编号与角色后缀后的前缀）的业务 section → 主 section，**单向**。业务之间
+互不同步；主不向业务回灌；未标注 section 不产出同步边（安全默认）。
+`conclude_pair` 的 AlreadyIncluded（patch-id / issue-id / 相似度）仍负责
+"是否已包含"的去重，避免同窗口重复入批。
+
 ### 4.3 冲突解决模块（resolve_conflict / ConflictAgent）
 
 - 安全前置：冲突文件命中 `forbidden_paths` → 直接转人工
@@ -110,10 +125,14 @@ prepare_worktree（远端 tip 建/复用）
 - 校验四关：冲突标记消失 + `git diff --check` 干净 + 只改冲突文件 + 未触安全红线
 - 快照回滚重试，最多 3 轮；每次产出独立 diff
 
-### 4.4 编译模块（build）
+### 4.4 编译模块（build / baseline_build）
 
+- **主分支基线编译（baseline_build）**：prepare_worktree 建好 worktree 后、首个
+  cherry-pick 前，对原始 tip 全量编译（clean）。失败 → 分支 blocked（FAILED +
+  stop_reason），不进入逐 commit。业务分支不经过此步（只当源，不建 worktree）。
+- **批次首 commit 不再重复 clean**（基线已全量验证）；改动公共文件仍降级全量编译
+  （决策 2）。EMPTY 跳过编译；commit 之间增量编译。
 - 产品线 → 编译型号随目标分支解析，**不是全局一个型号**；查不到 → 报错停止
-- 基线全量编译通过后，EMPTY 跳过编译；commit 之间增量编译
 - 多个型号串行编译，任一失败即停该 commit
 - 成功判定三查：退出码 0 + 成功标志 + 产物存在完整
 

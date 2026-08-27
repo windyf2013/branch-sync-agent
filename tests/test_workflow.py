@@ -20,11 +20,15 @@ from tests.test_graph_nodes import (
 TARGET2 = "br_v4.33_5200_CU_develop_release_p361_20260625"
 
 BRANCH_MD_TWO = f"""# 分支清单
+## 1 RCIOS代码库
+- 路径：rcios
 
-## 组网
-- {DEVELOP}
+### 1.1 4.34 主分支
 - {TARGET}
 - {TARGET2}
+
+### 1.2 4.34 业务分支
+- {DEVELOP}
 """
 
 
@@ -112,6 +116,34 @@ def cherry_picked(git: FakeGit) -> list[str]:
     return [args[0] for name, args in git.calls if name == "cherry_pick"]
 
 
+def test_baseline_failure_blocks_branch_no_cherry_pick(tmp_path):
+    write_branch_md(tmp_path)
+    ctx = batch_ctx(tmp_path, shas=["a1"])
+    ctx.runner = FakeRunner(success=False)
+
+    out = run(build_workflow(ctx), base_state())
+
+    branch = out["branch_results"][TARGET]
+    assert branch.status == "FAILED"
+    assert "baseline build failed" in (branch.stop_reason or "")
+    assert branch.baseline["RTL9617C"].status == "FAILED"
+    # 基线失败 → 不 cherry-pick、不生成 patch
+    assert cherry_picked(worktree_git_for(ctx, TARGET)) == []
+    assert branch.patch_path is None
+    assert out["status"] == "FAILED"
+
+
+def test_baseline_success_proceeds_to_cherry_pick(tmp_path):
+    write_branch_md(tmp_path)
+    ctx = batch_ctx(tmp_path, shas=["a1"])
+
+    out = run(build_workflow(ctx), base_state())
+
+    assert out["branch_results"][TARGET].baseline["RTL9617C"].status == "OK"
+    assert cherry_picked(worktree_git_for(ctx, TARGET)) == ["a1"]
+    assert out["branch_results"][TARGET].status == "SUCCESS"
+
+
 def test_thread_config_binds_cycle_id():
     assert thread_config("cycle-x") == {"configurable": {"thread_id": "cycle-x"}}
 
@@ -195,8 +227,12 @@ def test_per_model_serial_loop(tmp_path):
 
     out = run(build_workflow(ctx), base_state())
 
+    # baseline（prepare 后）先串行两模型，commit build 再串行两模型。
     models = [call["model"] for call in ctx.runner.build_calls]
-    assert models == ["RTL9617C", "RTL9607F"]
+    assert models == ["RTL9617C", "RTL9607F", "RTL9617C", "RTL9607F"]
+    baseline = out["branch_results"][TARGET].baseline
+    assert baseline["RTL9617C"].status == "OK"
+    assert baseline["RTL9607F"].status == "OK"
     build = out["branch_results"][TARGET].commits[0].build
     assert build["RTL9617C"].status == "OK"
     assert build["RTL9607F"].status == "OK"
@@ -420,7 +456,8 @@ def test_fix_build_fails_after_max_attempts_then_failfast(tmp_path):
     write_branch_md(tmp_path)
     ctx = batch_ctx(tmp_path, shas=["a1", "a2"])
     ctx.llm = FakeLLM(related=True)
-    ctx.runner = FakeRunner(success=False)
+    # baseline（第 1 次 build）成功；cherry-pick 后 commit build 失败，走 fix_build。
+    ctx.runner = FakeRunner(success_until=1)
 
     out = run(build_workflow(ctx), base_state())
 

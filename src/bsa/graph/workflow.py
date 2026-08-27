@@ -18,6 +18,8 @@ from bsa.graph.nodes import (
     GraphContext,
     _branch_results,
     _find_commit,
+    _target_models,
+    baseline_build,
     build,
     cherry_pick,
     detect_commits,
@@ -86,6 +88,9 @@ def _next_target(state: dict) -> str | None:
     for target in state.get("batches") or {}:
         branch = (state.get("branch_results") or {}).get(target)
         if branch is None or branch.patch_path is None:
+            # 跳过已标记 FAILED 的分支（基线编译失败阻塞），避免重复选中死循环。
+            if branch is not None and branch.status == "FAILED":
+                continue
             return target
     return None
 
@@ -127,14 +132,14 @@ def _built_outcomes(state: dict) -> dict[str, BuildOutcome]:
 
 
 def _remaining_models(state: dict, ctx: GraphContext) -> bool:
-    models = ctx.safety.required_models()
+    models = _target_models(state, ctx)
     built = set(_built_outcomes(state))
     return any(model not in built for model in models)
 
 
 def _agent_attempts(state: dict, ctx: GraphContext) -> int:
     outcomes = _built_outcomes(state)
-    for model in reversed(ctx.safety.required_models()):
+    for model in reversed(_target_models(state, ctx)):
         if model in outcomes:
             return outcomes[model].agent_attempts
     return 0
@@ -275,6 +280,15 @@ def _route_after_next_branch(state: dict) -> str:
 def _route_after_prepare(state: dict) -> str:
     if state.get("status") == "FAILED":
         return _END_NODE
+    return "baseline_build"
+
+
+def _route_after_baseline(state: dict) -> str:
+    if state.get("status") == "FAILED":
+        return _END_NODE
+    if state.get("status") == "BASELINE_FAILED":
+        # 基线编译失败 → 分支阻塞（branch.status=FAILED），跳过该分支去下一分支。
+        return "next_branch"
     return "next_commit"
 
 
@@ -373,6 +387,7 @@ def build_workflow(
         "detect_commits": detect_commits,
         "sync_decision": sync_decision,
         "prepare_worktree": prepare_worktree,
+        "baseline_build": baseline_build,
         "cherry_pick": cherry_pick,
         "resolve_conflict": resolve_conflict,
         "build": build,
@@ -401,7 +416,16 @@ def build_workflow(
     graph.add_conditional_edges(
         "prepare_worktree",
         _route_after_prepare,
-        {"next_commit": "next_commit", _END_NODE: _END_NODE},
+        {"baseline_build": "baseline_build", _END_NODE: _END_NODE},
+    )
+    graph.add_conditional_edges(
+        "baseline_build",
+        _route_after_baseline,
+        {
+            "next_commit": "next_commit",
+            "next_branch": "next_branch",
+            _END_NODE: _END_NODE,
+        },
     )
     graph.add_conditional_edges(
         "next_commit",

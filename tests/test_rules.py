@@ -880,11 +880,17 @@ def test_parse_branch_md_sections():
 
 
 SAMPLE_MD = """# 所有待审核分支
-## 1.1 组网产品分支
-- br_v4.33_5200_CU_develop_20260518
-- br_v4.33_5200_CU_develop_release_p360_20260625
-- br_v4.33_5200_CU_develop_feature_quantum_20260625
-- br_v4.33_5200_CU_develop_personal_yuhui_20260625
+## 1 RCIOS代码库
+- 路径：rcios
+
+### 1.1 4.34 主分支
+- br_v4.34_develop_20260130
+
+### 1.2 4.34 业务分支
+- br_v4.34_develop_fttr_20260811
+- br_v4.34_develop_fttr_release_p360_20260625
+- br_v4.34_develop_fttr_feature_quantum_20260625
+- br_v4.34_develop_fttr_personal_yuhui_20260625
 """
 
 
@@ -894,10 +900,10 @@ def test_build_matrix_sources_all_eligible():
     assert isinstance(sets, list) and sets
     assert isinstance(sets[0], HomologousSet)
     s = sets[0]
-    assert s.section == "1.1 组网产品分支"
+    assert s.section == "4.34"
     assert [b.name for b in s.sources] == [
-        "br_v4.33_5200_CU_develop_20260518",
-        "br_v4.33_5200_CU_develop_release_p360_20260625",
+        "br_v4.34_develop_fttr_20260811",
+        "br_v4.34_develop_fttr_release_p360_20260625",
     ]
     assert s.sources[0].branch_type == "develop"
 
@@ -906,18 +912,19 @@ def test_build_matrix_all_eligible_branches_are_targets():
     doc = parse_branch_md(SAMPLE_MD)
     s = build_matrix(doc)[0]
     targets = {b.name for b in s.need_sync_targets}
-    assert "br_v4.33_5200_CU_develop_20260518" in targets
-    assert "br_v4.33_5200_CU_develop_release_p360_20260625" in targets
-    assert "br_v4.33_5200_CU_develop_feature_quantum_20260625" not in targets
-    assert "br_v4.33_5200_CU_develop_personal_yuhui_20260625" not in targets
+    assert targets == {"br_v4.34_develop_20260130"}
+    assert "br_v4.34_develop_fttr_20260811" not in targets
+    assert "br_v4.34_develop_fttr_release_p360_20260625" not in targets
+    assert "br_v4.34_develop_fttr_feature_quantum_20260625" not in targets
+    assert "br_v4.34_develop_fttr_personal_yuhui_20260625" not in targets
 
 
 def test_build_matrix_feature_personal_excluded_everywhere():
     doc = parse_branch_md(SAMPLE_MD)
     s = build_matrix(doc)[0]
     names = {b.name for b in s.sources + s.need_sync_targets}
-    assert "br_v4.33_5200_CU_develop_feature_quantum_20260625" not in names
-    assert "br_v4.33_5200_CU_develop_personal_yuhui_20260625" not in names
+    assert "br_v4.34_develop_fttr_feature_quantum_20260625" not in names
+    assert "br_v4.34_develop_fttr_personal_yuhui_20260625" not in names
 
 
 def test_build_matrix_develop_is_target():
@@ -926,53 +933,135 @@ def test_build_matrix_develop_is_target():
     assert any(b.branch_type == "develop" for b in s.need_sync_targets)
 
 
-def test_build_matrix_fix_is_source_and_target():
-    text = """# title
-## LineA
+def test_build_matrix_business_develop_and_release_are_sources():
+    """业务 section 内的 develop/release/fix 分支全部是源（不区分类型）。"""
+    text = """# 所有待审核分支
+## 1 RCIOS代码库
+- 路径：rcios
+
+### 1.1 4.34 主分支
+- br_v4.34_develop_20260316
+
+### 1.2 4.34 业务分支
 - br_v4.34_develop_FTTR_20260316
 - br_v4.34_develop_FTTR_release_p360_20260401
 - br_v4.34_develop_FTTR_release_p360_fix_20260501
 """
     s = build_matrix(parse_branch_md(text))[0]
     source_names = {b.name for b in s.sources}
-    target_names = {b.name for b in s.need_sync_targets}
     assert "br_v4.34_develop_FTTR_20260316" in source_names
     assert "br_v4.34_develop_FTTR_release_p360_20260401" in source_names
     assert "br_v4.34_develop_FTTR_release_p360_fix_20260501" in source_names
-    assert target_names == source_names
+    assert {b.name for b in s.need_sync_targets} == {"br_v4.34_develop_20260316"}
 
 
-def test_build_matrix_no_prefix_lineage():
-    text = """# title
-## LineA
+def test_build_matrix_business_to_main_ignores_branch_prefix_lineage():
+    """定向不靠分支名前缀血缘；业务/主 section 标题配对即可。"""
+    text = """# 所有待审核分支
+## 1 RCIOS代码库
+- 路径：rcios
+
+### 1.1 4.34 主分支
 - br_v4_LineA_develop_20260101
+
+### 1.2 4.34 业务分支
 - br_v4_LineB_develop_release_20260101
 """
     s = build_matrix(parse_branch_md(text))[0]
-    names = {b.name for b in s.sources}
-    assert names == {"br_v4_LineA_develop_20260101", "br_v4_LineB_develop_release_20260101"}
-    assert {b.name for b in s.need_sync_targets} == names
+    source_names = {b.name for b in s.sources}
+    assert source_names == {"br_v4_LineB_develop_release_20260101"}
+    assert {b.name for b in s.need_sync_targets} == {"br_v4_LineA_develop_20260101"}
 
 
-def test_build_matrix_cross_section_isolation():
-    text = """# title
-## ProductA
+def test_build_matrix_cross_product_isolation():
+    """不同产品线（4.34 / 4.35）的同步边互相隔离，不跨产品配对。"""
+    text = """# 所有待审核分支
+## 1 RCIOS代码库
+- 路径：rcios
+
+### 1.1 4.34 主分支
 - br_v4_ProductA_develop_20260101
+
+### 1.2 4.34 业务分支
 - br_v4_ProductA_develop_release_20260101
-## ProductB
+
+### 2.1 4.35 主分支
 - br_v4_ProductB_develop_20260101
+
+### 2.2 4.35 业务分支
 - br_v4_ProductB_develop_release_20260101
 """
     sets = build_matrix(parse_branch_md(text))
     assert len(sets) == 2
-    assert sets[0].section == "ProductA"
-    assert sets[1].section == "ProductB"
-    targets_a = {b.name for b in sets[0].need_sync_targets}
-    targets_b = {b.name for b in sets[1].need_sync_targets}
-    assert "br_v4_ProductA_develop_release_20260101" in targets_a
-    assert "br_v4_ProductB_develop_release_20260101" in targets_b
-    assert "br_v4_ProductB_develop_release_20260101" not in targets_a
-    assert "br_v4_ProductA_develop_release_20260101" not in targets_b
+    by_section = {s.section: s for s in sets}
+    assert set(by_section) == {"4.34", "4.35"}
+    targets_434 = {b.name for b in by_section["4.34"].need_sync_targets}
+    targets_435 = {b.name for b in by_section["4.35"].need_sync_targets}
+    assert targets_434 == {"br_v4_ProductA_develop_20260101"}
+    assert targets_435 == {"br_v4_ProductB_develop_20260101"}
+    assert "br_v4_ProductB_develop_20260101" not in targets_434
+    assert "br_v4_ProductA_develop_20260101" not in targets_435
+
+
+def test_build_matrix_business_to_main_directed():
+    """业务分支 section 只当源，主分支 section 只当目标，业务→主单向。
+
+    现状全互联（同 section 互灌）在 ≥3 分支时产生回声重检与平方级无效工作；
+    写死语义：标题含"主分支"=目标，含"业务分支"=源，业务之间互不同步。
+    """
+    text = """# 所有待审核分支
+## 1 RCIOS代码库
+- 路径：rcios
+
+### 1.1 4.34 主分支
+- br_v4.34_develop_20260130
+
+### 1.2 4.34 业务分支
+- br_v4.34_develop_fttr_20260811
+- br_v4.34_MSG_develop_20260805
+"""
+    sets = build_matrix(parse_branch_md(text))
+    assert len(sets) == 1
+    s = sets[0]
+    source_names = {b.name for b in s.sources}
+    target_names = {b.name for b in s.need_sync_targets}
+    assert source_names == {
+        "br_v4.34_develop_fttr_20260811",
+        "br_v4.34_MSG_develop_20260805",
+    }
+    assert target_names == {"br_v4.34_develop_20260130"}
+
+
+def test_build_matrix_main_section_branches_are_targets_not_sources():
+    """主分支 section 的分支只当目标，不作为任何分支的源。"""
+    text = """# 所有待审核分支
+## 1 RCIOS代码库
+- 路径：rcios
+
+### 1.1 4.35 主分支
+- br_v4.35_develop_20260101
+
+### 1.2 4.35 业务分支
+- br_v4.35_develop_fttr_20260201
+"""
+    s = build_matrix(parse_branch_md(text))[0]
+    source_names = {b.name for b in s.sources}
+    assert "br_v4.35_develop_20260101" not in source_names
+    assert "br_v4.35_develop_fttr_20260201" in source_names
+
+
+def test_build_matrix_unmarked_section_produces_no_edges():
+    """无"主分支"/"业务分支"标注的 section 不产出同步边（不默认全互联）。"""
+    text = """# 所有待审核分支
+## 1 RCIOS代码库
+- 路径：rcios
+
+### 1.1 未标注分支
+- br_v4_plain_develop_20260101
+- br_v4_plain_release_20260201
+"""
+    sets = build_matrix(parse_branch_md(text))
+    assert sets == []
 
 
 def test_duplicate_branch_reported_and_used_once():
@@ -987,8 +1076,5 @@ def test_duplicate_branch_reported_and_used_once():
     assert len(doc.duplicates) == 1
     assert doc.duplicates[0]["name"] == "br_v4_dup_develop_release_20260101"
     assert doc.duplicates[0]["count"] == 2
-    sets = build_matrix(doc)
-    names_a = {b.name for b in sets[0].sources + sets[0].need_sync_targets}
-    names_b = {b.name for b in sets[1].sources + sets[1].need_sync_targets}
-    assert "br_v4_dup_develop_release_20260101" in names_a
-    assert "br_v4_dup_develop_release_20260101" not in names_b
+    # 无"主分支"/"业务分支"标注的 section 不产出同步边（新语义）。
+    assert build_matrix(doc) == []

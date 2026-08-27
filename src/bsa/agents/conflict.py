@@ -13,6 +13,32 @@ _HUNK_RE = re.compile(r"^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@")
 _NO_NEWLINE = "\\ No newline at end of file"
 
 
+def _snapshot_bytes(conflict_files: list[str], *, git: GitService) -> dict[str, bytes]:
+    """字节级快照冲突文件，回滚时字节无损恢复（不依赖 utf-8 假设）。"""
+    snapshots: dict[str, bytes] = {}
+    for rel in conflict_files:
+        path = git.repo_path / rel
+        if path.is_file():
+            snapshots[rel] = path.read_bytes()
+    return snapshots
+
+
+def _detect_encoding(data: bytes) -> str | None:
+    """Detect a lossless text encoding for conflict content: utf-8 → gb18030.
+
+    git 冲突是字节级、按行合并的，冲突标记是 ASCII。RCIOS 源文件常见 GBK 中文
+    注释（非 UTF-8 字节）：UTF-8 严格解码失败时用 GB18030（GBK 超集）兜底，
+    GB18030↔Unicode 往返无损。两者都无法解码（真二进制）返回 None。
+    """
+    for enc in ("utf-8", "gb18030"):
+        try:
+            data.decode(enc)
+            return enc
+        except UnicodeDecodeError:
+            continue
+    return None
+
+
 def _diff_files(diff_text: str) -> dict[str, str]:
     """Split a git-format unified diff into per-target-path patches."""
     patches: dict[str, str] = {}
@@ -156,20 +182,25 @@ class ConflictAgent:
             self._safety.check_editable(conflict_files)
         except SafetyViolation:
             return None
-        # 冲突文件必须是安全可读的 UTF-8：非 UTF-8（RCIOS 常见 GBK 中文注释）字节级
-        # 往返有损（读 errors=replace 再写回会破坏原文件），无法安全自动解决 → 转人工。
+        # 冲突文件按可无损往返的编码读取（utf-8 → gb18030 兜底），处理自包含在
+        # 本模块：真二进制（两种编码均无法解码）才转人工，RCIOS 常见 GBK 注释
+        # 照常进入 LLM 解决，非冲突行字节无损保留。
+        encodings: dict[str, str] = {}
         for rel in conflict_files:
             path = wgit.repo_path / rel
-            if path.is_file():
-                try:
-                    path.read_text(encoding="utf-8")
-                except UnicodeDecodeError:
-                    self.last_reason = (
-                        f"冲突文件 {rel} 含非 UTF-8 编码内容，无法安全自动解决，转人工处理"
-                    )
-                    return None
+            if not path.is_file():
+                continue
+            enc = _detect_encoding(path.read_bytes())
+            if enc is None:
+                self.last_reason = (
+                    f"冲突文件 {rel} 编码无法识别（非 UTF-8/GBK 文本），"
+                    "无法安全自动解决，转人工处理"
+                )
+                return None
+            encodings[rel] = enc
+        self._encodings = encodings
         for _ in range(self._max_attempts):
-            snapshots = wgit.snapshot(conflict_files)
+            snapshots = _snapshot_bytes(conflict_files, git=wgit)
             try:
                 resolution = self._attempt(commit, conflict_files, git=wgit, target_branch=tgt)
             except LLMUnavailable:
@@ -191,7 +222,8 @@ class ConflictAgent:
         for rel in conflict_files:
             path = git.repo_path / rel
             if path.is_file():
-                markers[rel] = path.read_text(encoding="utf-8")
+                enc = self._encodings.get(rel, "utf-8")
+                markers[rel] = path.read_text(encoding=enc)
         ctx = ConflictContext(
             commit=commit,
             conflict_files=conflict_files,
@@ -226,9 +258,10 @@ class ConflictAgent:
                 if path not in allowed:
                     return False
                 target = git.repo_path / path
-                current = target.read_text(encoding="utf-8") if target.is_file() else ""
+                enc = self._encodings.get(path, "utf-8")
+                current = target.read_text(encoding=enc) if target.is_file() else ""
                 target.parent.mkdir(parents=True, exist_ok=True)
-                target.write_text(_apply_patch(current, patch), encoding="utf-8")
+                target.write_text(_apply_patch(current, patch), encoding=enc)
         except Exception:
             return False
         try:
@@ -242,7 +275,8 @@ class ConflictAgent:
             path = git.repo_path / rel
             if not path.is_file():
                 continue
-            for line in path.read_text(encoding="utf-8").splitlines():
+            enc = self._encodings.get(rel, "utf-8")
+            for line in path.read_text(encoding=enc).splitlines():
                 if line.startswith(_MARKERS):
                     return False
         if not git.diff_check():
@@ -258,11 +292,14 @@ class ConflictAgent:
     def _rollback(
         self,
         conflict_files: list[str],
-        snapshots: dict[str, str],
+        snapshots: dict[str, bytes],
         *,
         git: GitService,
     ) -> None:
-        git.restore(snapshots)
+        for rel, data in snapshots.items():
+            path = git.repo_path / rel
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(data)
         for rel in conflict_files:
             if rel not in snapshots:
                 path = git.repo_path / rel

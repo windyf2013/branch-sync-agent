@@ -26,7 +26,7 @@ from bsa.report.projection import (
     read_projection_payload,
     write_state_json,
 )
-from bsa.rules import load_decision_rules, load_safety_rules
+from bsa.rules import BuildConfigError, load_decision_rules, load_safety_rules
 from bsa.scheduler.cycle import list_cycle_records, manual_scan_cycle_id, run_cycle
 
 
@@ -368,6 +368,10 @@ def _cmd_sync(args: argparse.Namespace) -> int:
             final = run_sync_command(
                 ctx, cycle_id=cycle_id, target=args.target, batch=batch, checkpointer=checkpointer
             )
+    except BuildConfigError as exc:
+        print(f"编译型号配置错误: {exc}", file=sys.stderr)
+        register_finish(log_dir, task_id, state="failed", cycle_id=cycle_id, error=str(exc))
+        return 1
     except SafetyViolation as exc:
         print(f"同步被拒绝: {exc}", file=sys.stderr)
         register_finish(log_dir, task_id, state="failed", cycle_id=cycle_id, error=str(exc))

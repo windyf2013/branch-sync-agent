@@ -26,8 +26,11 @@ class FakeExecutor:
         cwd: str | Path | None = None,
         timeout_sec: int = 300,
         env: dict[str, str] | None = None,
+        stream_to: str | Path | None = None,
     ) -> CompletedProcess:
-        kwargs: dict[str, Any] = {"cwd": cwd, "timeout_sec": timeout_sec, "env": env}
+        kwargs: dict[str, Any] = {
+            "cwd": cwd, "timeout_sec": timeout_sec, "env": env, "stream_to": stream_to,
+        }
         self.calls.append((args, kwargs))
         if self.responses:
             response = self.responses.pop(0)
