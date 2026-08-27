@@ -189,6 +189,52 @@ def test_classify_lookup_agent_judgment_prefix():
     assert lookup_agent_judgment("abcdef1234567890", judgments)["is_bug_fix"] is True
 
 
+def test_compute_fingerprint_stable_and_content_sensitive():
+    from bsa.rules.classify import compute_fingerprint
+
+    fp1 = compute_fingerprint("[BUG] fix null deref\n\nrefactor it", "pid123")
+    fp2 = compute_fingerprint("[BUG] fix null deref\n\nrefactor it", "pid123")
+    # 同内容同 patch-id → 稳定
+    assert fp1 == fp2
+    # 内容变了 → 指纹变（人工覆盖自动失效）
+    fp3 = compute_fingerprint("[BUG] fix null deref changed\n\nrefactor it", "pid123")
+    assert fp1 != fp3
+
+
+def test_classify_lookup_agent_judgment_by_fingerprint():
+    from bsa.rules.classify import compute_fingerprint, lookup_agent_judgment
+
+    message = "[BUG] fix null deref\n\nrefactor it"
+    fp = compute_fingerprint(message, "pid123")
+    judgments = {f"fp:{fp}": {"is_bug_fix": False, "reason": "人工判定非 bug-fix"}}
+
+    # sha 未命中 → fingerprint 匹配生效
+    result = lookup_agent_judgment("deadbeefdeadbeefdeadbeefdeadbeefdeadbeef", judgments, fingerprint=fp)
+    assert result is not None
+    assert result["is_bug_fix"] is False
+
+
+def test_classify_fingerprint_matches_across_rebase_sha_change():
+    """rebase 改变 sha 但内容不变 → fingerprint 仍命中人工覆盖。"""
+    from bsa.rules.classify import classify_commit, compute_fingerprint
+
+    message = "[BUG] fix null deref\n\nrefactor it"
+    fp = compute_fingerprint(message, "pid123")
+    result = classify_commit(
+        message,
+        ["plat/dhcp/dhcp.c"],
+        [],
+        "+if (NULL == cfg) return -1;",
+        sha="newsha000000000000000000000000000000000000",
+        patch_id="pid123",
+        agent_judgments={
+            f"fp:{fp}": {"is_bug_fix": False, "reason": "人工判定非 bug-fix，rebase 后仍命中"}
+        },
+    )
+    assert result.is_bug_fix is False
+    assert result.recognition_source == "agent:not-bug-fix"
+
+
 def test_classify_agent_judgment_overrides_machine_marker():
     # 决策 6: 人工判定最高优先级，先于所有机器规则（含 [BUG] 标记）。
     result = classify_commit(

@@ -10,8 +10,8 @@
 
 **分支同步 Agent（Branch Sync Agent，简称 BSA）** 解决一个问题：
 
-> 开发分支（如 `br_v4.33_5200_CU_develop_20260518`）上合入了 bug-fix 提交，需要把这些提交
-> 逐个同步（cherry-pick + 编译验证 + 生成 patch）到各产品线分支。
+> 业务分支（如 `br_v4.34_develop_fttr_20260811`）上合入了 bug-fix 提交，需要把这些提交
+> 逐个同步（cherry-pick + 编译验证 + 生成 patch）到主分支（如 `br_v4.34_develop_20260130`）。
 
 **架构原则**：
 
@@ -162,38 +162,49 @@ branch.md section 标题 —— 含"主分支" → 目标，含"业务分支" �
 
 ## 5. 数据与可靠性（V2 新增）
 
-### 5.1 双身份标识
+> **实现状态标注**：以下各节按「已实现 / 部分实现 / 规划中」标注，避免文档与代码脱节。
+> 已实现项均有测试覆盖；规划中项为后续增强方向，当前不阻塞使用。
+
+### 5.1 双身份标识（已实现）
 
 - **变更身份 `patch_id`**（`git patch-id --stable`）：同一次代码变更，无论被 rebase /
   cherry-pick 多少次、sha 如何变，patch-id 稳定。用于 AlreadyIncluded 判定与台账主键。
-- **语义身份 `fingerprint`** = `sha256(subject + body + patch_id)`：用于判断类缓存
-  （is_bug_fix / risk / 人工覆盖）。rebase 不改内容 → 命中；内容改动 → 重新判定。
-  人工覆盖按 fingerprint 匹配，内容变了自动失效并在 UI 提示，不静默丢。
+- **语义身份 `fingerprint`** = `sha256(subject + body + patch_id)`（`compute_fingerprint`）：
+  用于判断类缓存（is_bug_fix / risk / 人工覆盖）。rebase 不改内容 → 命中；内容改动 →
+  重新判定。人工覆盖按 fingerprint 匹配（judgments.json 的 `fp:<fingerprint>` 键），
+  rebase 后 sha 漂移仍命中；内容变了自动失效。**UI 提示"覆盖失效"尚未实现**（规划中）。
 
-### 5.2 同步台账 ledger（append-only）
+### 5.2 同步台账 ledger（append-only，已实现）
 
-每条：`{patch_id, source_sha, target_branch, status(synced/failed/blocked/review),
-result_sha, llm_diffs[], reason, source(cycle/manual), timestamps}`。
+`{log_dir}/ledger.json`，每行一条：
+`{patch_id, target_branch, source_sha, status(synced), ts}`。
 
-- 检测时按 `(patch_id, target_branch)` 查台账：synced → AlreadyIncluded，跨天/跨周期幂等
-- 台账同时是**全操作记录**与 **LLM 修改 diff 归档**的统一载体
+- 检测时按 `(patch_id, target_branch)` 查台账（`is_synced`）：synced → AlreadyIncluded，
+  跳过快照构建与相似度/LLM 判定，跨天/跨周期幂等（已接入 `sync_decision`）
+- `generate_patch` 对成功同步的 commit 记录 synced（append-only）
+- **全操作记录 / LLM 修改 diff 归档**：规划中（当前仅 synced 一条；failed/blocked/review
+  与 llm_diffs 归档尚未实现）
 
-### 5.3 互斥（flock）
+### 5.3 互斥（flock，部分实现）
 
-- 全局锁 `locks/cycle.lock`：cron 周期启动取锁；分分支锁 `locks/branch/<branch>.lock`：
-  周期 `next_branch` 与手动 `prepare_worktree` 均先取目标分支锁
-- 取锁统一按分支名排序 → 防死锁；进程崩溃自动释放（flock 语义）
-- 冲突：手动同步目标分支被占用 → 有界等待后提示"分支忙"；周期遇被占分支 → 先做其他再回头
+- **全局锁 `{log_dir}/bsa.lock`**（已实现）：cron 周期（`run_cycle`）与手动同步
+  （`run_sync_command`）启动均取此锁 → **手动与 cron 串行**，同一时刻只有一个同步在跑。
+- **分分支锁 `branch_lock_path`**（能力已提供 `locks/branch/<branch>.lock`，**未接入工作流**）：
+  因全局锁已保证手动/cron 串行，分分支锁当前为冗余能力。**规划中**：若未来去掉全局锁、
+  允许手动与 cron 并行处理不同分支，则在此接入（取锁按分支名排序防死锁；
+  手动遇被占 → 有界等待提示"分支忙"；周期遇被占 → 先做其他再回头）。
 
-### 5.4 窗口边界（cron 专用）
+### 5.4 窗口边界（cron 专用，已实现）
 
 - 22:00–22:00 + 2h 沉降，committer date 过滤，merge 展开（见 4.1）
 - 历史积压由平台手动任务兜底，周期不扫
 
-### 5.5 推送（能力边界，硬约束）
+### 5.5 推送（能力边界，硬约束，已实现）
 
 - 仅当前周期活 worktree + SUCCESS + 四道闸（状态/存在/禁推分支/工作树干净）
 - **禁 `--force`**；人工触发，Agent 不自动推；平台是执行器不是决策者
+- 实现：`bsa_web/api/push.py`（confirm 回显 + 四道闸 → 受限 `git push` + 审计），
+  仅此端点触发推送，无自动/定时推送路径
 
 ---
 

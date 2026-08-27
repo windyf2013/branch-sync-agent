@@ -96,7 +96,15 @@ def _detect_source_commits(
         changed_files = ctx.git.changed_files(sha)
         patch_text = ctx.git.commit_patch(sha)
         symbols = extract_symbols(patch_text)
-        classification = ctx.classify(message, changed_files, symbols, patch_text, sha=sha)
+        patch_id = ctx.git.patch_id(sha)
+        classification = ctx.classify(
+            message,
+            changed_files,
+            symbols,
+            patch_text,
+            sha=sha,
+            patch_id=patch_id,
+        )
         severity = classify_severity(message, changed_files)
         risk = severity if severity in ("low", "medium", "high") else None
         detected.append(
@@ -108,7 +116,7 @@ def _detect_source_commits(
                 changed_files=changed_files,
                 patch_text=patch_text,
                 symbols=symbols,
-                patch_id=ctx.git.patch_id(sha),
+                patch_id=patch_id,
                 issue_ids=list(classification.issue_ids),
                 source_branch=source,
                 homologous_section="manual",

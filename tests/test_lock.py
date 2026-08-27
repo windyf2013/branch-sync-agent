@@ -3,7 +3,35 @@ import time
 
 import pytest
 
-from bsa.executor.lock import LockTimeoutError, flock_acquire
+from bsa.executor.lock import LockTimeoutError, branch_lock_path, flock_acquire
+
+
+def test_branch_lock_path_nests_under_locks_branch(tmp_path):
+    path = branch_lock_path(tmp_path, "br_v4.34_develop_20260130")
+    assert path == tmp_path / "locks" / "branch" / "br_v4.34_develop_20260130.lock"
+
+
+def test_branch_lock_path_sanitizes_slashes(tmp_path):
+    # 分支名理论上无斜杠，但防御性处理：斜杠 → 下划线，避免嵌套越权。
+    path = branch_lock_path(tmp_path, "feature/x")
+    assert path == tmp_path / "locks" / "branch" / "feature_x.lock"
+
+
+def test_branch_lock_mutually_excludes_same_branch(tmp_path):
+    lock = branch_lock_path(tmp_path, "br_main")
+    with flock_acquire(lock):
+        with pytest.raises(LockTimeoutError):
+            with flock_acquire(lock, timeout=0.1):
+                pass
+
+
+def test_branch_lock_allows_different_branches_parallel(tmp_path):
+    lock_a = branch_lock_path(tmp_path, "br_a")
+    lock_b = branch_lock_path(tmp_path, "br_b")
+    with flock_acquire(lock_a):
+        # 不同分支锁互不阻塞：立即获取 br_b（不抛超时）
+        with flock_acquire(lock_b, timeout=1.0):
+            pass
 
 
 def test_acquires_and_releases(tmp_path):

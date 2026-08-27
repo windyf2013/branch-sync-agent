@@ -245,12 +245,14 @@ def detect_commits(state: dict, ctx: GraphContext) -> dict:
                 changed_files = ctx.git.changed_files(sha)
                 patch_text = ctx.git.commit_patch(sha)
                 symbols = extract_symbols(patch_text)
+                patch_id = ctx.git.patch_id(sha)
                 classification = ctx.classify(
                     message,
                     changed_files,
                     symbols,
                     patch_text,
                     sha=sha,
+                    patch_id=patch_id,
                     agent_judgments=judgments,
                 )
                 severity = classify_severity(message, changed_files)
@@ -264,7 +266,7 @@ def detect_commits(state: dict, ctx: GraphContext) -> dict:
                         changed_files=changed_files,
                         patch_text=patch_text,
                         symbols=symbols,
-                        patch_id=ctx.git.patch_id(sha),
+                        patch_id=patch_id,
                         issue_ids=list(classification.issue_ids),
                         source_branch=source.name,
                         homologous_section=hs.section,
@@ -367,6 +369,9 @@ def sync_decision(state: dict, ctx: GraphContext) -> dict:
     thresholds = ctx.decision_rules.conclude
 
     decisions: dict[str, dict[str, Conclusion4]] = {}
+    from bsa.ledger import is_synced
+
+    ledger_dir = Path(ctx.settings.log_dir)
     for hs in matrix:
         source_names = {source.name for source in hs.sources}
         for commit in detected:
@@ -378,6 +383,19 @@ def sync_decision(state: dict, ctx: GraphContext) -> dict:
                     decisions.setdefault(commit.sha, {})[target.name] = Conclusion4(
                         kind="OutOfScope",
                         evidence=[f"目标分支 {target.name} 命中禁止同步清单，跳过。"],
+                        confidence="high",
+                    )
+                    continue
+                # 台账短路（决策 5.2）：该 patch-id 对目标分支已同步过 → 直接已含，
+                # 跳过快照构建与相似度/LLM 判定（跨天/跨周期幂等）。
+                if analysis.patch_id and is_synced(
+                    ledger_dir, analysis.patch_id, target.name
+                ):
+                    decisions.setdefault(commit.sha, {})[target.name] = Conclusion4(
+                        kind="AlreadyIncluded",
+                        evidence=[
+                            f"台账记录：patch-id {analysis.patch_id} 已同步到 {target.name}。"
+                        ],
                         confidence="high",
                     )
                     continue
@@ -845,6 +863,14 @@ def generate_patch(state: dict, ctx: GraphContext) -> dict:
             "status": _final_branch_status(branch.commits),
         }
     )
+    # 台账记录（决策 5.2）：成功同步的 commit 按 (patch_id, target) 记 synced，
+    # 供后续周期检测短路 AlreadyIncluded（跨天幂等）。
+    by_sha = {commit.sha: commit for commit in state.get("detected_commits") or []}
+    from bsa.ledger import record_synced
+
+    for result in branch.commits:
+        if _commit_ok(result) and (src := by_sha.get(result.sha)) and src.patch_id:
+            record_synced(Path(ctx.settings.log_dir), src.patch_id, target, result.sha)
     return {"branch_results": results, "status": "PATCHED"}
 
 

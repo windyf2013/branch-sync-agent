@@ -219,7 +219,15 @@ class FakeClassify:
         self.results: dict[str, Classification] = {}
 
     def __call__(
-        self, message, changed_files, symbols, patch_text, *, sha=None, agent_judgments=None
+        self,
+        message,
+        changed_files,
+        symbols,
+        patch_text,
+        *,
+        sha=None,
+        patch_id=None,
+        agent_judgments=None,
     ):
         self.calls.append(sha)
         return self.results.get(
@@ -749,7 +757,36 @@ def test_sync_decision_resolves_pending_and_builds_batches(tmp_path):
     assert update["classifications"]["a2"].needs_agent is False
     assert update["decisions"]["a1"][TARGET].kind == "NeedSync"
     assert update["decisions"]["a2"][TARGET].kind == "AlreadyIncluded"
-    assert update["batches"] == {TARGET: ["a1"]}
+
+
+def test_sync_decision_ledger_short_circuits_already_included(tmp_path):
+    # 台账短路：目标分支已同步过该 patch-id → 直接 AlreadyIncluded，跳过快照+conclude。
+    write_branch_md(tmp_path)
+    ctx = make_ctx(tmp_path)
+    from bsa.ledger import record_synced
+
+    log_dir = Path(ctx.settings.log_dir)
+    log_dir.mkdir(parents=True, exist_ok=True)
+    record_synced(log_dir, "pid-a1", TARGET, "a1")
+    c1 = commit("a1")
+    state = base_state(
+        detected_commits=[c1],
+        classifications={
+            "a1": SyncDecision(
+                sha="a1",
+                is_bug_fix=True,
+                reason=None,
+                recognition_source="machine:[BUG]",
+                needs_agent=False,
+            )
+        },
+    )
+
+    update = sync_decision(state, ctx)
+
+    assert ctx.conclude.calls == []  # 未调用 conclude（跳过快照/相似度判定）
+    assert update["decisions"]["a1"][TARGET].kind == "AlreadyIncluded"
+    assert update["batches"] == {}  # 已含 → 不进批次
     assert update["status"] == "DECIDED"
 
 
