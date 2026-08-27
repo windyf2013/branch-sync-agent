@@ -81,6 +81,9 @@
         <span class="badge manual">{{ item.kind }}</span>
         <code class="mono review-sha">{{ item.sha }}</code>
         {% if item.reason %}<span class="review-reason">{{ item.reason }}</span>{% endif %}
+        {% if item.override_stale %}
+        <span class="badge warn" title="该 commit 内容已变化，此前的改判定不再匹配，请重新判定">⚠️ 覆盖已失效</span>
+        {% endif %}
       </div>
       {% if item.evidence %}
       <ul class="evidence-list">{% for e in item.evidence %}<li>{{ e }}</li>{% endfor %}</ul>

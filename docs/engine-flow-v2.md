@@ -172,7 +172,9 @@ branch.md section 标题 —— 含"主分支" → 目标，含"业务分支" �
 - **语义身份 `fingerprint`** = `sha256(subject + body + patch_id)`（`compute_fingerprint`）：
   用于判断类缓存（is_bug_fix / risk / 人工覆盖）。rebase 不改内容 → 命中；内容改动 →
   重新判定。人工覆盖按 fingerprint 匹配（judgments.json 的 `fp:<fingerprint>` 键），
-  rebase 后 sha 漂移仍命中；内容变了自动失效。**UI 提示"覆盖失效"尚未实现**（规划中）。
+  rebase 后 sha 漂移仍命中（classify_commit 与 SyncDecisionAgent 均支持）；内容变了
+  自动失效。**UI 提示"覆盖已失效"**：task_detail 人工项对失效覆盖显示警示徽标
+  （`_action_required` 附带 `override_stale`）。
 
 ### 5.2 同步台账 ledger（append-only，已实现）
 

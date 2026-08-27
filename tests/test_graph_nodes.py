@@ -22,6 +22,7 @@ from bsa.domain.models import (
 from bsa.executor.exceptions import InfrastructureError
 from bsa.graph.nodes import (
     GraphContext,
+    _action_required,
     _derive_window,
     _to_analysis,
     baseline_build,
@@ -1687,6 +1688,86 @@ def test_report_assembles_basic_report(tmp_path):
     assert len(rep.action_required) == 1
     assert rep.action_required[0]["sha"] == "a1"
     assert update["status"] == "PARTIAL"
+
+
+def test_action_required_marks_stale_override(tmp_path):
+    """覆盖已因内容变化失效（fingerprint 不匹配）→ review_item 附带 override_stale。"""
+    ctx = make_ctx(tmp_path)
+    from bsa.rules.classify import compute_fingerprint
+
+    sha = "a1"
+    c = commit("a1", message="[BUG] fix null deref\n\nrefactor it", patch_id="pid-a1")
+    # 覆盖写入时基于旧内容（不同的 message → 不同 fingerprint）
+    stale_fp = compute_fingerprint("[BUG] fix null deref OLD\n\nrefactor it", "pid-a1")
+    log_dir = Path(ctx.settings.log_dir)
+    log_dir.mkdir(parents=True, exist_ok=True)
+    (log_dir / "judgments.json").write_text(
+        json.dumps(
+            {
+                sha: {
+                    "is_bug_fix": False,
+                    "recognition_source": "manual-override",
+                    "reason": "人工判定",
+                },
+                f"fp:{stale_fp}": {
+                    "is_bug_fix": False,
+                    "recognition_source": "manual-override",
+                    "reason": "人工判定",
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    state = base_state(
+        detected_commits=[c],
+        decisions={
+            sha: {TARGET: Conclusion4(kind="ManualReview", evidence=["z"], confidence="low")}
+        },
+    )
+
+    actions = _action_required(state, log_dir=ctx.settings.log_dir)
+
+    assert actions[0]["sha"] == sha
+    assert actions[0]["override_stale"] is True
+
+
+def test_action_required_no_stale_when_override_matches(tmp_path):
+    """覆盖 fingerprint 仍匹配 → 不标失效。"""
+    ctx = make_ctx(tmp_path)
+    from bsa.rules.classify import compute_fingerprint
+
+    sha = "a1"
+    c = commit("a1", message="[BUG] fix null deref\n\nrefactor it", patch_id="pid-a1")
+    fp = compute_fingerprint(c.message, c.patch_id)
+    log_dir = Path(ctx.settings.log_dir)
+    log_dir.mkdir(parents=True, exist_ok=True)
+    (log_dir / "judgments.json").write_text(
+        json.dumps(
+            {
+                sha: {
+                    "is_bug_fix": False,
+                    "recognition_source": "manual-override",
+                    "reason": "人工判定",
+                },
+                f"fp:{fp}": {
+                    "is_bug_fix": False,
+                    "recognition_source": "manual-override",
+                    "reason": "人工判定",
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    state = base_state(
+        detected_commits=[c],
+        decisions={
+            sha: {TARGET: Conclusion4(kind="ManualReview", evidence=["z"], confidence="low")}
+        },
+    )
+
+    actions = _action_required(state, log_dir=ctx.settings.log_dir)
+
+    assert actions[0]["override_stale"] is False
 
 
 def test_report_includes_errors_in_action_required(tmp_path):

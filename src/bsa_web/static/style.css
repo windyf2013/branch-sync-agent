@@ -445,6 +445,11 @@ section.panel {
     background: var(--review-bg);
     border-color: var(--review-bd);
 }
+.badge.warn {
+    color: var(--review);
+    background: var(--review-bg);
+    border-color: var(--review-bd);
+}
 .badge.manual, .badge.scope {
     color: var(--scope);
     background: var(--scope-bg);

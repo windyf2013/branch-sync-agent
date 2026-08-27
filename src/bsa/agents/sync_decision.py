@@ -7,7 +7,7 @@ from typing import Any, Literal
 from bsa.agents.base import LLMClient
 from bsa.domain.models import CommitInfo, SyncDecision
 from bsa.executor.exceptions import InfrastructureError
-from bsa.rules.classify import lookup_agent_judgment
+from bsa.rules.classify import compute_fingerprint, lookup_agent_judgment
 
 _PENDING_SOURCE = "pending:claude-agent"
 _AGENT_BUG_FIX_SOURCE = "agent:bug-fix"
@@ -38,7 +38,8 @@ class SyncDecisionAgent:
         decisions: dict[str, SyncDecision] = {}
         for commit in pending:
             rule_risk = (prior_risks or {}).get(commit.sha)
-            entry = lookup_agent_judgment(commit.sha, judgments)
+            fp = compute_fingerprint(commit.message, commit.patch_id) if commit.patch_id else None
+            entry = lookup_agent_judgment(commit.sha, judgments, fingerprint=fp)
             if entry is not None:
                 decision = self._from_entry(commit.sha, entry)
                 if rule_risk is not None and decision.risk != rule_risk:
@@ -65,7 +66,8 @@ class SyncDecisionAgent:
         judgments = self._load()
         out: dict[str, str | None] = {}
         for commit in commits:
-            entry = lookup_agent_judgment(commit.sha, judgments)
+            fp = compute_fingerprint(commit.message, commit.patch_id) if commit.patch_id else None
+            entry = lookup_agent_judgment(commit.sha, judgments, fingerprint=fp)
             cached = _coerce_risk(entry.get("risk")) if entry is not None else None
             if cached is not None:
                 out[commit.sha] = cached

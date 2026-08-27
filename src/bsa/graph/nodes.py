@@ -895,19 +895,47 @@ def generate_patch(state: dict, ctx: GraphContext) -> dict:
     return {"branch_results": results, "status": "PATCHED"}
 
 
-def _action_required(state: dict) -> list[dict[str, Any]]:
+def _action_required(state: dict, log_dir: str | Path | None = None) -> list[dict[str, Any]]:
+    """汇总人工项（ManualReview + 节点错误）。
+
+    ``log_dir`` 提供时，对每个 ManualReview commit 检测其人工覆盖是否已因内容
+    变化而失效（fingerprint 不匹配）：附带 ``override_stale`` 供 UI 提示。
+    """
+    by_sha = {c.sha: c for c in state.get("detected_commits") or []}
+    judgments = _load_judgments(Path(log_dir)) if log_dir else {}
+
+    def _override_stale(sha: str) -> bool:
+        """该 sha 有 manual-override 覆盖，且对应 fp: 键不匹配当前 fingerprint。"""
+        entry = judgments.get(sha)
+        if not isinstance(entry, dict) or entry.get("recognition_source") != "manual-override":
+            return False
+        commit = by_sha.get(sha)
+        if commit is None or not commit.patch_id:
+            return False
+        from bsa.rules.classify import compute_fingerprint
+
+        current_fp = compute_fingerprint(commit.message, commit.patch_id)
+        # 找与 sha 覆盖同内容的 fp: 键
+        for key, value in judgments.items():
+            if not isinstance(key, str) or not key.startswith("fp:"):
+                continue
+            if isinstance(value, dict) and value == entry and key != f"fp:{current_fp}":
+                return True
+        return False
+
     actions: list[dict[str, Any]] = []
     for sha, per_target in (state.get("decisions") or {}).items():
         for branch, conclusion in per_target.items():
             if conclusion.kind == "ManualReview":
-                actions.append(
-                    {
-                        "sha": sha,
-                        "branch": branch,
-                        "kind": conclusion.kind,
-                        "evidence": list(conclusion.evidence),
-                    }
-                )
+                item: dict[str, Any] = {
+                    "sha": sha,
+                    "branch": branch,
+                    "kind": conclusion.kind,
+                    "evidence": list(conclusion.evidence),
+                }
+                if judgments:
+                    item["override_stale"] = _override_stale(sha)
+                actions.append(item)
     for node_name, err in (state.get("errors") or {}).items():
         actions.append({"node": node_name, "error": err.error})
     return actions
@@ -945,7 +973,7 @@ def report(state: dict, ctx: GraphContext) -> dict:
             "branches": sorted(state.get("branch_results", {})),
             "decisions": len(state.get("decisions", {})),
         },
-        action_required=_action_required(state),
+        action_required=_action_required(state, log_dir=log_root),
         decisions_json_path=log_root / cycle_id / "decisions.json",
     )
     return {"report": rep, "status": terminal}
