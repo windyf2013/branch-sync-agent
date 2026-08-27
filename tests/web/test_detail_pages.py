@@ -259,8 +259,11 @@ class TestTargetDetail:
         payload = _payload(branch_results={"t": branch})
         monkeypatch.setattr("bsa_web.projection.load_cycle", lambda log_dir, cid: payload)
         monkeypatch.setattr(
-            "bsa_web.views.detail._read_build_log",
-            lambda log_dir, log_path: ("line1\nline2\nline3\nline4\nline5\nline6", True),
+            "bsa_web.build_labels._read_build_log",
+            lambda log_dir, log_path, max_lines=100: (
+                "line1\nline2\nline3\nline4\nline5\nline6",
+                True,
+            ),
         )
         r = client.get("/cycle/cycle-2026-08-20/target/t")
         assert r.status_code == 200

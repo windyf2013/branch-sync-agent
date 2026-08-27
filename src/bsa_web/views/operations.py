@@ -8,12 +8,14 @@
 
 from __future__ import annotations
 
+import json
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, Form, HTTPException, Request
 from fastapi.responses import RedirectResponse
 
 from bsa_web.auth import make_csrf, require_csrf, require_login, require_operator
+from bsa_web.executor import task_log_tail
 from bsa_web.runner import task_detail_url
 
 router = APIRouter(tags=["operations"])
@@ -82,6 +84,15 @@ def task_status_page(
     if task is None:
         raise HTTPException(status_code=404, detail="任务不存在")
     csrf = make_csrf(request.app.state.settings.secret_key, user["username"])
+    log_tail = (
+        task_log_tail(request.app.state.settings.log_dir, task_id, 200)
+        if task["state"] in ("queued", "running")
+        else ""
+    )
+    try:
+        shas = json.loads(task["shas"]) if task.get("shas") else None
+    except (TypeError, ValueError):
+        shas = None
     return request.app.state.templates.TemplateResponse(
         request,
         "tasks.html",
@@ -90,6 +101,8 @@ def task_status_page(
             "csrf": csrf,
             "task": task,
             "task_id": task_id,
+            "commit_count": len(shas) if shas else (task.get("commits") or None),
+            "log_tail": log_tail,
             "state_label": STATE_LABELS.get(task["state"], task["state"]),
             "detail_url": task_detail_url(request.app.state.db, task_id),
         },

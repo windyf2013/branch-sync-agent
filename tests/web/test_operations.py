@@ -358,6 +358,34 @@ class TestFormWiring:
         r = client.get("/tasks/99999")
         assert r.status_code == 404
 
+    def test_task_status_page_shows_cycle_id_and_live_log(self, tmp_path):
+        from datetime import UTC, datetime
+        from pathlib import Path
+
+        app = _make_app(tmp_path)
+        client = _client(app)
+        _login(client)
+        db = app.state.db
+        db.execute(
+            "INSERT INTO tasks(kind,user,target,cycle_id,state,shas,created_at,source) "
+            "VALUES ('sync','alice','feat/x','manual-test-1','running','[\"a1\",\"a2\"]',?,'web')",
+            (datetime.now(UTC).isoformat(),),
+        )
+        db.commit()
+        task_id = db.execute("SELECT last_insert_rowid()").fetchone()[0]
+        log_dir = app.state.settings.log_dir
+        log = Path(log_dir) / "tasks" / f"task-{task_id}.log"
+        log.parent.mkdir(parents=True, exist_ok=True)
+        log.write_text("line1\nline2\n", encoding="utf-8")
+
+        r = client.get(f"/tasks/{task_id}")
+
+        assert r.status_code == 200
+        assert "manual-test-1" in r.text
+        assert "line2" in r.text
+        assert "commit 数：2" in r.text
+        assert "实时输出" in r.text
+
     def test_workbench_shows_busy_error(self, tmp_path, monkeypatch):
         app = _make_app(tmp_path)
         _install_runner(app, run_func=lambda cmd: (0, "", ""))

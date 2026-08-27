@@ -14,6 +14,7 @@ from fastapi.responses import FileResponse, Response
 
 from bsa_web import projection
 from bsa_web.auth import make_csrf, require_login
+from bsa_web.build_labels import enrich_build_outcomes
 
 router = APIRouter(prefix="/cycle", tags=["detail"])
 
@@ -110,12 +111,8 @@ def target_detail(
     branch = (payload.get("branch_results") or {}).get(target)
     if branch is None:
         raise HTTPException(status_code=404, detail="目标分支不存在")
-    # 按需读取各 commit build 日志前 N 行（不塞进列表/概览页）
-    for cr in branch.get("commits") or []:
-        for outcome in (cr.get("build") or {}).values():
-            preview = _read_build_log(settings.log_dir, outcome.get("log_path"))
-            outcome["log_preview"] = preview[0] if preview else None
-            outcome["log_truncated"] = preview[1] if preview else False
+    # 按需读取各 commit build 日志前 N 行 + 型号脚本标签（不塞进列表/概览页）
+    enrich_build_outcomes(branch, settings.log_dir)
     return _render(
         request,
         "detail.html",

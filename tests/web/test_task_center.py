@@ -252,8 +252,7 @@ class TestTaskUserSource:
         )
         r = client.get("/")
         assert r.status_code == 200
-        assert "发起人 alice" in r.text
-        assert "来源 web" in r.text
+        assert "alice" in r.text
         assert "feat/manual" in r.text
 
     def test_auto_task_panels_show_cron_source(self, tmp_path, monkeypatch):
@@ -266,8 +265,9 @@ class TestTaskUserSource:
         _mount_cycle(monkeypatch, payload)
         r = client.get("/")
         assert r.status_code == 200
-        assert "发起人 system" in r.text
-        assert "来源 cron" in r.text
+        # 周期任务发起人列为"系统"
+        assert "系统" in r.text
+        assert "自动任务" in r.text
 
     def test_cli_cycle_reconciled_shows_with_source_cli(self, tmp_path, monkeypatch):
         # CLI/cron 直启的 manual-* 周期由 executor 对账补登记为 tasks 行
@@ -289,7 +289,7 @@ class TestTaskUserSource:
         r = client.get("/")
         assert r.status_code == 200
         assert "feat/cli" in r.text
-        assert "来源 cli" in r.text
+        assert "cli" in r.text
         assert "已中断" in r.text
 
     def test_workbench_single_source_no_checkpoint_enumeration(
@@ -657,7 +657,8 @@ class TestTaskDetail:
             action_required=[
                 {
                     "node": "resolve_conflict",
-                    "error": "冲突文件含非 UTF-8 编码内容，无法安全自动解决，转人工处理",
+                    "error": "冲突文件 plat/demo.c 编码无法识别（非 UTF-8/GBK 文本），"
+                    "无法安全自动解决，转人工处理",
                 }
             ],
         )

@@ -1,12 +1,16 @@
-<!doctype html>
-<html lang="zh-CN">
-<head>
-  <meta charset="utf-8">
-  <title>BSA 设置</title>
-</head>
-<body>
-  <h1>设置（操作者占位页）</h1>
-  <p>当前用户：{{ user.username }}（{{ user.role }}）</p>
-  <p><a href="/">返回工作台</a></p>
-</body>
-</html>
+{% extends "base.html" %}
+{% block title %}设置{% endblock %}
+{% block content %}
+<div class="page-head">
+  <div>
+    <h1>设置</h1>
+    <p class="page-sub">角色分配 / 保留天数 / 会话过期</p>
+  </div>
+</div>
+<section class="panel">
+  <div class="panel-head"><h2>配置项</h2><span class="panel-note">管理端</span></div>
+  <div class="panel-body">
+    <p class="empty-state">设置项由环境变量与运维配置，暂不在此处编辑。</p>
+  </div>
+</section>
+{% endblock %}

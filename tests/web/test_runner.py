@@ -380,6 +380,29 @@ class TestSubprocessLifecycle:
         assert seen["cmd"][-3:] == ["sync", "main", "feat/x"]
         assert seen["env"]["LOG_DIR"] == str(tmp_path / "logs")
 
+    def test_run_cli_streams_output_to_task_log(self, tmp_path):
+        from datetime import UTC, datetime
+
+        from bsa_web.executor import task_log_tail
+
+        runner = _make_runner(tmp_path)
+        db = runner.db
+        db.execute(
+            "INSERT INTO tasks(kind, user, target, state, created_at, source) "
+            "VALUES ('sync','alice','feat/x','running',?, 'web')",
+            (datetime.now(UTC).isoformat(),),
+        )
+        db.commit()
+        task_id = db.execute("SELECT last_insert_rowid()").fetchone()[0]
+        runner._last_task_id = task_id
+        rc, out, err = runner._run_cli(
+            [sys.executable, "-c", "import sys; print('hello task')"],
+            {"LOG_DIR": str(tmp_path / "logs")},
+        )
+        assert rc == 0
+        assert out == "" and err == ""
+        assert "hello task" in task_log_tail(str(tmp_path / "logs"), task_id)
+
 
 class TestCmdBuilding:
     def test_sync_cmd_with_src_target_sha(self, tmp_path):

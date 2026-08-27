@@ -21,8 +21,8 @@ from fastapi.responses import RedirectResponse
 
 from bsa_web import projection
 from bsa_web.auth import make_csrf, require_login
+from bsa_web.build_labels import enrich_build_outcomes
 from bsa_web.db import abandoned_keys
-from bsa_web.views import detail
 
 router = APIRouter(prefix="/task", tags=["task_detail"])
 
@@ -80,12 +80,8 @@ def task_detail(
             return RedirectResponse(f"/tasks/{active_id}", status_code=303)
         raise HTTPException(status_code=404, detail="目标分支不存在")
 
-    # 按需读取各 commit build 日志前 N 行（复用 detail.target_detail 的读取逻辑）
-    for cr in branch.get("commits") or []:
-        for outcome in (cr.get("build") or {}).values():
-            preview = detail._read_build_log(settings.log_dir, outcome.get("log_path"))
-            outcome["log_preview"] = preview[0] if preview else None
-            outcome["log_truncated"] = preview[1] if preview else False
+    # 按需读取各 commit build 日志尾部 + 型号脚本标签（复用 detail 的读取逻辑）
+    enrich_build_outcomes(branch, settings.log_dir)
 
     abandoned = abandoned_keys(request.app.state.db, cycle_id)
     branch_abandoned = (target, None) in abandoned

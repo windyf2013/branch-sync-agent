@@ -39,6 +39,45 @@ def rcios_branch_names(branch_file: str | Path) -> list[str]:
     return _rcios_names_from_text(text)
 
 
+def rcios_branch_sections(branch_file: str | Path) -> dict[str, str]:
+    """返回 RCIOS 仓库「分支 → 产品线 section」映射（保持 branch.md 出现顺序）。
+
+    供工作台按产品线分组/过滤 cron 任务；branch.md 缺失/不可读返回空 dict。
+    """
+    path = Path(branch_file)
+    if not path.is_file():
+        return {}
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError:
+        return {}
+    mapping: dict[str, str] = {}
+    collecting = False
+    section = ""
+    for raw_line in text.splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        if _REPO_HEADER_RE.match(line):
+            collecting = False
+            section = ""
+            continue
+        if line.startswith("###"):
+            section = line.lstrip("#").strip()
+            continue
+        path_match = _PATH_BULLET_RE.match(line)
+        if path_match is not None:
+            collecting = path_match.group(1).lower() in _RCIOS_PATHS
+            if not collecting:
+                section = ""
+            continue
+        if collecting and section:
+            branch_match = _BRANCH_RE.match(line)
+            if branch_match is not None:
+                mapping.setdefault(branch_match.group(1), section)
+    return mapping
+
+
 def _rcios_names_from_text(text: str) -> list[str]:
     names: set[str] = set()
     collecting = False

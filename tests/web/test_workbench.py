@@ -132,6 +132,7 @@ class TestWorkbenchView:
         assert "推送" in r.text
 
     def test_workbench_shows_manual_review_pending(self, tmp_path, monkeypatch):
+        # 待确认项收敛为 KPI 计数；具体 sha 在分支详情页人工项展示，不再占任务表行
         client = _client(_make_app(tmp_path))
         _login(client)
         payload = _payload(
@@ -150,7 +151,7 @@ class TestWorkbenchView:
         r = client.get("/")
         assert r.status_code == 200
         assert "待确认" in r.text
-        assert "abc123" in r.text
+        assert "abc123" not in r.text
 
     def test_workbench_running_cycle_shows_progress_without_details(
         self, tmp_path, monkeypatch
@@ -172,7 +173,9 @@ class TestWorkbenchView:
         assert r.status_code == 200
         assert "进行中" in r.text
         assert "feat/x" not in r.text
-        assert "推送" not in r.text
+        # KPI 恒显"可推送"卡，但运行中不应有推送操作键
+        assert "可推送" in r.text
+        assert 'data-push-target' not in r.text
 
     def test_workbench_unauthenticated_redirects_to_login(self, tmp_path):
         client = _client(_make_app(tmp_path))

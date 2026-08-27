@@ -1,13 +1,18 @@
 {% extends "base.html" %}
 {% block title %}操作日志{% endblock %}
 {% block content %}
-<h1>操作日志</h1>
-<p>共 {{ records|length }} 条（最近 {{ records|length }} 条，时间倒序）。</p>
+<div class="page-head">
+  <div>
+    <h1>操作日志</h1>
+    <p class="page-sub">敏感操作留痕 · 审计记录永久保留</p>
+  </div>
+  <span class="badge neutral">共 {{ records|length }} 条</span>
+</div>
 
 <section class="panel">
-
   <div class="panel-body">
 {% if records %}
+  <div class="table-wrap">
   <table>
     <thead>
       <tr><th>时间</th><th>用户</th><th>动作</th><th>周期</th><th>目标</th><th>SHA</th><th>结果</th></tr>
@@ -20,7 +25,7 @@
         <td>{{ r.action }}</td>
         <td>
           {%- if r.cycle_id -%}
-            <a href="/cycle/{{ r.cycle_id }}">{{ r.cycle_id }}</a>
+            <a href="/cycle/{{ r.cycle_id }}"><code class="mono">{{ r.cycle_id }}</code></a>
           {%- endif -%}
         </td>
         <td>
@@ -32,7 +37,7 @@
         </td>
         <td>
           {%- if r.cycle_id and r.sha -%}
-            <a href="/cycle/{{ r.cycle_id }}/commit/{{ r.sha }}">{{ r.sha }}</a>
+            <a href="/cycle/{{ r.cycle_id }}/commit/{{ r.sha }}"><code class="mono">{{ r.sha }}</code></a>
           {%- else -%}
             {{ r.sha or "" }}
           {%- endif -%}
@@ -40,13 +45,14 @@
         <td>{{ r.result or "" }}</td>
       </tr>
       {% if r.detail_json %}
-      <tr><td colspan="7"><details><summary>detail</summary><pre>{{ r.detail_json }}</pre></details></td></tr>
+      <tr><td colspan="7"><details><summary>detail</summary><pre class="diff-pre">{{ r.detail_json }}</pre></details></td></tr>
       {% endif %}
       {% endfor %}
     </tbody>
   </table>
+  </div>
   {% else %}
-    <p>暂无操作记录。</p>
+    <div class="empty-state"><span class="empty-ico">☷</span>暂无操作记录。</div>
   {% endif %}
   </div>
 </section>

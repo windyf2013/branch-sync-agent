@@ -1,34 +1,65 @@
 {% extends "base.html" %}
 {% block content %}
+<div class="branch-hero task-status-hero">
+  <div class="branch-hero-head">
+    <h1>任务 #{{ task_id }}</h1>
+    {% set _state_badge = {'queued':'pending','running':'running','succeeded':'success','failed':'failed','interrupted':'interrupted'}.get(task.state, '') %}
+    <span class="badge {{ _state_badge }}">{{ state_label }}</span>
+  </div>
+  <div class="branch-hero-meta">
+    <span><span class="k">类型</span> {{ "同步" if task.kind == "sync" else "重跑" }}</span>
+    <span><span class="k">目标分支</span> {{ task.target }}</span>
+    {% if task.src %}<span><span class="k">源分支</span> {{ task.src }}</span>{% endif %}
+    {% if commit_count %}<span class="k">commit 数：{{ commit_count }}</span>{% endif %}
+    <span><span class="k">发起人</span> {{ task.user }}</span>
+    <span><span class="k">创建</span> {{ task.created_at | localtime }}</span>
+    {% if task.started_at %}<span><span class="k">开始</span> {{ task.started_at | localtime }}</span>{% endif %}
+    {% if task.finished_at %}<span><span class="k">结束</span> {{ task.finished_at | localtime }}</span>{% endif %}
+    <span><span class="k">cycle</span> <code class="mono">{{ task.cycle_id or "—" }}</code></span>
+  </div>
+</div>
+
 <section class="panel">
-<div class="panel-head"><h2>任务 #{{ task_id }}</h2></div>
+<div class="panel-head"><h2>执行进度</h2></div>
   <div class="panel-body">
-<ul>
-    <li>类型：{{ "同步" if task.kind == "sync" else "重跑" }}</li>
-    <li>目标分支：{{ task.target }}</li>
-    {% if task.src %}<li>源分支：{{ task.src }}</li>{% endif %}
-    <li>发起人：{{ task.user }}</li>
-    <li>状态：<span class="badge {{ task.state }}">{{ state_label }}</span></li>
-    {% if task.wait_reason %}<li>说明：{{ task.wait_reason }}</li>{% endif %}
-    {% if task.error %}<li>错误：{{ task.error }}</li>{% endif %}
-    <li>创建时间：{{ task.created_at | localtime }}</li>
-    {% if task.started_at %}<li>开始时间：{{ task.started_at | localtime }}</li>{% endif %}
-    {% if task.finished_at %}<li>结束时间：{{ task.finished_at | localtime }}</li>{% endif %}
-  </ul>
   {% if task.state in ("queued", "running") %}
-  <p>任务执行中，<a href="/tasks/{{ task_id }}">刷新</a>查看最新状态。</p>
+    <div class="progress-track"><div class="progress-fill {% if task.state == 'running' %}progress-running{% endif %}"></div></div>
+    <p class="callout pending">
+      {{ "排队中，等待执行…" if task.state == "queued" else "执行中…" }}
+      <a href="/tasks/{{ task_id }}">刷新</a> 查看最新状态。
+    </p>
   {% else %}
-  <p><a href="/">返回工作台</a></p>
+    <p><a href="/">返回工作台</a></p>
   {% endif %}
-  {% if detail_url %}
-  <p><a href="{{ detail_url }}">查看任务详情（推送 / WebSSH / 重跑 / 放弃）&rarr;</a></p>
-  {% endif %}
+  {% if task.wait_reason %}<p>说明：{{ task.wait_reason }}</p>{% endif %}
+  {% if task.error %}<p class="op-error">错误：{{ task.error }}</p>{% endif %}
   </div>
 </section>
+
+{% if log_tail %}
+<section class="panel">
+<div class="panel-head"><h2>实时输出（自动刷新）</h2></div>
+  <div class="panel-body">
+  <pre class="task-log-tail">{{ log_tail }}</pre>
+  </div>
+</section>
+{% endif %}
+
+{% if detail_url %}
+<section class="panel">
+<div class="panel-head"><h2>完成后</h2></div>
+  <div class="panel-body">
+  <p><a href="{{ detail_url }}" class="btn btn-outline">查看任务详情（推送 / WebSSH / 重跑 / 放弃）&rarr;</a></p>
+  </div>
+</section>
+{% endif %}
 {% if task.state in ("queued", "running") %}
 <script>
 setTimeout(function () { window.location.reload(); }, 2000);
 </script>
+<style>
+.progress-running { width: 60%; }
+</style>
 {% elif detail_url %}
 <script>
 // 任务已完成且投影就绪 → 自动进入详情页（避免手动点击时投影未就绪误 404）

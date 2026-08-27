@@ -6,6 +6,7 @@
 """
 
 import json
+import re
 from datetime import UTC, datetime
 from typing import Annotated
 
@@ -13,7 +14,7 @@ from fastapi import APIRouter, Depends, Request
 
 from bsa_web import projection
 from bsa_web.auth import make_csrf, require_login
-from bsa_web.branches import rcios_branch_names
+from bsa_web.branches import rcios_branch_names, rcios_branch_sections
 from bsa_web.db import abandoned_keys
 
 router = APIRouter(tags=["workbench"])
@@ -52,6 +53,56 @@ def _branch_options(settings) -> list[str]:
     if not settings.branch_file:
         return []
     return rcios_branch_names(settings.branch_file)
+
+
+def _branch_sections(settings) -> dict[str, str]:
+    """分支 → 产品线 映射（branch.md），供 cron 任务按产品线分组/过滤。"""
+    if not settings.branch_file:
+        return {}
+    return rcios_branch_sections(settings.branch_file)
+
+
+def _section_options(sections: dict) -> list[str]:
+    """去重保序的产品线列表（过滤下拉用）。"""
+    seen: list[str] = []
+    for s in sections.values():
+        if s and s not in seen:
+            seen.append(s)
+    return seen
+
+
+def _section_short(section: str) -> str:
+    """产品线短名：'1.1 组网产品分支' → '组网'（剥掉编号与'产品分支'后缀）。"""
+    name = re.sub(r"^\d+(\.\d+)*\s*", "", section or "").strip()
+    for suffix in ("产品分支", "产品主线分支", "分支"):
+        if name.endswith(suffix):
+            name = name[: -len(suffix)]
+            break
+    return name.strip()
+
+
+def _active_manual_count(*task_lists: list[dict]) -> int:
+    """统计排队/执行中的手动任务数（含关联子行）。"""
+    active = 0
+    for tasks in task_lists:
+        for t in tasks:
+            if t.get("state") in ("queued", "running"):
+                active += 1
+    return active
+
+
+def _kpi_counts(auto_tasks: list[dict]) -> dict:
+    """KPI 恒显所需的计数：自动任务总数。"""
+    return {"auto_total": len(auto_tasks)}
+
+
+def _auto_failed_targets(auto_tasks: list[dict]) -> set[str]:
+    """自动周期失败/停批/待处理的目标分支集合，供手动重跑行标注关联关系。"""
+    return {
+        t["target"]
+        for t in auto_tasks
+        if t.get("status") in ("FAILED", "PARTIAL", "MANUAL")
+    }
 
 
 def _build_todo(payload: dict, abandoned: set) -> dict:
@@ -108,31 +159,89 @@ def _parse_ts(value: str | None) -> datetime | None:
     return dt
 
 
-def _auto_tasks(payload: dict, cycle_id: str, abandoned: set) -> list[dict]:
+def _auto_tasks(
+    payload: dict, cycle_id: str, abandoned: set, sections: dict | None = None
+) -> list[dict]:
     """最新周期投影 branch_results 展开为自动任务面板（分支粒度）。
 
     分支级放弃（sha=None）标记面板为已放弃（徽章 + 恢复入口），不再提供推送；
     commit 级放弃仅影响待办区过滤，不改面板状态展示。
+    sections：branch → 产品线 映射，供按产品线分组/过滤 cron 任务。
     """
+    sections = sections or {}
+    decisions = payload.get("decisions") or {}
+    detected = payload.get("detected_commits") or []
+    detected_shas = {c.get("sha") for c in detected if c.get("sha")}
     tasks = []
     for branch in (payload.get("branch_results") or {}).values():
         target = branch.get("target_branch")
         status = branch.get("status") or "UNKNOWN"
+        commits = branch.get("commits") or []
+        synced = sum(
+            1 for cr in commits if cr.get("cherry_pick") in ("OK", "EMPTY")
+        )
+        skipped = sum(
+            1
+            for sha in detected_shas
+            if (decisions.get(sha) or {}).get(target, {}).get("kind")
+            in ("AlreadyIncluded", "OutOfScope")
+        )
         tasks.append(
             {
                 "cycle_id": cycle_id,
                 "target": target,
                 "status": status,
                 "badge": _STATUS_LABELS.get(status, status),
-                "commits": len(branch.get("commits") or []),
+                "commits": len(commits),
+                "synced": synced,
+                "skipped": skipped,
+                "_applied_shas": [
+                    cr.get("sha")
+                    for cr in commits
+                    if cr.get("sha") and cr.get("cherry_pick") in ("OK", "EMPTY")
+                ],
                 "worktree_path": branch.get("worktree_path"),
                 "patch_path": branch.get("patch_path"),
                 "abandoned": (target, None) in abandoned,
                 "user": "system",
                 "source": "cron",
+                "section": sections.get(target, ""),
+                "kind": "cycle",
+                "created_at": "",
             }
         )
     return tasks
+
+
+def _cycle_commit_summary(payload: dict, auto_tasks: list[dict]) -> dict:
+    """周期级检测/同步/跳过摘要（上下文条展示）。
+
+    - 检测：窗口内扫描到的 commit 总数；
+    - 同步：已实际应用到目标分支的 distinct commit 数（cherry_pick OK/EMPTY）；
+    - 跳过：未应用且对该分支判定为 AlreadyIncluded/OutOfScope 的 distinct commit 数。
+    其余（ManualReview 待确认等）计入差值，由待确认行体现。
+    """
+    detected = len(payload.get("detected_commits") or [])
+    synced_shas: set[str] = set()
+    for t in auto_tasks:
+        synced_shas.update(t.get("_applied_shas") or [])
+    skipped_shas: set[str] = set()
+    decisions = payload.get("decisions") or {}
+    for c in payload.get("detected_commits") or []:
+        sha = c.get("sha")
+        if not sha or sha in synced_shas:
+            continue
+        kinds = {
+            (d.get("kind") or "")
+            for d in (decisions.get(sha) or {}).values()
+        }
+        if kinds and kinds <= {"AlreadyIncluded", "OutOfScope"}:
+            skipped_shas.add(sha)
+    return {
+        "cycle_detected": detected,
+        "cycle_synced": len(synced_shas),
+        "cycle_skipped": len(skipped_shas),
+    }
 
 
 def _task_commits(task: dict) -> int | None:
@@ -145,7 +254,9 @@ def _task_commits(task: dict) -> int | None:
     return task.get("commits")
 
 
-def _manual_tasks(db, log_dir: str, window_start: str | None) -> list[dict]:
+def _manual_tasks(
+    db, log_dir: str, window_start: str | None, sections: dict | None = None
+) -> list[dict]:
     """tasks 表展开为手动任务面板（唯一数据源）。
 
     解耦架构下所有任务（web/executor 发起的 sync/rerun，以及 executor 对账
@@ -153,7 +264,9 @@ def _manual_tasks(db, log_dir: str, window_start: str | None) -> list[dict]:
     不再枚举 checkpoint 线程。终态任务超过最近周期窗口收敛进历史页；
     进行中/排队/interrupted 始终展示。状态唯一来自 tasks.state（投影仅补
     commits 等详情字段，不覆盖任务状态）。
+    sections：branch → 产品线 映射，供统一任务表按产品线过滤。
     """
+    sections = sections or {}
     rows = db.execute(
         "SELECT id, kind, target, src, fresh, state, error, cycle_id, user, source, "
         "created_at, shas, commits FROM tasks WHERE kind IN ('sync','rerun') ORDER BY id DESC"
@@ -175,11 +288,12 @@ def _manual_tasks(db, log_dir: str, window_start: str | None) -> list[dict]:
         # P2-5：commit 数从任务行取（sync 用 shas 长度 / rerun 用引擎落库的 commits），
         # 不再为每个手动任务 spawn `bsa report` 子进程（威胁首页 <3s）。
         commits = _task_commits(task)
+        target = task["target"]
         tasks.append(
             {
                 "task_id": task["id"],
                 "cycle_id": cycle_id,
-                "target": task["target"],
+                "target": target,
                 "kind": task["kind"],
                 "state": task["state"],
                 "status": status,
@@ -191,10 +305,39 @@ def _manual_tasks(db, log_dir: str, window_start: str | None) -> list[dict]:
                 "error": task["error"],
                 "user": task["user"],
                 "source": task["source"] or "web",
+                "section": sections.get(target, ""),
             }
         )
     tasks.sort(key=lambda t: t.get("created_at") or "", reverse=True)
     return tasks
+
+
+def _shorten_sections(tasks: list[dict]) -> list[dict]:
+    """把每行的 section 替换为短名，并附 section_short 供展示。"""
+    for t in tasks:
+        t["section_short"] = _section_short(t.get("section") or "")
+    return tasks
+
+
+def _link_rerun_children(
+    auto_tasks: list[dict], manual_tasks: list[dict]
+) -> tuple[list[dict], list[dict]]:
+    """把命中自动失败分支的手动重跑任务作为子行挂到对应自动任务下。
+
+    返回 (auto_tasks, standalone_manual)：
+    - auto_tasks：每个元素新增 children 列表（关联的手动重跑任务）；
+    - standalone_manual：未命中关联的手动任务（同步/重跑）独立成行。
+    """
+    failed_targets = _auto_failed_targets(auto_tasks)
+    by_target = {t["target"]: t for t in auto_tasks}
+    standalone = []
+    for t in manual_tasks:
+        if t.get("kind") == "rerun" and t.get("target") in failed_targets:
+            parent = by_target[t["target"]]
+            parent.setdefault("children", []).append(t)
+        else:
+            standalone.append(t)
+    return auto_tasks, standalone
 
 
 def _window_start(log_dir: str) -> str | None:
@@ -251,53 +394,77 @@ def workbench(request: Request, user: Annotated[dict, Depends(require_login)]):
     records = projection.list_cycles(log_dir)
     op_error = _op_error(request)
     branch_options = _branch_options(settings)
+    sections = _branch_sections(settings)
     db = request.app.state.db
+    section_options = _section_options(sections)
 
     running = next((r for r in records if r.get("status") == "running"), None)
     if running is not None:
         # 运行中周期：仅显示"进行中"徽章，不渲染未完成周期详情（手动任务照常展示）
+        auto_tasks: list[dict] = []
+        manual_rows = _manual_tasks(db, log_dir, _window_start(log_dir), sections)
         return _render(request, branch_options=branch_options,
             user=user,
             csrf=csrf,
             cycles=records,
             agent_status="running",
             running_cycle_id=running.get("cycle_id"),
-            auto_tasks=[],
+            auto_tasks=_shorten_sections(auto_tasks),
+            standalone_manual=_shorten_sections(manual_rows),
+            section_options=section_options,
             cycle_task=_cycle_task(db, running.get("cycle_id")),
-            manual_tasks=_manual_tasks(db, log_dir, _window_start(log_dir)),
+            active_manual=_active_manual_count(manual_rows),
+            **_kpi_counts(auto_tasks),
             op_error=op_error,
         )
 
     cycle_id = projection.latest_completed_cycle(log_dir)
     if cycle_id is None:
+        auto_tasks = []
+        manual_rows = _manual_tasks(db, log_dir, None, sections)
         return _render(request, branch_options=branch_options,
             user=user,
             csrf=csrf,
             cycles=records,
             agent_status=None,
-            auto_tasks=[],
+            auto_tasks=_shorten_sections(auto_tasks),
+            standalone_manual=_shorten_sections(manual_rows),
+            section_options=section_options,
             cycle_task=_cycle_task(db, cycle_id),
-            manual_tasks=_manual_tasks(db, log_dir, None),
+            active_manual=_active_manual_count(manual_rows),
+            **_kpi_counts(auto_tasks),
             op_error=op_error,
         )
 
     payload = projection.load_cycle(log_dir, cycle_id)
     if payload is None:
         # 子进程投影失败（returncode 非 0）→ 平台容错，提示不可用
+        auto_tasks = []
+        manual_rows = _manual_tasks(db, log_dir, None, sections)
         return _render(request, branch_options=branch_options,
             user=user,
             csrf=csrf,
             cycles=records,
             agent_status="unavailable",
             current_cycle_id=cycle_id,
-            auto_tasks=[],
+            auto_tasks=_shorten_sections(auto_tasks),
+            standalone_manual=_shorten_sections(manual_rows),
+            section_options=section_options,
             cycle_task=_cycle_task(db, cycle_id),
-            manual_tasks=_manual_tasks(db, log_dir, None),
+            active_manual=_active_manual_count(manual_rows),
+            **_kpi_counts(auto_tasks),
             op_error=op_error,
         )
 
     abandoned = abandoned_keys(db, cycle_id)
     window_start = (payload.get("scan_window") or [None])[0]
+    todo = _build_todo(payload, abandoned)
+    auto_tasks = _auto_tasks(payload, cycle_id, abandoned, sections)
+    manual_tasks = _manual_tasks(db, log_dir, window_start, sections)
+    auto_tasks, standalone_manual = _link_rerun_children(auto_tasks, manual_tasks)
+    active_manual = _active_manual_count(standalone_manual) + sum(
+        _active_manual_count(t.get("children") or []) for t in auto_tasks
+    )
     return _render(request, branch_options=branch_options,
         user=user,
         csrf=csrf,
@@ -306,10 +473,14 @@ def workbench(request: Request, user: Annotated[dict, Depends(require_login)]):
         agent_status="failed" if payload.get("status") in ("FAILED", "PARTIAL") else "done",
         cycle_status=payload.get("status"),
         payload=payload,
-        auto_tasks=_auto_tasks(payload, cycle_id, abandoned),
+        auto_tasks=_shorten_sections(auto_tasks),
+        standalone_manual=_shorten_sections(standalone_manual),
+        section_options=section_options,
         cycle_task=_cycle_task(db, cycle_id),
-        manual_tasks=_manual_tasks(db, log_dir, window_start),
         abandoned_items=_abandoned_items(cycle_id, abandoned),
+        active_manual=active_manual,
+        **_kpi_counts(auto_tasks),
+        **_cycle_commit_summary(payload, auto_tasks),
         op_error=op_error,
-        **_build_todo(payload, abandoned),
+        **todo,
     )

@@ -218,6 +218,23 @@ def _converge_cycle_record(log_dir: str, cycle_id: str | None, status: str) -> N
         pass
 
 
+def task_log_path(log_dir: str, task_id: int) -> Path:
+    """任务执行日志文件：logs/tasks/task-<id>.log（流式实时写盘）。"""
+    return Path(log_dir) / "tasks" / f"task-{task_id}.log"
+
+
+def task_log_tail(log_dir: str, task_id: int, lines: int = 30) -> str:
+    """任务执行日志尾部（供任务页实时展示/失败兜底错误摘要）。"""
+    path = task_log_path(log_dir, task_id)
+    if not path.is_file():
+        return ""
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return ""
+    return "\n".join(text.splitlines()[-lines:])
+
+
 class TaskExecutor:
     """独立执行守护：DB 轮询认领 + worker + 调度器 + 启动对账。
 
@@ -459,8 +476,10 @@ class TaskExecutor:
         # 兜底：引擎未写终态（如配置错误早退，register_start 都未执行）→ 标 failed
         current = get_task(self.db, task_id)
         if current is not None and current["state"] == "running":
-            error = (stderr or stdout or "执行失败").strip()[:_ERROR_MAX_LEN]
-            self._mark(task_id, "failed", error=error or "执行异常", finished_at=_now_iso())
+            error = (stderr or stdout or "").strip()
+            if not error:
+                error = task_log_tail(self.log_dir, task_id) or "执行失败"
+            self._mark(task_id, "failed", error=error[:_ERROR_MAX_LEN], finished_at=_now_iso())
             _converge_cycle_record(self.log_dir, current.get("cycle_id"), "FAILED")
 
     def _preassign_cycle_id(self, row: dict) -> None:
@@ -562,22 +581,60 @@ class TaskExecutor:
         self.db.commit()
 
     def _run_cli(self, cmd: list[str], env: dict[str, str]) -> tuple[int, str, str]:
-        """Popen 调 CLI；超时 kill。env 已含 LOG_DIR + cycle 覆盖。记录 child PID。"""
-        proc = subprocess.Popen(
-            cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=env
+        """Popen 调 CLI；超时 kill。env 已含 LOG_DIR + cycle 覆盖。记录 child PID。
+
+        有 task_id 时把子进程 stdout/stderr 流式追加到 logs/tasks/task-<id>.log
+        （执行过程实时可见，任务页 tail 展示）；无 task_id（直调测试）退回捕获。
+        """
+        log_path = (
+            task_log_path(self.log_dir, self._last_task_id)
+            if self._last_task_id is not None
+            else None
         )
+        if log_path is not None:
+            log_path.parent.mkdir(parents=True, exist_ok=True)
+        sink = open(log_path, "ab") if log_path is not None else None
+        try:
+            if sink is not None:
+                proc = subprocess.Popen(
+                    cmd, stdout=sink, stderr=subprocess.STDOUT, env=env
+                )
+            else:
+                proc = subprocess.Popen(
+                    cmd,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    text=True,
+                    env=env,
+                )
+        except OSError:
+            if sink is not None:
+                sink.close()
+            raise
         # P0-1：记录 child PID 到任务行，重启对账据此探活（区分孤儿仍在跑 vs 真死）
         task_id = getattr(self, "_last_task_id", None)
         if task_id is not None:
             self.db.execute("UPDATE tasks SET pid=? WHERE id=?", (proc.pid, task_id))
             self.db.commit()
         try:
+            if sink is not None:
+                proc.wait(timeout=self._timeout_sec)
+                return proc.returncode, "", ""
             stdout, stderr = proc.communicate(timeout=self._timeout_sec)
+            return proc.returncode, stdout, stderr
         except subprocess.TimeoutExpired:
             proc.kill()
-            proc.communicate()
+            if sink is not None:
+                try:
+                    proc.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    pass
+            else:
+                proc.communicate()
             raise
-        return proc.returncode, stdout, stderr
+        finally:
+            if sink is not None:
+                sink.close()
 
     # ---- 内置调度器（cron） ----
 

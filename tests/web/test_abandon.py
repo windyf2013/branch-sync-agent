@@ -210,12 +210,14 @@ def test_workbench_filters_abandoned_and_restores(tmp_path, monkeypatch):
     r = client.get("/")
     assert 'data-push-target="feat/x"' in r.text
     assert "待确认" in r.text
-    assert "abc123" in r.text
+    # 待确认 sha 不再占工作台任务表行（收敛到 KPI 计数与分支详情人工项）
+    assert "abc123" not in r.text
 
     _post(client, "/api/abandon", {"cycle_id": "cycle-2026-08-20", "target": "feat/x"})
     r = client.get("/")
     assert 'data-push-target="feat/x"' not in r.text
-    assert "待确认" not in r.text
+    # KPI 恒显"待确认"卡
+    assert "待确认" in r.text
     assert "abc123" not in r.text
     assert "已放弃" in r.text
     assert "feat/x" in r.text
@@ -225,4 +227,4 @@ def test_workbench_filters_abandoned_and_restores(tmp_path, monkeypatch):
     assert "已放弃" not in r.text
     assert 'data-push-target="feat/x"' in r.text
     assert "待确认" in r.text
-    assert "abc123" in r.text
+    assert "abc123" not in r.text

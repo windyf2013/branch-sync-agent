@@ -1,23 +1,17 @@
 {% extends "base.html" %}
 {% block title %}详情{% endblock %}
-{% block extra_head %}
-<style>
-  table { border-collapse: collapse; width: 100%; margin-top: 0.5rem; }
-  th, td { border: 1px solid #e2e8f0; padding: 0.35rem 0.5rem; text-align: left;
-           vertical-align: top; font-size: 0.9rem; }
-  pre { background: #f6f8fa; padding: 0.5rem; overflow-x: auto;
-        max-height: 24rem; overflow-y: auto; font-size: 0.8rem; }
-  .muted { color: #64748b; font-size: 0.85rem; }
-  details { margin: 0.25rem 0; }
-</style>
-{% endblock %}
-
 {% block content %}
 {% if view == "cycle" %}
 
-<h1>周期概览 {{ cycle_id }}</h1>
+<div class="page-head">
+  <div>
+    <h1>周期概览</h1>
+    <p class="page-sub"><code class="mono">{{ cycle_id }}</code></p>
+  </div>
+  {% if payload %}<span class="badge {{ payload.status | lower }}">{{ payload.status }}</span>{% endif %}
+</div>
 {% if running %}
-  <p>该周期进行中，报告尚未生成。</p>
+  <p class="callout pending">该周期进行中，报告尚未生成。</p>
 {% else %}
 <p class="muted"><a href="/history">&larr; 返回历史</a></p>
 
@@ -25,15 +19,15 @@
 <div class="panel-head"><h2>Action Required</h2></div>
   <div class="panel-body">
 {% if action_required %}
-  <ul>
+  <ul class="todo-list">
     {% for item in action_required %}
-    <li>
+    <li class="todo-item">
       {% if item.error %}
         <span class="badge failed">{{ item.node }} 节点错误</span> &mdash; {{ item.error }}
       {% else %}
         <span class="badge manual">{{ item.kind }}</span>
-        <a href="/cycle/{{ payload.cycle_id }}/commit/{{ item.sha }}">{{ item.sha }}</a>
-        &rarr; {{ item.branch }}
+        <a href="/cycle/{{ payload.cycle_id }}/commit/{{ item.sha }}"><code class="mono">{{ item.sha }}</code></a>
+        <span class="todo-title">→ {{ item.branch }}</span>
         {% if item.evidence %}<ul>{% for e in item.evidence %}<li class="muted">{{ e }}</li>{% endfor %}</ul>{% endif %}
       {% endif %}
     </li>
@@ -47,12 +41,13 @@
 <div class="panel-head"><h2>已成功同步</h2></div>
   <div class="panel-body">
 {% if synced_branches %}
-  <ul>
+  <ul class="todo-list">
     {% for b in synced_branches %}
-    <li><span class="badge success">{{ b.status }}</span>
-      <a href="/cycle/{{ payload.cycle_id }}/target/{{ b.target_branch }}">{{ b.target_branch }}</a>
+    <li class="todo-item">
+      <span class="badge success">{{ b.status }}</span>
+      <a href="/cycle/{{ payload.cycle_id }}/target/{{ b.target_branch }}" class="todo-title">{{ b.target_branch }}</a>
       <span class="muted">{{ b.worktree_path }}</span>
-      {% if b.patch_path %}<a href="/cycle/{{ payload.cycle_id }}/target/{{ b.target_branch }}/patch">下载 patch</a>{% endif %}
+      {% if b.patch_path %}<a href="/cycle/{{ payload.cycle_id }}/target/{{ b.target_branch }}/patch">下载完整 patch</a>{% endif %}
     </li>
     {% endfor %}
   </ul>
@@ -69,19 +64,21 @@
 <div class="panel-head"><h2>检测信息</h2></div>
   <div class="panel-body">
 {% if detected_commits %}
+  <div class="table-wrap">
   <table>
     <thead><tr><th>commit</th><th>说明</th><th>来源分支</th><th>改动文件</th></tr></thead>
     <tbody>
       {% for c in detected_commits %}
       <tr>
-        <td><a href="/cycle/{{ payload.cycle_id }}/commit/{{ c.sha }}">{{ c.sha }}</a></td>
+        <td><a href="/cycle/{{ payload.cycle_id }}/commit/{{ c.sha }}"><code class="mono">{{ c.sha[:10] }}</code></a></td>
         <td>{{ c.message }}</td>
         <td>{{ c.source_branch }}</td>
-        <td>{{ c.changed_files | length }}</td>
+        <td class="num">{{ c.changed_files | length }}</td>
       </tr>
       {% endfor %}
     </tbody>
   </table>
+  </div>
   {% else %}<p>本周期未检测到 commit。</p>{% endif %}
   </div>
 </section>
@@ -89,22 +86,37 @@
 
 {% elif view == "target" %}
 
-<h1>目标分支 {{ target }}</h1>
+<div class="branch-hero">
+  <div class="branch-hero-head">
+    <h1>目标分支</h1>
+    <span class="badge {{ branch.status | lower }}">{{ branch.status }}</span>
+    <code class="mono">{{ target }}</code>
+  </div>
+</div>
 <p class="muted"><a href="/cycle/{{ payload.cycle_id }}">&larr; 返回周期概览</a></p>
 
 {% include "_target_detail.html" %}
 
 {% elif view == "commit" %}
 
-<h1>commit {{ commit.sha }}</h1>
+<div class="branch-hero">
+  <div class="branch-hero-head">
+    <h1>commit</h1>
+    <code class="mono">{{ commit.sha }}</code>
+  </div>
+  <div class="branch-hero-meta">
+    <span><span class="k">作者</span> {{ commit.author }}</span>
+    <span><span class="k">时间</span> {{ commit.committed_at | localtime }}</span>
+    <span><span class="k">来源分支</span> {{ commit.source_branch }}</span>
+  </div>
+</div>
 <p class="muted"><a href="/cycle/{{ payload.cycle_id }}">&larr; 返回周期概览</a></p>
 
 <section class="panel">
 <div class="panel-head"><h2>基本信息</h2></div>
   <div class="panel-body">
 <p>{{ commit.message }}</p>
-  <p class="muted">作者：{{ commit.author }} · 时间：{{ commit.committed_at | localtime }} · 来源分支：{{ commit.source_branch }}</p>
-  <p>改动文件：{{ commit.changed_files | join(", ") }}</p>
+  <p class="muted">改动文件：{{ commit.changed_files | join(", ") }}</p>
   </div>
 </section>
 
@@ -112,9 +124,12 @@
 <div class="panel-head"><h2>结论</h2></div>
   <div class="panel-body">
 {% if conclusions %}
-  <ul>
+  <ul class="todo-list">
     {% for t, concl in conclusions %}
-    <li>{{ t }} &rarr; <span class="badge">{{ concl.kind }}</span>（置信度 {{ concl.confidence }}）
+    <li class="todo-item">
+      <span class="todo-title">{{ t }}</span> →
+      <span class="badge">{{ concl.kind }}</span>
+      <span class="muted">（置信度 {{ concl.confidence }}）</span>
       {% if concl.evidence %}<ul>{% for e in concl.evidence %}<li class="muted">{{ e }}</li>{% endfor %}</ul>{% endif %}
     </li>
     {% endfor %}
@@ -127,7 +142,7 @@
 <div class="panel-head"><h2>patch</h2></div>
   <div class="panel-body">
 {% if patch_preview %}
-    <pre>{{ patch_preview }}</pre>
+    <pre class="diff-pre">{{ patch_preview }}</pre>
     <p class="muted">{% if patch_truncated %}已截断至前 500 行。{% endif %}
       <a href="/cycle/{{ payload.cycle_id }}/commit/{{ commit.sha }}/patch">下载完整 patch</a></p>
   {% else %}<p>该 commit 无 patch 内容。</p>{% endif %}
