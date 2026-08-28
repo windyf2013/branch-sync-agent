@@ -6,6 +6,8 @@
 from __future__ import annotations
 
 import re
+import shutil
+import threading
 from types import SimpleNamespace
 
 import pytest
@@ -245,6 +247,50 @@ class TestSshOpen:
         assert time.monotonic() - start < 5  # 未永久挂起，按约 0.5s 超时抛错
         assert proc.poll() is not None  # 超时后整进程组已回收
 
+    def test_port_parse_survives_high_fd(self, tmp_path, monkeypatch):
+        """端口解析不因 fd >= 1024 崩溃（select.select 的 FD_SETSIZE 硬限制）。
+
+        回归：全量测试/长跑进程 fd 撑爆后，ttyd 子进程 stdout fd 超过 1024，
+        select.select 抛 "filedescriptor out of range in select()"，WebSSH open 失败。
+        selectors 走 epoll/poll 无此上限。用真实高 fd 管道验证，而非伪造 fileno。
+        """
+        import os as real_os
+
+        from bsa_web.ssh import spawn_ttyd
+
+        worktree = tmp_path / "wt"
+        worktree.mkdir()
+
+        # 造一个真实的高 fd 管道（读端 dup 到 2048，> FD_SETSIZE 1024）
+        r, w = real_os.pipe()
+        high_fd = 2048
+        real_os.dup2(r, high_fd)
+        real_os.close(r)
+        try:
+            real_os.write(w, b"Listening on port: 45200\n")
+            real_os.close(w)
+
+            class _HighFdProc:
+                def __init__(self):
+                    self.stdout = self
+                    self.pid = 999999
+
+                def fileno(self):
+                    return high_fd
+
+                def poll(self):
+                    return None
+
+            proc = _HighFdProc()
+            monkeypatch.setattr("bsa_web.ssh.subprocess.Popen", lambda *a, **k: proc)
+            monkeypatch.setattr("bsa_web.ssh.SSH_SPAWN_PORT_TIMEOUT_SEC", 2.0)
+            # 高 fd 是真实存在的（dup2 产出），os.read 直接读即可，无需 monkeypatch
+
+            port, _ = spawn_ttyd(str(worktree))
+            assert port == 45200
+        finally:
+            real_os.close(high_fd)
+
 
 class TestSshSession:
     def test_ssh_page_renders_with_ws_path(self, tmp_path, monkeypatch):
@@ -261,6 +307,36 @@ class TestSshSession:
         r = client.get(f"/ssh/{token}")
         assert r.status_code == 200
         assert f"/ssh/ws/{token}" in r.text
+
+    def test_ssh_page_implements_ttyd_client_protocol(self, tmp_path, monkeypatch):
+        """终端页必须实现 ttyd 客户端协议，否则「连上但无任何反应」。
+
+        历史 bug：onopen 不发握手 JSON → ttyd 永不 spawn shell。
+        协议由 TestRealTtydProtocol 对真实 ttyd 实测确认，此处守住前端实现。
+        仓库无 JS 测试框架，故以模板片段作为契约断言。
+        """
+        app = _make_app(tmp_path)
+        client = _client(app)
+        _login(client)
+        worktree = tmp_path / "wt"
+        worktree.mkdir()
+        _mount_cycle(
+            monkeypatch,
+            _payload({"feat/bad": _branch("feat/bad", "FAILED", str(worktree))}),
+        )
+        token = _open(client, worktree)
+        html = client.get(f"/ssh/{token}").text
+
+        # 1) 二进制帧必须以 ArrayBuffer 收取，否则拿到 Blob 写不进终端
+        assert "arraybuffer" in html.lower(), "缺少 binaryType=arraybuffer"
+        # 2) 握手 JSON —— 本 bug 的根因，缺它 shell 永不派生
+        assert "AuthToken" in html, "onopen 未发送 ttyd 握手 JSON"
+        assert "columns" in html and "rows" in html, "握手缺 columns/rows"
+        # 3) 输入需带 '0' INPUT 前缀（实测不带则完全不执行）
+        assert "TextEncoder" in html, "输入未按二进制帧编码"
+        # 4) 输出需按首字节分发并剥离（实测首帧为 '1' 标题帧，必须忽略）
+        assert "TextDecoder" in html, "输出未解码"
+        assert "subarray(1)" in html or "slice(1)" in html, "输出未剥离命令字节"
 
     def test_ssh_page_invalid_token_404(self, tmp_path, monkeypatch):
         app = _make_app(tmp_path)
@@ -486,6 +562,47 @@ class TestSshWs:
                 ws.receive_text()
         assert exc.value.code == 1000
 
+    def test_ws_disconnect_reaps_ttyd_process(self, tmp_path, monkeypatch):
+        """WS 断开必须回收 ttyd 进程：客户端直接关浏览器/断网也 kill，不留孤儿。
+
+        回归：ssh_ws 在 relay 结束后只 close 客户端 WS，从不回收 ttyd 进程——
+        只有点「关闭终端」按钮走 POST /api/ssh/close 才回收，直接断开就泄漏。
+        """
+        import bsa_web.ssh as ssh_mod
+
+        app = _make_app(tmp_path)
+        client = _client(app)
+        _login(client)
+        worktree = tmp_path / "wt"
+        worktree.mkdir()
+        _mount_cycle(
+            monkeypatch,
+            _payload({"feat/bad": _branch("feat/bad", "FAILED", str(worktree))}),
+        )
+        killed: list = []
+        monkeypatch.setattr("bsa_web.views.ssh.spawn_ttyd", lambda wt: (_PORT, _fake_proc()))
+        monkeypatch.setattr(ssh_mod, "_kill_process", lambda proc: killed.append(proc))
+        r = _post(client, "/api/ssh/open", {"cycle_id": _CYCLE, "target": "feat/bad"})
+        token = r.json()["token"]
+        assert token in ssh_mod._PROCESSES
+
+        async def silent_relay(websocket, uri, session):
+            return
+
+        monkeypatch.setattr("bsa_web.views.ssh._ws_relay", silent_relay)
+        from starlette.websockets import WebSocketDisconnect
+
+        with pytest.raises(WebSocketDisconnect):
+            with client.websocket_connect(f"/ssh/ws/{token}") as ws:
+                ws.receive_text()
+
+        assert len(killed) == 1, "WS 断开后必须 kill ttyd 进程"
+        assert token not in ssh_mod._PROCESSES
+        rows = app.state.db.execute(
+            "SELECT * FROM ssh_sessions WHERE token=?", (token,)
+        ).fetchall()
+        assert len(rows) == 0
+
 
 class TestParsePortRealTtyd:
     """ttyd 1.7 真实输出回归：`Listening on port: 44251`（带冒号）。"""
@@ -566,3 +683,97 @@ class TestWsRelayContract:
         assert captured["subprotocols"] == ["tty"]
         assert captured["sent_to_ttyd"] == b"client-input"
         assert captured["sent_to_client"] == b"ttyd-output"
+
+
+@pytest.mark.skipif(shutil.which("ttyd") is None, reason="本机无 ttyd")
+class TestRealTtydProtocol:
+    """真机 ttyd 协议契约：证明「握手 JSON → shell 派生 → 输出回传」整条链路。
+
+    ttyd 1.7 只在收到客户端首条 JSON 消息（命令字节 = JSON 的 `{`）时才
+    spawn_process；不发握手就会「连上但永远无输出」——这正是 ssh.html 的
+    历史 bug。本用例锁定 ssh.html 必须实现的那套字节协议：
+    握手 `{"AuthToken":"","columns":N,"rows":M}`、输入 `'0'` 前缀、
+    输出首字节 `'0'` 为 OUTPUT。
+    """
+
+    def _drain_until(self, ws, needle: bytes, timeout: float = 15.0) -> list[bytes]:
+        """后台线程逐帧收取直到某帧含 needle；超时返回已收帧（断言报错可读）。
+
+        返回帧列表而非拼接串：ttyd 的帧类型在**每帧首字节**，拼接后无法区分
+        （实测首帧为 '1' SET_WINDOW_TITLE，OUTPUT 帧在其后）。
+        """
+        frames: list[bytes] = []
+
+        def pump() -> None:
+            try:
+                while not any(needle in f for f in frames):
+                    frames.append(ws.receive_bytes())
+            except Exception:  # noqa: BLE001 — 连接关闭即结束，断言负责报错
+                pass
+
+        t = threading.Thread(target=pump, daemon=True)
+        t.start()
+        t.join(timeout)
+        return list(frames)
+
+    def test_handshake_spawns_shell_and_echoes_input(self, tmp_path, monkeypatch):
+        import bsa_web.ssh as ssh_mod
+
+        app = _make_app(tmp_path)
+        client = _client(app)
+        _login(client)
+        worktree = tmp_path / "wt"
+        worktree.mkdir()
+        (worktree / "sentinel_file.txt").write_text("x", encoding="utf-8")
+        _mount_cycle(
+            monkeypatch,
+            _payload({"feat/bad": _branch("feat/bad", "FAILED", str(worktree))}),
+        )
+        # 不 patch spawn_ttyd —— 起真实 ttyd 进程
+        r = _post(client, "/api/ssh/open", {"cycle_id": _CYCLE, "target": "feat/bad"})
+        assert r.status_code == 200, r.text
+        token = r.json()["token"]
+        try:
+            with client.websocket_connect(f"/ssh/ws/{token}") as ws:
+                # 1) 握手：没有这条，ttyd 永不 spawn shell（本 bug 根因）
+                ws.send_text('{"AuthToken":"","columns":80,"rows":24}')
+                # 2) 输入必须带 '0' (INPUT) 前缀
+                ws.send_bytes(b"0echo __BSA_MARKER__\n")
+                frames = self._drain_until(ws, b"__BSA_MARKER__")
+            hit = [f for f in frames if b"__BSA_MARKER__" in f]
+            assert hit, f"未收到 shell 回显，实收帧: {[f[:80] for f in frames]!r}"
+            # 3) 承载回显的帧首字节必须是 '0' = OUTPUT，ssh.html 需剥离后再 write
+            assert hit[0][0:1] == b"0", f"OUTPUT 帧首字节应为 '0'，实为 {hit[0][0:1]!r}"
+            # 4) 记录实测：ttyd 先发 '1' SET_WINDOW_TITLE，客户端必须忽略非 '0' 帧，
+            #    否则标题帧会被当作终端内容写进屏幕
+            assert frames[0][0:1] in (b"0", b"1"), f"未知帧类型 {frames[0][0:1]!r}"
+        finally:
+            proc = ssh_mod._PROCESSES.pop(token, None)
+            if proc is not None:
+                ssh_mod._kill_process(proc)
+
+    def test_input_without_command_prefix_is_not_executed(self, tmp_path, monkeypatch):
+        """反证：不加 '0' 前缀的裸输入不会被当作 INPUT 执行（旧 ssh.html 的写法）。"""
+        import bsa_web.ssh as ssh_mod
+
+        app = _make_app(tmp_path)
+        client = _client(app)
+        _login(client)
+        worktree = tmp_path / "wt"
+        worktree.mkdir()
+        _mount_cycle(
+            monkeypatch,
+            _payload({"feat/bad": _branch("feat/bad", "FAILED", str(worktree))}),
+        )
+        r = _post(client, "/api/ssh/open", {"cycle_id": _CYCLE, "target": "feat/bad"})
+        token = r.json()["token"]
+        try:
+            with client.websocket_connect(f"/ssh/ws/{token}") as ws:
+                ws.send_text('{"AuthToken":"","columns":80,"rows":24}')
+                ws.send_bytes(b"echo __NOPREFIX__\n")  # 缺 '0'
+                frames = self._drain_until(ws, b"__NOPREFIX__", timeout=5.0)
+            assert not any(b"__NOPREFIX__" in f for f in frames)
+        finally:
+            proc = ssh_mod._PROCESSES.pop(token, None)
+            if proc is not None:
+                ssh_mod._kill_process(proc)

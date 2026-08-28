@@ -230,3 +230,11 @@ async def ssh_ws(websocket: WebSocket, token: str):
     except Exception as exc:
         logger.warning("ws 反代异常（%s）: %s", uri, exc)
         await websocket.close(code=1011)
+    finally:
+        # WS 一旦断开（含客户端直接关浏览器/断网）必须回收 ttyd 进程，否则泄漏
+        # 成孤儿（start_new_session 独立进程组，不被 web 进程重启收割）。close_session
+        # 幂等：行已删返回 False，不重复审计；进程句柄缺失则仅清行。
+        try:
+            ssh.close_session(_app_for(websocket).state.db, token)
+        except Exception as exc:  # noqa: BLE001 — 回收失败不能把 WS 错误放大
+            logger.warning("回收 ttyd 会话失败（%s）: %s", token, exc)

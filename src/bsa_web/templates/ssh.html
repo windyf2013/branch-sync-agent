@@ -36,16 +36,47 @@
   term.open(document.getElementById("terminal"));
   fit.fit();
 
+  // ttyd 1.7 客户端协议（已对真实 ttyd 实测，见 TestRealTtydProtocol）：
+  //   服务端 → 客户端：帧首字节 '0'=输出 '1'=设置标题 '2'=偏好设置
+  //   客户端 → 服务端：'0'=输入 '1'=resize；首条消息必须是握手 JSON
+  // ttyd 只在收到握手 JSON 时才 spawn shell —— 不发它就会“连上但永远无输出”。
+  var CMD_OUTPUT = 0x30; // '0'
+  var encoder = new TextEncoder();
+  var decoder = new TextDecoder();
+
+  function sendHandshake() {
+    ws.send(JSON.stringify({
+      AuthToken: "",
+      columns: term.cols,
+      rows: term.rows,
+    }));
+  }
+
+  function sendResize() {
+    if (ws && ws.readyState === WebSocket.OPEN) {
+      ws.send("1" + JSON.stringify({ columns: term.cols, rows: term.rows }));
+    }
+  }
+
   var ws;
   function connect() {
     ws = new WebSocket(proto + location.host + wsUrl);
+    // 必须显式声明，否则二进制帧到达时是 Blob，term.write 无法渲染
+    ws.binaryType = "arraybuffer";
     ws.onopen = function () {
       status.textContent = "已连接";
-      term.focus();
       fit.fit();
+      sendHandshake();
+      sendResize();
+      term.focus();
     };
     ws.onmessage = function (ev) {
-      term.write(ev.data);
+      var buf = new Uint8Array(ev.data);
+      if (buf.length === 0) { return; }
+      // 非输出帧（'1' 标题 / '2' 偏好）必须忽略，否则会被当作终端内容写进屏幕
+      if (buf[0] === CMD_OUTPUT) {
+        term.write(decoder.decode(buf.subarray(1)));
+      }
     };
     ws.onclose = function (ev) {
       status.textContent = "连接已断开（" + ev.code + "）";
@@ -56,12 +87,14 @@
   }
   term.onData(function (data) {
     if (ws && ws.readyState === WebSocket.OPEN) {
-      ws.send(data);
+      // '0' = INPUT 命令字节；实测不带前缀的裸输入 ttyd 完全不执行
+      ws.send(encoder.encode("0" + data));
     }
   });
 
   window.addEventListener("resize", function () {
     try { fit.fit(); } catch (e) {}
+    sendResize();
   });
 
   document.getElementById("ssh-close").addEventListener("click", function () {

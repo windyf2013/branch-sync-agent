@@ -16,7 +16,7 @@ from __future__ import annotations
 import os
 import re
 import secrets
-import select
+import selectors
 import shlex
 import signal
 import subprocess
@@ -109,22 +109,31 @@ def spawn_ttyd(worktree: str) -> tuple[int, subprocess.Popen]:
     try:
         assert proc.stdout is not None
         fd = proc.stdout.fileno()
-        # 用 os.read 原始字节 + 累积缓冲解析：select 只看 OS 管道缓冲，
-        # 而 TextIOWrapper.readline 会把整批读进 Python 缓冲导致 select 假超时
-        # （端口行已在 Python 缓冲里、fd 却显示不可读）——真机 ttyd 间歇复现。
+        # 用 os.read 原始字节 + 累积缓冲解析：readline 会把整批读进 Python 缓冲
+        # 导致假超时（端口行已在缓冲、fd 却显示不可读）。这里用 selectors 而非
+        # select.select()——后者对 fd >= FD_SETSIZE(1024) 直接抛
+        # "filedescriptor out of range in select()"：全量测试或长跑进程 fd 撑爆后
+        # 必现，属 select 的平台硬限制。selectors 默认走 epoll/poll，无此上限。
         buf = b""
-        while time.monotonic() < deadline:
-            ready, _, _ = select.select([fd], [], [], deadline - time.monotonic())
-            if not ready:
-                break
-            chunk = os.read(fd, 8192)
-            if not chunk:
-                break
-            buf += chunk
-            # ttyd 日志为 ASCII，解码后复用 _parse_port（单点解析）
-            port = _parse_port(buf.decode("ascii", errors="ignore"))
-            if port is not None:
-                break
+        sel = selectors.DefaultSelector()
+        sel.register(fd, selectors.EVENT_READ)
+        try:
+            while time.monotonic() < deadline:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    break
+                if not sel.select(remaining):
+                    continue
+                chunk = os.read(fd, 8192)
+                if not chunk:
+                    break
+                buf += chunk
+                # ttyd 日志为 ASCII，解码后复用 _parse_port（单点解析）
+                port = _parse_port(buf.decode("ascii", errors="ignore"))
+                if port is not None:
+                    break
+        finally:
+            sel.close()
     finally:
         if port is None:
             _kill_process(proc)
@@ -243,7 +252,9 @@ def session_info(db, token: str) -> dict | None:
     if datetime.now(UTC) - created > timedelta(seconds=SSH_TOKEN_TTL_SEC):
         db.execute("DELETE FROM ssh_sessions WHERE token=?", (token,))
         db.commit()
-        _PROCESSES.pop(token, None)
+        proc = _PROCESSES.pop(token, None)
+        if proc is not None:
+            _kill_process(proc)  # 过期回收进程，不能只丢句柄留孤儿
         return None
     info = dict(row)
     info["proc"] = _PROCESSES.get(token)
