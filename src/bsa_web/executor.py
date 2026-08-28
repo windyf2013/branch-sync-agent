@@ -37,7 +37,7 @@ from pathlib import Path
 from bsa.commands.sync import manual_cycle_id
 from bsa_web.db import InstanceLock
 
-DEFAULT_TIMEOUT_SEC = 3600
+DEFAULT_TIMEOUT_SEC = 3 * 3600  # 3 小时：RCIOS 单次全量编译约 27 分钟，多 commit 任务易超 1 小时
 
 QUEUED_WAIT_REASON = "排队等待执行（同 target 串行，等待前序任务完成）"
 

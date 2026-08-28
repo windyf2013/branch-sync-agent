@@ -825,6 +825,57 @@ pre.build-log-tail, .task-log-tail {
 }
 details.build-log[open] + pre.build-log-tail { display: none; }
 
+/* ================= 步骤进度 ================= */
+.step-list {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+}
+.step-item {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 10px;
+    padding: 10px 4px;
+    border-bottom: 1px solid var(--line);
+    font-size: 14px;
+}
+.step-item:last-child { border-bottom: none; }
+.step-item .step-name {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    font-weight: 500;
+    color: var(--ink);
+}
+.step-item .step-model {
+    font-size: 12px;
+    color: var(--muted);
+    background: var(--surface-2);
+    padding: 1px 8px;
+    border-radius: var(--radius-pill);
+}
+.step-item .step-sha {
+    font-size: 12px;
+    color: var(--muted);
+}
+.step-item .step-duration {
+    font-size: 12px;
+    color: var(--muted);
+    font-variant-numeric: tabular-nums;
+}
+.step-item.step-running { background: var(--surface-2); }
+.step-item.step-running .step-name { color: var(--accent); }
+.step-item.step-failed .step-name { color: var(--need); }
+.step-item .step-live-log { flex-basis: 100%; margin: 4px 0 0; }
+.step-item .step-log { flex-basis: 100%; }
+.step-item .step-log summary {
+    cursor: pointer;
+    font-size: 12px;
+    color: var(--muted);
+}
+.step-item .step-log summary:hover { color: var(--ink); }
+
 /* ================= 人工项 / 活动 ================= */
 .review-card {
     border: 1px solid var(--line);

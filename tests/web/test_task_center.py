@@ -480,6 +480,41 @@ class TestTaskDetail:
         assert r.status_code == 200
         assert "续跑（保留现场）" not in r.text
 
+    def test_detail_failed_task_shows_error_from_tasks_table(self, tmp_path, monkeypatch):
+        """引擎层外失败（如执行超时）只存在 tasks.error，投影里没有——详情页必须展示。
+
+        回归根因：executor 超时强杀 CLI 后，投影停在中间态（如 CHERRY_PICK_EMPTY），
+        action_required 为空、stop_reason 为 None，详情页看起来"干干净净"却标失败。
+        此类错误必须从 tasks 表透出，否则操作者看不到任何异常信息。
+        """
+        app = _make_app(tmp_path)
+        client = _client(app)
+        _login(client)
+        payload = _payload(branch_results={"feat/bad": _branch("feat/bad", "PARTIAL")})
+        _mount_cycle(monkeypatch, payload)
+        app.state.db.execute(
+            "INSERT INTO tasks(kind, user, target, cycle_id, state, error, created_at) "
+            "VALUES ('sync','alice','feat/bad',?,'failed',?,?)",
+            (_CYCLE, "执行超时（>3600s），已终止", "2026-08-25T09:00:00+00:00"),
+        )
+        app.state.db.commit()
+        r = client.get(f"/task/{_CYCLE}/feat/bad")
+        assert r.status_code == 200
+        assert "op-error" in r.text
+        assert "任务失败" in r.text
+        # Jinja 自动转义 `>` → `&gt;`，断言转义后的形态
+        assert "执行超时（&gt;3600s），已终止" in r.text
+
+    def test_detail_no_failed_task_shows_no_error(self, tmp_path, monkeypatch):
+        app = _make_app(tmp_path)
+        client = _client(app)
+        _login(client)
+        payload = _payload(branch_results={"feat/bad": _branch("feat/bad", "PARTIAL")})
+        _mount_cycle(monkeypatch, payload)
+        r = client.get(f"/task/{_CYCLE}/feat/bad")
+        assert r.status_code == 200
+        assert "op-error" not in r.text
+
     def test_detail_abandoned_shows_restore_only(self, tmp_path, monkeypatch):
         app = _make_app(tmp_path)
         client = _client(app)

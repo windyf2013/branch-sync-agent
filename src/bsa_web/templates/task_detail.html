@@ -11,6 +11,9 @@
     <span class="badge {{ status | lower }}">{{ status }}</span>
     {% if branch_abandoned %}<span class="badge abandoned">已放弃</span>{% endif %}
   </div>
+  {% if task_error %}
+  <p class="op-error">任务失败：{{ task_error }}</p>
+  {% endif %}
   <div class="branch-hero-meta">
     <span><span class="k">周期</span> <code class="mono">{{ cycle_id }}</code></span>
     {% if branch.worktree_path %}<span><span class="k">worktree</span> <code class="mono">{{ branch.worktree_path }}</code></span>{% endif %}

@@ -86,6 +86,17 @@ def task_detail(
     abandoned = abandoned_keys(request.app.state.db, cycle_id)
     branch_abandoned = (target, None) in abandoned
     status = branch.get("status") or "UNKNOWN"
+    # 引擎层之外的任务失败（executor 超时/配置错误/异常兜底）只写 tasks.error，
+    # 投影停在中间态、无 stop_reason/action_required。详情页必须透出该错误，
+    # 否则失败任务看起来"干干净净"却标失败。取该 (cycle_id, target) 最近一行的 error。
+    task_error = None
+    err_row = request.app.state.db.execute(
+        "SELECT error FROM tasks WHERE cycle_id=? AND target=? AND error IS NOT NULL "
+        "AND error != '' ORDER BY id DESC LIMIT 1",
+        (cycle_id, target),
+    ).fetchone()
+    if err_row is not None:
+        task_error = err_row["error"]
     # 续跑：该 (cycle_id, target) 存在 interrupted 的 tasks 行（executor 重启对账
     # 打标记）→ 提供保留现场续跑入口（rerun retained + --cycle 来源周期）。
     interrupted_row = request.app.state.db.execute(
@@ -111,6 +122,7 @@ def task_detail(
         target=target,
         branch=branch,
         status=status,
+        task_error=task_error,
         is_current=is_current,
         branch_abandoned=branch_abandoned,
         show_resume=show_resume,

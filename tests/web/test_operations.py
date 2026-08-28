@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import json
 import re
 import threading
 import time
+from pathlib import Path
 
 from fastapi.testclient import TestClient
 
@@ -89,7 +91,13 @@ def _install_runner(app, run_func):
     return runner
 
 
-def _wait_state(client, task_id: int, wanted: str, timeout: float = 5) -> bool:
+def _wait_state(client, task_id: int, wanted: str, timeout: float = 8) -> bool:
+    """轮询任务状态直到命中 wanted。
+
+    超时必须严格小于 worker 侧 ``release.wait(60)`` 的自释放时限：观察侧要能在
+    worker 自释放前就观察到 running 并主动 release.set()。两者接近或相等时，
+    满载下 worker 被调度饿死先自释放、running 窗口消失，观察侧等不到而 flaky。
+    """
     deadline = time.time() + timeout
     while time.time() < deadline:
         r = client.get(f"/api/tasks/{task_id}")
@@ -191,7 +199,10 @@ class TestTaskStatus:
         release = threading.Event()
 
         def fake_run(cmd):
-            release.wait(5)
+            # 自释放是保险丝（主线程在 release.set() 前崩溃时 worker 不能永久阻塞），
+            # 但值必须远大于观察侧 _wait_state 的 8s 超时——否则满载下 worker 先
+            # 自释放、running 窗口消失，观察侧等不到 running 而 flaky。
+            release.wait(60)
             return 0, "", ""
 
         _install_runner(app, run_func=fake_run)
@@ -385,6 +396,103 @@ class TestFormWiring:
         assert "line2" in r.text
         assert "commit 数：2" in r.text
         assert "实时输出" in r.text
+
+    def _insert_task(self, app, state: str):
+        from datetime import UTC, datetime
+
+        db = app.state.db
+        db.execute(
+            "INSERT INTO tasks(kind,user,target,cycle_id,state,created_at,source) "
+            "VALUES ('sync','alice','feat/x','manual-test-2',?,?,'web')",
+            (state, datetime.now(UTC).isoformat()),
+        )
+        db.commit()
+        return db.execute("SELECT last_insert_rowid()").fetchone()[0]
+
+    def test_running_task_page_has_return_to_workbench_button(self, tmp_path):
+        """执行中也必须有可见的返回工作台入口（此前只有已完成分支才有裸链接）。"""
+        app = _make_app(tmp_path)
+        client = _client(app)
+        _login(client)
+        task_id = self._insert_task(app, "running")
+
+        html = client.get(f"/tasks/{task_id}").text
+
+        assert "返回工作台" in html
+        assert re.search(r'<a[^>]+href="/"[^>]*class="[^"]*btn', html) or re.search(
+            r'<a[^>]+class="[^"]*btn[^"]*"[^>]+href="/"', html
+        ), "返回工作台应是 btn 样式按钮，不是裸链接"
+
+    def test_finished_task_page_has_return_to_workbench_button(self, tmp_path):
+        app = _make_app(tmp_path)
+        client = _client(app)
+        _login(client)
+        task_id = self._insert_task(app, "failed")
+
+        html = client.get(f"/tasks/{task_id}").text
+
+        assert "返回工作台" in html
+
+    def test_task_page_shows_step_progress(self, tmp_path):
+        """有 cycle_id 的任务页渲染步骤清单（含耗时与中文步骤名）。"""
+        app = _make_app(tmp_path)
+        client = _client(app)
+        _login(client)
+        task_id = self._insert_task(app, "running")
+        # 手动写入进度文件（引擎侧由 node_wrapper 生成，此处直接造数据）
+        cycle_dir = Path(app.state.settings.log_dir) / "manual-test-2"
+        cycle_dir.mkdir(parents=True, exist_ok=True)
+        (cycle_dir / "progress.jsonl").write_text(
+            "\n".join(
+                [
+                    json.dumps({"cycle_id": "manual-test-2", "node": "prepare_worktree",
+                                "step": "建立 worktree", "phase": "start", "ts": 1000.0}),
+                    json.dumps({"cycle_id": "manual-test-2", "node": "prepare_worktree",
+                                "step": "建立 worktree", "phase": "end", "status": "PREPARED",
+                                "ts": 1003.5}),
+                    json.dumps({"cycle_id": "manual-test-2", "node": "build", "step": "编译",
+                                "model": "2600m", "phase": "start", "ts": 1004.0}),
+                ]
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+
+        html = client.get(f"/tasks/{task_id}").text
+
+        assert "步骤进度" in html
+        assert "建立 worktree" in html
+        assert "3.5s" in html  # 1003.5 - 1000.0
+        assert "2600m" in html
+        assert "进行中" in html
+
+    def test_running_step_shows_live_build_log(self, tmp_path):
+        """运行中步骤的编译日志尾部直接展示（非折叠），供每 10s 刷新实时滚动。"""
+        app = _make_app(tmp_path)
+        client = _client(app)
+        _login(client)
+        task_id = self._insert_task(app, "running")
+        cycle_dir = Path(app.state.settings.log_dir) / "manual-test-2"
+        build_dir = cycle_dir / "build" / "feat/x" / "abc"
+        build_dir.mkdir(parents=True, exist_ok=True)
+        log_path = str(build_dir / "build.log")
+        (build_dir / "build.log").write_text(
+            "\n".join(f"make[{i}]: compiling file{i}.c" for i in range(120)),
+            encoding="utf-8",
+        )
+        (cycle_dir / "progress.jsonl").write_text(
+            json.dumps({"cycle_id": "manual-test-2", "node": "build", "step": "编译",
+                        "model": "5200", "phase": "start", "log_path": log_path})
+            + "\n",
+            encoding="utf-8",
+        )
+
+        html = client.get(f"/tasks/{task_id}").text
+
+        # 运行中日志直接展示（非 <details> 折叠）
+        assert "step-live-log" in html
+        assert "compiling file119.c" in html  # 日志尾部最后一行
+        assert "已截断，随刷新更新" in html
 
     def test_workbench_shows_busy_error(self, tmp_path, monkeypatch):
         app = _make_app(tmp_path)

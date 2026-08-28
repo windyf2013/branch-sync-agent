@@ -15,7 +15,9 @@ from fastapi import APIRouter, Depends, Form, HTTPException, Request
 from fastapi.responses import RedirectResponse
 
 from bsa_web.auth import make_csrf, require_csrf, require_login, require_operator
+from bsa_web.build_labels import _read_build_log
 from bsa_web.executor import task_log_tail
+from bsa_web.progress import read_progress
 from bsa_web.runner import task_detail_url
 
 router = APIRouter(tags=["operations"])
@@ -93,6 +95,16 @@ def task_status_page(
         shas = json.loads(task["shas"]) if task.get("shas") else None
     except (TypeError, ValueError):
         shas = None
+    steps = []
+    if task.get("cycle_id"):
+        steps = read_progress(request.app.state.settings.log_dir, task["cycle_id"])
+        for step in steps:
+            if step.get("log_path"):
+                preview = _read_build_log(
+                    request.app.state.settings.log_dir, step["log_path"]
+                )
+                step["log_preview"] = preview[0] if preview else None
+                step["log_truncated"] = preview[1] if preview else False
     return request.app.state.templates.TemplateResponse(
         request,
         "tasks.html",
@@ -103,6 +115,7 @@ def task_status_page(
             "task_id": task_id,
             "commit_count": len(shas) if shas else (task.get("commits") or None),
             "log_tail": log_tail,
+            "steps": steps,
             "state_label": STATE_LABELS.get(task["state"], task["state"]),
             "detail_url": task_detail_url(request.app.state.db, task_id),
         },
