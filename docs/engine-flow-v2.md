@@ -49,7 +49,7 @@
 ## 3. 同步内核（V2 核心改动）
 
 ```
-# 同步拓扑（V3 写死语义）：branch.md 标题人工标注角色
+# 同步拓扑（V3 写死语义）：CRON_BRANCH_FILE 标题人工标注角色
 #   含"主分支"的 section → 目标（只收不扫，建 worktree + 基线编译 + 逐 commit）
 #   含"业务分支"的 section → 源（只扫判定，不建 worktree / 不编译 / 不出 patch）
 #   业务 → 主 单向；业务之间互不同步；主不向业务回灌。
@@ -92,7 +92,7 @@ for 主分支（目标）:
 - 时间字段用 **committer date**（合入时间），不用 author date（rebased commit 会漂移）
 - **merge 提交展开**：`--first-parent` 定位窗口内 merge → `merge^1..merge` 取 PR 引入的
   commit → patch-id 去重后分类
-- **只扫业务分支**（branch.md 标题含"业务分支"的 section）：主分支作为目标不被扫描，
+- **只扫业务分支**（CRON_BRANCH_FILE 标题含"业务分支"的 section）：主分支作为目标不被扫描，
   消除 V2 全互联的回声重检与平方级无效工作（V3 写死语义）
 - 历史积压不在周期范围内，由平台手动任务兜底（用户自处理）
 
@@ -111,10 +111,17 @@ for 主分支（目标）:
 - risk 分级参与展示（显著标识），供事后审核排序
 - 手动同步跳过此步（用户勾选 = 人工审核通过）
 
-**同步拓扑（V3 写死语义，`build_matrix`）**：不靠分支名推断方向，直接读
-branch.md section 标题 —— 含"主分支" → 目标，含"业务分支" → 源。同一产品线
-（剥编号与角色后缀后的前缀）的业务 section → 主 section，**单向**。业务之间
-互不同步；主不向业务回灌；未标注 section 不产出同步边（安全默认）。
+**同步拓扑（V3 写死语义，`build_matrix`，仅 cron 周期链路）**：不靠分支名推断方向，
+直接读 **`CRON_BRANCH_FILE`** 指向文件的 section 标题 —— 含"主分支" → 目标，
+含"业务分支" → 源。同一产品线（剥编号与角色后缀后的前缀）的业务 section →
+主 section，**单向**。业务之间互不同步；主不向业务回灌；未标注 section 不产出
+同步边（安全默认）；整份文件解析不出任何边时 `detect_commits` 写 errors 报错，
+不静默空跑。`CRON_BRANCH_FILE` 留空则回退 `BRANCH_FILE`。
+
+**`BRANCH_FILE`（完整清单）不参与 cron 配对**：它服务手动同步的编译型号解析与
+平台工作台下拉。手动 `bsa sync` / `bsa rerun` 不构造同源矩阵，用合成
+`BranchRef(section="manual")` 走 `conclude_pair` 的通用关联性判断，因此手动任务
+可覆盖完整清单里的任意合规分支对，不受上述写死拓扑约束。
 `conclude_pair` 的 AlreadyIncluded（patch-id / issue-id / 相似度）仍负责
 "是否已包含"的去重，避免同窗口重复入批。
 

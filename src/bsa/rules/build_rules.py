@@ -41,9 +41,22 @@ def resolve_build_models(
         raise BuildConfigError(
             f"目标分支 {target} 不在 branch.md，无法确定产品线/编译型号，停止任务"
         )
-    for key, models in rules.build_models_by_section.items():
-        if key in section or section in key:
-            return list(models)
+    # 双向子串可能同时命中多个 key（如 section "4.34" 同时命中「4.34 主分支」与
+    # 「4.34产品主线分支」）。按书写顺序取首个 = 静默用错编译脚本，故收集全部匹配，
+    # 多于一个即报错停止。
+    matched = [
+        (key, models)
+        for key, models in rules.build_models_by_section.items()
+        if key in section or section in key
+    ]
+    if len(matched) > 1:
+        keys = "、".join(f"「{key}」" for key, _ in matched)
+        raise BuildConfigError(
+            f"产品线「{section}」同时命中多个编译型号配置：{keys}，"
+            "无法确定型号，停止任务（请修改 build_rules.yaml 使各 key 互不为子串）"
+        )
+    if matched:
+        return list(matched[0][1])
     raise BuildConfigError(
         f"产品线「{section}」未配置编译型号，停止任务（请在 build_rules.yaml 补充）"
     )

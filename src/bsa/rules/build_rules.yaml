@@ -1,13 +1,46 @@
 # 编译型号（产品线 → 型号列表）。型号 id → (build 脚本, 产品参数)。
-# 分支所属产品线 = branch.md section（同源组，人工标注）。产品线未配置时任务报错停止，
+# 分支所属产品线 = 分支文件 section（人工标注）。产品线未配置时任务报错停止，
 # 不做静默兜底（避免用错编译脚本）。
+#
+# 两条路径解析出的 section 值不同，共用本文件：
+#   cron   —— section = cron 分支文件的产品键（如 "4.34"），来自同源矩阵；
+#   手动   —— section = 完整清单 branch.md 的章节全称（如 "1.1 组网产品分支"）。
+# 匹配为双向子串（容忍 "1.1 " 编号前缀）。
+#
+# 约束：build_models_by_section 的任意两个 key 不得互为子串，且不得同时被同一个
+# section 命中——否则 resolve_build_models 报错停止（决不按书写顺序猜）。
+# 反例：同时存在「4.34 主分支」与「4.34产品主线分支」时，cron 产品键 "4.34"
+# 会同时命中两者。
 build_types:
   # FTTR-B 系列
   "2600m":
     script: "RTL9617C_build_ci.sh"
     product: "2600m"
+  # RTL9617C 系列 5200-B
+  "5200":
+    script: "RTL9617C_build.sh"
+    product: "5200"
+  # X86 系列 5200-D
+  # "5200B":
+  #   script: "X86.sh"
+  #   product: "5200B"
+  # "RTL9617C 系列 政企网关":
+  "2600":
+    script: "RTL9617C_build_ct.sh"
+    product: "2600"
 
 build_models_by_section:
-  # section 标题子串匹配（容忍 "1.1 " 编号前缀）
+  # --- cron 专用分支文件（spec/branch-cron.md）的产品键 ---
   "4.34 主分支":
     - "2600m"
+
+  # --- 完整清单 branch.md 的章节 ---
+  "组网产品分支":
+    - "5200"
+  #  - "5200B"
+
+  "FTTR-B产品分支":
+    - "2600m"
+
+  "政企网关产品分支":
+    - "2600"

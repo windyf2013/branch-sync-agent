@@ -24,6 +24,7 @@ from bsa.graph.nodes import (
     GraphContext,
     _action_required,
     _derive_window,
+    _load_matrix,
     _to_analysis,
     baseline_build,
     build,
@@ -92,10 +93,38 @@ TARGET_OLD_TEXT = """static int demo_check(const char *name, size_t len)
 """
 
 
+OTHER_TARGET = "br_v4.33_5200B_develop_20260702"
+OTHER_DEVELOP = "br_v4.33_5200B_develop_fttr_20260811"
+
+# 完整清单：无「主分支/业务分支」标注 → build_matrix 产出零条边。
+# 它只服务手动同步的型号解析与平台下拉，cron 绝不应该读它。
+FULL_BRANCH_MD = f"""# 分支清单
+## 1 RCIOS代码库
+- 路径：rcios
+
+### 1.1 组网产品分支
+- {OTHER_TARGET}
+- {OTHER_DEVELOP}
+
+### 1.2 4.34 产品主线
+- {TARGET}
+- {DEVELOP}
+"""
+
+
 def write_branch_md(tmp_path: Path) -> Path:
     path = tmp_path / "branch.md"
     path.write_text(BRANCH_MD, encoding="utf-8")
     return path
+
+
+def write_split_branch_files(tmp_path: Path) -> tuple[Path, Path]:
+    """完整清单 branch.md（无标注）+ cron 专用 branch-cron.md（带标注）。"""
+    full = tmp_path / "branch.md"
+    full.write_text(FULL_BRANCH_MD, encoding="utf-8")
+    cron = tmp_path / "branch-cron.md"
+    cron.write_text(BRANCH_MD, encoding="utf-8")
+    return full, cron
 
 
 def make_settings(tmp_path: Path, **overrides: object):
@@ -628,6 +657,96 @@ def test_detect_commits_populates_commits_and_classifications(tmp_path):
     assert update["classifications"]["a2"].needs_agent is True
     assert update["branch_md_version"]
     assert ctx.matrix is not None
+
+
+def test_detect_commits_reads_cron_branch_file_not_full_inventory(tmp_path):
+    """cron 拓扑来自 CRON_BRANCH_FILE；完整清单里的分支不进 cron 扫描面。"""
+    _, cron = write_split_branch_files(tmp_path)
+    ctx = make_ctx(tmp_path, settings_overrides={"cron_branch_file": str(cron)})
+    git = ctx.git
+    git.window_shas = {f"origin/{DEVELOP}": ["a1"]}
+    git.changed = {"a1": ["plat/demo.c"]}
+    git.patches = {"a1": "+p1"}
+    git.patch_ids = {"a1": "pid1"}
+
+    update = detect_commits(base_state(), ctx)
+
+    assert [hs.section for hs in ctx.matrix] == ["4.34"]
+    assert [b.name for hs in ctx.matrix for b in hs.sources] == [DEVELOP]
+    # 完整清单里的分支既不是源也不是目标
+    scanned = [args[0] for name, args in git.calls if name == "branch_tip"]
+    assert OTHER_DEVELOP not in scanned
+    assert [c.sha for c in update["detected_commits"]] == ["a1"]
+
+
+def test_detect_commits_branch_md_version_hashes_cron_file(tmp_path):
+    """版本号标识 cron 拓扑来源：改完整清单不应让 cron 周期版本漂移。"""
+    full, cron = write_split_branch_files(tmp_path)
+    ctx = make_ctx(tmp_path, settings_overrides={"cron_branch_file": str(cron)})
+    before = detect_commits(base_state(), ctx)["branch_md_version"]
+
+    full.write_text(FULL_BRANCH_MD + "\n- br_v4.33_extra_develop_20260901\n", encoding="utf-8")
+    ctx.matrix = None
+    after = detect_commits(base_state(), ctx)["branch_md_version"]
+
+    assert before == after
+
+
+def test_detect_commits_empty_matrix_records_error_not_silent_noop(tmp_path):
+    """零同步边必须响亮报错：漏配 CRON_BRANCH_FILE 会让 cron 静默空跑。"""
+    path = tmp_path / "branch.md"
+    path.write_text(FULL_BRANCH_MD, encoding="utf-8")
+    ctx = make_ctx(tmp_path)
+
+    update = detect_commits(base_state(), ctx)
+
+    assert update["detected_commits"] == []
+    errors = update["errors"]
+    assert "branch_matrix" in errors
+    assert "CRON_BRANCH_FILE" in errors["branch_matrix"].error
+
+
+def test_empty_matrix_makes_cycle_fail_not_silent_success(tmp_path):
+    """空扫描面必须收敛成 FAILED 周期 + action_required，而不是"零 commit 的成功"。"""
+    path = tmp_path / "branch.md"
+    path.write_text(FULL_BRANCH_MD, encoding="utf-8")
+    ctx = make_ctx(tmp_path)
+
+    detected = detect_commits(base_state(), ctx)
+    final = report(base_state(**{"errors": detected["errors"]}), ctx)
+
+    assert final["status"] == "FAILED"
+    nodes_flagged = [a.get("node") for a in final["report"].action_required]
+    assert "branch_matrix" in nodes_flagged
+
+
+def test_detect_commits_non_empty_matrix_records_no_matrix_error(tmp_path):
+    write_branch_md(tmp_path)
+    ctx = make_ctx(tmp_path)
+
+    update = detect_commits(base_state(), ctx)
+
+    assert "branch_matrix" not in (update.get("errors") or {})
+
+
+def test_load_matrix_falls_back_to_branch_file_when_cron_unset(tmp_path):
+    """未配置 CRON_BRANCH_FILE 时回退 branch_file（老部署零改动兼容）。"""
+    write_branch_md(tmp_path)
+    ctx = make_ctx(tmp_path)
+
+    matrix = _load_matrix(ctx)
+
+    assert [hs.section for hs in matrix] == ["4.34"]
+    assert [b.name for hs in matrix for b in hs.sources] == [DEVELOP]
+
+
+def test_load_matrix_reads_cron_branch_file_when_set(tmp_path):
+    _, cron = write_split_branch_files(tmp_path)
+    ctx = make_ctx(tmp_path, settings_overrides={"cron_branch_file": str(cron)})
+
+    matrix = _load_matrix(ctx)
+
+    assert [hs.section for hs in matrix] == ["4.34"]
 
 
 # --- sync_decision ---

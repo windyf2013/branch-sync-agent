@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import shutil
+import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta, timezone
@@ -29,6 +30,7 @@ from bsa.domain.models import (
 from bsa.executor.base import CommandExecutor
 from bsa.executor.exceptions import InfrastructureError
 from bsa.git.service import GitService
+from bsa.graph.progress import NODE_LABELS, ProgressJournal
 from bsa.rules import (
     BuildConfigError,
     BuildRules,
@@ -107,18 +109,71 @@ def node_wrapper(node: Callable, ctx: GraphContext | None = None) -> Callable:
 
     On failure the wrapped node returns ``{'errors': ..., 'status': 'FAILED'}``
     which routes the graph to its report/end path (decision 18, node boundary).
+
+    进度埋点（可选）：当 ``ctx`` 提供时，向 progress.jsonl 发 start/end 记录，
+    驱动平台步骤清单。``ctx=None``（next_branch/next_commit 等选择器）不埋点。
+    埋点自身全部隔离在 try/except 内，任何进度写失败都不得改变节点返回值。
     """
     node_name = getattr(node, "__name__", type(node).__name__)
     if ctx is not None:
         node = partial(node, ctx=ctx)
 
-    def wrapped(state: dict) -> dict:
+    def _emit(state: dict, phase: str, *, status: str | None = None,
+              duration_ms: int | None = None) -> None:
         try:
-            return node(state)
+            cycle_id = state.get("cycle_id")
+            if not cycle_id:
+                return
+            record: dict[str, Any] = {
+                "cycle_id": cycle_id,
+                "node": node_name,
+                "step": NODE_LABELS.get(node_name, node_name),
+                "target": state.get("current_target"),
+                "sha": state.get("current_commit"),
+                "phase": phase,
+                "status": status,
+                "ts": time.time(),
+            }
+            if duration_ms is not None:
+                record["duration_ms"] = duration_ms
+            if node_name in ("build", "fix_build", "baseline_build"):
+                try:
+                    model = _next_model(state, ctx)
+                    record["model"] = model
+                    target = state.get("current_target")
+                    if node_name == "baseline_build" and model:
+                        record["log_path"] = str(
+                            _baseline_log_path(ctx, state, target, model)
+                        )
+                    elif (
+                        target
+                        and state.get("current_commit")
+                        and node_name in ("build", "fix_build")
+                    ):
+                        record["log_path"] = str(
+                            _log_path(ctx, state, target, state["current_commit"])
+                        )
+                except Exception:  # noqa: BLE001 — 型号/日志路径解析失败不阻断埋点
+                    pass
+            ProgressJournal(ctx.settings.log_dir).write(record)
+        except Exception:  # noqa: BLE001 — 进度失败绝不冒泡
+            return
+
+    def wrapped(state: dict) -> dict:
+        _emit(state, "start")
+        started = time.monotonic()
+        try:
+            result = node(state)
         except Exception as exc:  # noqa: BLE001 — node boundary must never bubble
             errors = dict(state.get("errors") or {})
             errors[node_name] = ErrorRecord(node=node_name, error=str(exc), ts=_now_iso())
+            _emit(state, "end", status="FAILED",
+                  duration_ms=int((time.monotonic() - started) * 1000))
             return {"errors": errors, "status": "FAILED"}
+        _emit(state, "end",
+              status=result.get("status") if isinstance(result, dict) else None,
+              duration_ms=int((time.monotonic() - started) * 1000))
+        return result
 
     return wrapped
 
@@ -192,7 +247,7 @@ def _load_judgments(log_dir: Path) -> dict[str, Any]:
 
 def _load_matrix(ctx: GraphContext) -> list[HomologousSet]:
     if ctx.matrix is None:
-        text = Path(ctx.settings.branch_file).read_text(encoding="utf-8")
+        text = Path(ctx.settings.cron_branch_file_resolved).read_text(encoding="utf-8")
         ctx.matrix = build_matrix(
             parse_branch_md(text, branch_mapping=ctx.decision_rules.branch_mapping)
         )
@@ -228,7 +283,9 @@ def detect_commits(state: dict, ctx: GraphContext) -> dict:
     # 使 override 对机器已判定的 commit 也生效（人工判定优先级最高，见 classify_commit）。
     judgments = _load_judgments(Path(settings.log_dir))
 
-    branch_path = Path(settings.branch_file)
+    # 同步拓扑只认 cron 专用分支文件（带主/业务标注）；branch_file 是完整清单，
+    # 服务手动同步型号解析与平台下拉，不参与 cron 配对。未配置时回退 branch_file。
+    branch_path = Path(settings.cron_branch_file_resolved)
     branch_md_text = branch_path.read_text(encoding="utf-8")
     ctx.matrix = build_matrix(
         parse_branch_md(branch_md_text, branch_mapping=ctx.decision_rules.branch_mapping)
@@ -281,13 +338,29 @@ def detect_commits(state: dict, ctx: GraphContext) -> dict:
                     risk=risk,
                 )
 
-    return {
+    update: dict[str, Any] = {
         "scan_window": (since, until),
         "branch_md_version": branch_md_version,
         "detected_commits": detected,
         "classifications": classifications,
         "status": "DETECTED",
     }
+    # 零同步边 = 扫描面为空 = 周期静默空跑。最常见成因是 CRON_BRANCH_FILE 漏配，
+    # 使 cron 读到了不带「主分支/业务分支」标注的完整清单。必须响亮报错，
+    # 进 action_required，绝不静默跳过（与产品线未配置型号同等处理）。
+    if not ctx.matrix:
+        errors = dict(state.get("errors") or {})
+        errors["branch_matrix"] = ErrorRecord(
+            node="detect_commits",
+            error=(
+                f"分支文件 {branch_path} 未解析出任何同步边（无「主分支/业务分支」"
+                "标注章节），本周期扫描面为空。请检查 CRON_BRANCH_FILE 是否指向"
+                "带标注的 cron 专用分支文件。"
+            ),
+            ts=_now_iso(),
+        )
+        update["errors"] = errors
+    return update
 
 
 def _to_analysis(
