@@ -121,19 +121,6 @@
 </section>
 {% endif %}
 
-{% elif view == "target" %}
-
-<div class="branch-hero">
-  <div class="branch-hero-head">
-    <h1>目标分支</h1>
-    <span class="badge {{ branch.status | lower }}">{{ branch.status }}</span>
-    <code class="mono">{{ target }}</code>
-  </div>
-</div>
-<p class="muted"><a href="/cycle/{{ payload.cycle_id }}">&larr; 返回周期概览</a></p>
-
-{% include "_target_detail.html" %}
-
 {% elif view == "commit" %}
 
 <p class="breadcrumb">
