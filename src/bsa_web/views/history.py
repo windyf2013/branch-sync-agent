@@ -80,6 +80,18 @@ def _cycle_detected_info(log_dir: str, cycle_id: str) -> tuple[list[str], int]:
     return list(sources), len(detected)
 
 
+def _cycle_summary(log_dir: str, cycle_id: str) -> dict[str, int]:
+    """从 state.json 提取周期检测/同步/跳过计数（复用投影 cycle_summary 语义）。"""
+    path = Path(log_dir) / cycle_id / "state.json"
+    if not path.is_file():
+        return {"cycle_detected": 0, "cycle_synced": 0, "cycle_skipped": 0}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {"cycle_detected": 0, "cycle_synced": 0, "cycle_skipped": 0}
+    return projection.cycle_summary(data)
+
+
 def _archived_tasks(db, log_dir: str) -> list[dict]:
     """读 tasks 表，构建「主任务」归档列表（cycle 去重 + rerun 归并 + sync 独立）。"""
     start = _parse_ts(projection.window_start(log_dir))
@@ -126,21 +138,25 @@ def _archived_tasks(db, log_dir: str) -> list[dict]:
 
     tasks: list[dict] = []
 
-    # cycle 主任务：源分支/commit 从 state.json 提取。
+    # cycle 主任务：源分支/检测数从 state.json 提取，发起人收敛为「系统」。
     for cid, task in sorted(cycles.items(), key=lambda kv: kv[1]["id"]):
         sources, detected = _cycle_detected_info(log_dir, cid)
+        summary = _cycle_summary(log_dir, cid)
         tasks.append(
             {
                 "task_id": task["id"],
                 "kind": "cycle",
                 "kind_label": _KIND_LABELS["cycle"],
                 "cycle_id": cid,
-                "target": task.get("target"),
-                "src": "、".join(sources) if sources else "—",
+                "target": None,
+                "src": "、".join(sources) if sources else None,
                 "commits": detected if detected else None,
+                "cycle_detected": summary.get("cycle_detected", 0),
+                "cycle_synced": summary.get("cycle_synced", 0),
+                "cycle_skipped": summary.get("cycle_skipped", 0),
                 "state": task["state"],
                 "badge": _STATE_LABELS.get(task["state"], task["state"]),
-                "user": task["user"],
+                "user": "系统",
                 "created_at": task["created_at"],
                 "finished_at": task["finished_at"],
                 "detail_url": f"/cycle/{cid}",
@@ -185,4 +201,10 @@ def history(request: Request, user: Annotated[dict, Depends(require_login)]):
     settings = request.app.state.settings
     csrf = make_csrf(settings.secret_key, user["username"])
     tasks = _archived_tasks(request.app.state.db, settings.log_dir)
-    return _render(request, user=user, csrf=csrf, tasks=tasks)
+    # 周期任务与手动同步/重跑是两种实体，分开展示（周期无单一目标/源分支）。
+    cycle_tasks = [t for t in tasks if t["kind"] == "cycle"]
+    sync_tasks = [t for t in tasks if t["kind"] == "sync"]
+    return _render(
+        request, user=user, csrf=csrf,
+        cycle_tasks=cycle_tasks, sync_tasks=sync_tasks,
+    )

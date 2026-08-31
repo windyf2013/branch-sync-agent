@@ -9,33 +9,27 @@
 </div>
 
 <section class="panel">
-<div class="panel-head"><h2>归档任务</h2><span class="panel-note">{{ tasks | length }} 个</span></div>
+<div class="panel-head"><h2>周期任务</h2><span class="panel-note">{{ cycle_tasks | length }} 个</span></div>
   <div class="panel-body">
-{% if tasks %}
+{% if cycle_tasks %}
   <div class="table-wrap">
   <table>
     <thead>
       <tr>
-        <th>类型</th>
-        <th>目标分支</th>
-        <th>源分支</th>
+        <th>周期</th>
+        <th>检测 / 同步 / 跳过</th>
         <th>状态</th>
-        <th>commit 数</th>
         <th>发起人</th>
-        <th>创建时间</th>
         <th>完成时间</th>
       </tr>
     </thead>
     <tbody>
-      {% for t in tasks %}
+      {% for t in cycle_tasks %}
       <tr>
-        <td><span class="badge neutral">{{ t.kind_label }}</span></td>
-        <td><a href="{{ t.detail_url }}"><code class="mono">{{ t.target or t.cycle_id or ("#" ~ t.task_id) }}</code></a></td>
-        <td><span class="muted">{{ t.src or "—" }}</span></td>
+        <td><a href="{{ t.detail_url }}"><code class="mono">{{ t.cycle_id }}</code></a></td>
+        <td class="num"><span class="sync-num">{{ t.cycle_synced }}</span> / <span class="skip-num">{{ t.cycle_skipped }}</span> / {{ t.cycle_detected }}</td>
         <td><span class="badge {{ t.state | lower }}">{{ t.badge }}</span></td>
-        <td class="num">{{ t.commits or "—" }}</td>
-        <td><span class="muted">{{ t.user or "—" }}</span></td>
-        <td><span class="muted">{% if t.created_at %}{{ t.created_at | localtime }}{% endif %}</span></td>
+        <td><span class="muted">{{ t.user }}</span></td>
         <td><span class="muted">{% if t.finished_at %}{{ t.finished_at | localtime }}{% endif %}</span></td>
       </tr>
       {% endfor %}
@@ -43,7 +37,43 @@
   </table>
   </div>
   {% else %}
-    <div class="empty-state"><span class="empty-ico">▤</span>暂无归档任务。</div>
+    <div class="empty-state"><span class="empty-ico">▤</span>暂无周期任务。</div>
+  {% endif %}
+  </div>
+</section>
+
+<section class="panel">
+<div class="panel-head"><h2>同步 / 重跑任务</h2><span class="panel-note">{{ sync_tasks | length }} 个</span></div>
+  <div class="panel-body">
+{% if sync_tasks %}
+  <div class="table-wrap">
+  <table>
+    <thead>
+      <tr>
+        <th>目标分支</th>
+        <th>源分支</th>
+        <th>状态</th>
+        <th>commit 数</th>
+        <th>发起人</th>
+        <th>完成时间</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for t in sync_tasks %}
+      <tr>
+        <td><a href="{{ t.detail_url }}"><code class="mono">{{ t.target or ("#" ~ t.task_id) }}</code></a></td>
+        <td><span class="muted">{{ t.src or "—" }}</span></td>
+        <td><span class="badge {{ t.state | lower }}">{{ t.badge }}</span></td>
+        <td class="num">{{ t.commits or "—" }}</td>
+        <td><span class="muted">{{ t.user or "—" }}</span></td>
+        <td><span class="muted">{% if t.finished_at %}{{ t.finished_at | localtime }}{% endif %}</span></td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  </div>
+  {% else %}
+    <div class="empty-state"><span class="empty-ico">▤</span>暂无同步任务。</div>
   {% endif %}
   </div>
 </section>

@@ -100,6 +100,14 @@ def task_detail(
     # 失败归因：优先从投影 payload 提炼结构化原因，tasks.error 仅作兜底
     # （写回后二者可能并存，避免双重展示）。
     failure_reasons = failure.failure_summary(payload, target)
+    # 历史遗留兜底：早期版本的非 UTF-8 冲突会留下「CONFLICT 但归因字段全空」的
+    # 中间态（引擎已修，见 fe7163e）。此时给出诚实状态，而非空白。
+    if not failure_reasons and not task_error and status not in ("SUCCESS", "UNKNOWN"):
+        has_conflict = any(
+            c.get("cherry_pick") == "CONFLICT" for c in (branch.get("commits") or [])
+        )
+        if has_conflict:
+            failure_reasons = ["冲突未解决（历史记录，具体原因未留存）"]
     # 续跑：该 (cycle_id, target) 存在 interrupted 的 tasks 行（executor 重启对账
     # 打标记）→ 提供保留现场续跑入口（rerun retained + --cycle 来源周期）。
     interrupted_row = request.app.state.db.execute(

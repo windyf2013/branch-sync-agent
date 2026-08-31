@@ -8,7 +8,18 @@
     <h1>周期概览</h1>
     <p class="page-sub"><code class="mono">{{ cycle_id }}</code></p>
   </div>
-  {% if payload %}<span class="badge {{ payload.status | lower }}">{{ payload.status }}</span>{% endif %}
+  {% if payload %}
+  <div class="page-head-actions">
+    <span class="badge {{ payload.status | lower }}">周期 {{ payload.status }}</span>
+    {% if all_branches %}
+      {% set _succ = all_branches | selectattr("status", "equalto", "SUCCESS") | list | length %}
+      {% set _part = all_branches | selectattr("status", "equalto", "PARTIAL") | list | length %}
+      {% set _fail = all_branches | selectattr("status", "equalto", "FAILED") | list | length %}
+      {% set _man = all_branches | selectattr("status", "equalto", "MANUAL") | list | length %}
+      <span class="muted">分支：成功 {{ _succ }} · 停批 {{ _part }} · 失败 {{ _fail }} · 待处理 {{ _man }}</span>
+    {% endif %}
+  </div>
+  {% endif %}
 </div>
 {% if running %}
   <p class="callout pending">该周期进行中，报告尚未生成。</p>
@@ -27,6 +38,34 @@
     </div>
   </div>
 </section>
+
+{% if cycle_detected or decision_breakdown %}
+<section class="panel">
+<div class="panel-head"><h2>决策汇总</h2><span class="panel-note">检测到的 commit 各自去向，解释「检测 N · 同步 0」是否合理</span></div>
+  <div class="panel-body">
+    <div class="branch-hero-meta" style="margin-top:0">
+      <span><span class="k">待同步</span> <span class="{% if decision_breakdown.NeedSync %}kpi-need{% endif %}">{{ decision_breakdown.NeedSync }}</span></span>
+      <span><span class="k">已包含</span> {{ decision_breakdown.AlreadyIncluded }}</span>
+      <span><span class="k">不适用</span> {{ decision_breakdown.OutOfScope }}</span>
+      <span><span class="k">待人工</span> {{ decision_breakdown.ManualReview }}</span>
+    </div>
+    {% if not decision_breakdown.NeedSync and not decision_breakdown.ManualReview and cycle_summary.cycle_detected %}
+    <p class="muted">本周期检测到 {{ cycle_summary.cycle_detected }} 个 commit，全部落入「已包含 / 不适用」，因此同步数为 0——这是正常结果，无需同步动作。</p>
+    {% endif %}
+  </div>
+</section>
+{% endif %}
+
+{% if cycle_failures %}
+<section class="panel">
+<div class="panel-head"><h2>周期失败原因</h2></div>
+  <div class="panel-body">
+    <ul class="evidence-list">
+      {% for r in cycle_failures %}<li>{{ r }}</li>{% endfor %}
+    </ul>
+  </div>
+</section>
+{% endif %}
 
 <section class="panel">
 <div class="panel-head"><h2>需人工处理</h2></div>

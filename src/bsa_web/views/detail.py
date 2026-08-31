@@ -12,7 +12,7 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import FileResponse, RedirectResponse, Response
 
-from bsa_web import projection
+from bsa_web import failure, projection
 from bsa_web.auth import make_csrf, require_login
 
 router = APIRouter(prefix="/cycle", tags=["detail"])
@@ -106,6 +106,8 @@ def cycle_detail(
         targets=targets,
         detected_by_source=detected_by_source,
         cycle_summary=projection.cycle_summary(payload),
+        decision_breakdown=failure.decision_breakdown(payload),
+        cycle_failures=failure.failure_summary(payload),
     )
 
 

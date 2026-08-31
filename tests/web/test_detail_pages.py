@@ -217,7 +217,8 @@ class TestHistory:
         monkeypatch.setattr("bsa_web.projection.window_start", lambda log_dir: None)
         r = client.get("/history")
         assert r.status_code == 200
-        assert "暂无归档任务" in r.text
+        assert "暂无周期任务" in r.text
+        assert "暂无同步任务" in r.text
 
     def test_history_unauthenticated_redirects_to_login(self, tmp_path):
         client = _client(_make_app(tmp_path))
