@@ -17,7 +17,7 @@
         {% if item.node %}
         <li><span class="badge failed">节点失败</span> {{ item.node }}：{{ item.error }}</li>
         {% elif item.kind == "ManualReview" and item.branch == target %}
-        <li><span class="badge manual">{{ item.kind }}</span> {{ item.sha }}{% if item.reason %}（{{ item.reason }}）{% endif %}</li>
+        <li><span class="badge manual">{{ item.kind }}</span> {{ item.sha }}{% if item.evidence %}（{{ item.evidence | join("；") }}）{% endif %}</li>
         {% endif %}
       {% endfor %}
     </ul>
@@ -34,7 +34,16 @@
       <span class="badge {{ o.status | lower }}">{{ o.status }}</span>
       <strong>{{ o.model_label or model }}</strong>
       {% if o.status == "FAILED" %}
-        {% if o.errors %}
+        {% if o.error_lines %}
+        <details class="build-error" open>
+          <summary>错误定位（{{ o.error_lines | length }} 条）</summary>
+          <ul>
+            {% for err in o.error_lines %}
+            <li class="muted"><code>{{ err }}</code></li>
+            {% endfor %}
+          </ul>
+        </details>
+        {% elif o.errors %}
         <details class="build-error">
           <summary>最终错误（{{ o.errors | length }} 条，截断展示）</summary>
           <ul>
@@ -73,13 +82,13 @@
         <td class="row-toggle"><button type="button" class="row-toggle-btn" aria-label="展开">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="m9 18 6-6-6-6"/></svg>
         </button></td>
-        <td><a href="/cycle/{{ payload.cycle_id }}/commit/{{ cr.sha }}" class="branch-link"><code class="mono">{{ cr.sha[:10] }}</code></a></td>
+        <td><a href="/cycle/{{ payload.cycle_id }}/commit/{{ cr.sha }}?target={{ target }}" class="branch-link"><code class="mono">{{ cr.sha[:10] }}</code></a></td>
         <td><span class="badge {{ cr.cherry_pick | lower }}">{{ cr.cherry_pick }}</span></td>
         <td>
           {% if cr.conflict_resolution %}
             <span class="badge ok">已解决</span>
             <div class="muted">冲突文件：{{ cr.conflict_resolution.files | join(", ") }}</div>
-            {% if cr.conflict_resolution.agent_reason %}<div class="muted">Agent 说明：{{ cr.conflict_resolution.agent_reason }}</div>{% endif %}
+            {% if cr.conflict_resolution.agent_reason %}<div class="muted">智能体说明：{{ cr.conflict_resolution.agent_reason }}</div>{% endif %}
           {% elif cr.cherry_pick == "CONFLICT" %}
             <span class="badge failed">冲突解决失败</span>
             {% if cr.resolution_error %}<div class="muted">原因：{{ cr.resolution_error }}</div>{% endif %}
@@ -101,7 +110,7 @@
           <div class="commit-detail-body">
           {% if cr.conflict_resolution and cr.conflict_resolution.diff %}
             <div class="llm-diff">
-              <div class="llm-diff-title">冲突解决 diff（Agent 产出）</div>
+              <div class="llm-diff-title">冲突解决 diff（智能体产出）</div>
               <pre class="diff-pre">{{ cr.conflict_resolution.diff }}</pre>
             </div>
           {% endif %}
@@ -111,10 +120,19 @@
                 <div class="llm-diff-title">{{ o.model_label or model }} 编译失败</div>
                 {% if o.reason %}<div class="muted">归因：{{ o.reason }}</div>{% endif %}
                 {% if o.fix_diff %}
-                  <div class="muted">Agent 修复 diff（{{ o.agent_attempts }} 轮）：</div>
+                  <div class="muted">智能体修复 diff（{{ o.agent_attempts }} 轮）：</div>
                   <pre class="diff-pre">{{ o.fix_diff }}</pre>
                 {% endif %}
-                {% if o.errors %}
+                {% if o.error_lines %}
+                <details class="build-error" open>
+                  <summary>错误定位（{{ o.error_lines | length }} 条）</summary>
+                  <ul>
+                    {% for err in o.error_lines %}
+                    <li class="muted"><code>{{ err }}</code></li>
+                    {% endfor %}
+                  </ul>
+                </details>
+                {% elif o.errors %}
                 <details class="build-error">
                   <summary>最终错误（{{ o.errors | length }} 条，截断展示）</summary>
                   <ul>

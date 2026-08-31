@@ -256,12 +256,25 @@ def create_app(*, settings_override: dict | None = None, env_file: str | None = 
     def settings_page(
         request: Request, user: Annotated[dict, Depends(require_operator)]
     ):
+        # 只读展示非敏感有效配置：不暴露 secret_key 与 bcrypt hash。
+        users = [
+            {"username": name, "role": "操作者" if creds.endswith(":operator") else "查看者"}
+            for name, creds in settings.users.items()
+        ]
         return templates.TemplateResponse(
             request,
             "settings.html",
             {
                 "user": user,
                 "csrf": make_csrf(settings.secret_key, user["username"]),
+                "config": {
+                    "日志目录": settings.log_dir,
+                    "分支清单文件": settings.branch_file or "（未配置）",
+                    "Web 端口": settings.bsa_web_port,
+                    "会话有效期（秒）": settings.session_ttl_sec,
+                    "Cookie 仅 HTTPS": "是" if settings.cookie_secure else "否",
+                },
+                "users": users,
             },
         )
 

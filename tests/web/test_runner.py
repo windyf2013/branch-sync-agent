@@ -664,7 +664,7 @@ class TestCancelTask:
         assert result["cancelled"] is True
         row = db.execute("SELECT state, error FROM tasks WHERE id=?", (tid,)).fetchone()
         assert row["state"] == "cancelled"
-        assert row["error"] == "用户放弃"
+        assert row["error"] == "已取消（用户放弃）"
         assert killed == [4242]
         assert docker_called == ["manual-20260825-120000-99"]
         assert wt_called == [("feat/x", "manual-20260825-120000-99")]

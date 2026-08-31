@@ -12,7 +12,7 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends, Request
 
-from bsa_web import projection
+from bsa_web import failure, projection
 from bsa_web.auth import make_csrf, require_login
 from bsa_web.branches import rcios_branch_names, rcios_branch_sections
 from bsa_web.db import abandoned_keys
@@ -97,8 +97,9 @@ def _active_manual_count(*task_lists: list[dict]) -> int:
 
 
 def _kpi_counts(auto_tasks: list[dict]) -> dict:
-    """KPI 恒显所需的计数：自动任务总数。"""
-    return {"auto_total": len(auto_tasks)}
+    """KPI 恒显所需的计数：自动任务总数 + 已完成分支数（闭环）。"""
+    done = sum(1 for t in auto_tasks if t.get("status") == "SUCCESS")
+    return {"auto_total": len(auto_tasks), "done_count": done}
 
 
 def _auto_failed_targets(auto_tasks: list[dict]) -> set[str]:
@@ -191,12 +192,14 @@ def _auto_tasks(
             if (decisions.get(sha) or {}).get(target, {}).get("kind")
             in ("AlreadyIncluded", "OutOfScope")
         )
+        reasons = failure.failure_summary(payload, target)
         tasks.append(
             {
                 "cycle_id": cycle_id,
                 "target": target,
                 "status": status,
                 "badge": _STATUS_LABELS.get(status, status),
+                "reason": reasons[0] if reasons else "",
                 "commits": len(commits),
                 "synced": synced,
                 "skipped": skipped,
@@ -282,6 +285,7 @@ def _manual_tasks(
                 "src": task["src"],
                 "fresh": bool(task["fresh"]),
                 "error": task["error"],
+                "reason": (task["error"] or "").strip(),
                 "user": task["user"],
                 "source": task["source"] or "web",
                 "section": sections.get(target, ""),
@@ -452,6 +456,7 @@ def workbench(request: Request, user: Annotated[dict, Depends(require_login)]):
         cycle_task=_cycle_task(db, cycle_id),
         abandoned_items=_abandoned_items(cycle_id, abandoned),
         active_manual=active_manual,
+        decisions_json=json.dumps(payload.get("decisions") or {}, ensure_ascii=False),
         **_kpi_counts(auto_tasks),
         **_cycle_commit_summary(payload, auto_tasks),
         op_error=op_error,

@@ -4,13 +4,45 @@
 <div class="page-head">
   <div>
     <h1>设置</h1>
-    <p class="page-sub">角色分配 / 保留天数 / 会话过期</p>
+    <p class="page-sub">当前生效配置（只读，由环境变量与运维配置）</p>
   </div>
 </div>
+
 <section class="panel">
-  <div class="panel-head"><h2>配置项</h2><span class="panel-note">管理端</span></div>
+  <div class="panel-head"><h2>配置项</h2><span class="panel-note">只读</span></div>
   <div class="panel-body">
-    <p class="empty-state">设置项由环境变量与运维配置，暂不在此处编辑。</p>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>配置项</th><th>当前值</th></tr></thead>
+        <tbody>
+          {% for key, value in config.items() %}
+          <tr>
+            <td class="muted">{{ key }}</td>
+            <td><code class="mono">{{ value }}</code></td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+</section>
+
+<section class="panel">
+  <div class="panel-head"><h2>授权用户</h2><span class="panel-note">{{ users | length }} 个</span></div>
+  <div class="panel-body">
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>用户名</th><th>角色</th></tr></thead>
+        <tbody>
+          {% for u in users %}
+          <tr>
+            <td><code class="mono">{{ u.username }}</code></td>
+            <td><span class="badge {{ 'neutral' if u.role == '操作者' else 'scope' }}">{{ u.role }}</span></td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
   </div>
 </section>
 {% endblock %}

@@ -8,6 +8,7 @@ web 侧复用 V1 的 build_rules（型号 → script/product）给 build 矩阵�
 from __future__ import annotations
 
 import importlib.resources
+import re
 from pathlib import Path
 
 from bsa.build.runner import _resolve_build_script
@@ -69,16 +70,43 @@ def _read_build_log(log_dir: str, log_path: str | None, max_lines: int = 100):
     return "\n".join(lines[-max_lines:]), truncated
 
 
+def extract_build_errors(log_preview: str | None) -> list[str]:
+    """从编译日志尾部提取关键错误行（去重截断 top 5），供「错误定位」紧凑展示。
+
+    匹配常见编译/链接失败签名：``error:`` ``fatal error:`` ``Error`` ``FAILED``
+    ``undefined reference`` ``Traceback``。原始日志仍折叠保留，此函数只提炼定位。
+    """
+    if not log_preview:
+        return []
+    patterns = re.compile(
+        r"error:|fatal error:|undefined reference|Traceback|"
+        r"\bFAILED\b|Error[:\s]|错误",
+        re.IGNORECASE,
+    )
+    seen: list[str] = []
+    for line in log_preview.splitlines():
+        if not patterns.search(line):
+            continue
+        stripped = line.strip()
+        if stripped and stripped not in seen:
+            seen.append(stripped[:300])
+        if len(seen) >= 5:
+            break
+    return seen
+
+
 def _enrich_outcomes(builds: dict | None, log_dir: str) -> None:
     """就地补充一组 ``model -> outcome`` 的展示字段（commit build 与 baseline 共用）。"""
     for model, outcome in (builds or {}).items():
         outcome["model_label"] = model_script_label(model)
         outcome["log_preview"] = None
         outcome["log_truncated"] = False
+        outcome["error_lines"] = []
         if outcome.get("status") == "FAILED":
             preview = _read_build_log(log_dir, outcome.get("log_path"))
             outcome["log_preview"] = preview[0] if preview else None
             outcome["log_truncated"] = preview[1] if preview else False
+            outcome["error_lines"] = extract_build_errors(outcome["log_preview"])
 
 
 def enrich_build_outcomes(branch: dict, log_dir: str) -> None:

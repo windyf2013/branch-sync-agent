@@ -35,6 +35,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from bsa.commands.sync import manual_cycle_id
+from bsa_web import failure, projection
 from bsa_web.db import InstanceLock
 
 DEFAULT_TIMEOUT_SEC = 3 * 3600  # 3 小时：RCIOS 单次全量编译约 27 分钟，多 commit 任务易超 1 小时
@@ -232,7 +233,7 @@ def cancel_task(
         return {"cancelled": False, "task_id": task_id}
     now = _now_iso()
     db.execute(
-        "UPDATE tasks SET state='cancelled', error='用户放弃', finished_at=? WHERE id=?",
+        "UPDATE tasks SET state='cancelled', error='已取消（用户放弃）', finished_at=? WHERE id=?",
         (now, task_id),
     )
     db.commit()
@@ -556,6 +557,38 @@ class TaskExecutor:
                 error = task_log_tail(self.log_dir, task_id) or "执行失败"
             self._mark(task_id, "failed", error=error[:_ERROR_MAX_LEN], finished_at=_now_iso())
             _converge_cycle_record(self.log_dir, current.get("cycle_id"), "FAILED")
+            return
+        # 终态富化：引擎已写 failed 但 error 为空（投影里有结构化原因却没落到任务行），
+        # 从投影聚合人类可读失败原因补写，避免「失败无归因」。仅失败且 error 空时
+        # 触发一次 subprocess，成功路径零额外开销；同一次 load_cycle 顺带回填 commits。
+        error_is_empty = not (current.get("error") or "").strip()
+        if current is not None and current["state"] == "failed" and error_is_empty:
+            self._enrich_terminal(task_id, current.get("cycle_id"), current.get("target"))
+
+    def _enrich_terminal(self, task_id: int, cycle_id: str | None, target: str | None) -> None:
+        """终态富化：一次 ``load_cycle`` 同时回填 error 与 commits（仅失败路径）。
+
+        ``projection.load_cycle`` 是子进程调用，只在引擎写 failed 但 error 为空的
+        少数路径执行；投影不可用则跳过（不覆盖已有 error）。
+        """
+        if not cycle_id:
+            return
+        payload = projection.load_cycle(self.log_dir, cycle_id)
+        if payload is None:
+            return
+        aggregated = failure.failure_text(payload, target)
+        if aggregated:
+            self._mark(task_id, "failed", error=aggregated[:_ERROR_MAX_LEN])
+        # commits 回填：任务行 commits 为 NULL 时，从投影取该目标分支的 commit 数。
+        branch = (payload.get("branch_results") or {}).get(target) if target else None
+        if branch is not None:
+            n = len(branch.get("commits") or [])
+            if n:
+                self.db.execute(
+                    "UPDATE tasks SET commits=? WHERE id=? AND commits IS NULL",
+                    (n, task_id),
+                )
+                self.db.commit()
 
     def _preassign_cycle_id(self, row: dict) -> None:
         """预生成 sync / rerun-fresh 的 cycle_id 并落库（P2-2，运行期即知）。

@@ -10,11 +10,10 @@ from pathlib import Path
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Request
-from fastapi.responses import FileResponse, Response
+from fastapi.responses import FileResponse, RedirectResponse, Response
 
 from bsa_web import projection
 from bsa_web.auth import make_csrf, require_login
-from bsa_web.build_labels import enrich_build_outcomes
 
 router = APIRouter(prefix="/cycle", tags=["detail"])
 
@@ -117,24 +116,11 @@ def target_detail(
     target: str,
     user: Annotated[dict, Depends(require_login)],
 ):
+    # 目标分支的唯一权威页是 /task/{cycle}/{target}（含完整只读内容 + 全部操作）。
+    # 本只读路由收敛为 302，旧书签/旧链接自动落到权威页；先确认周期存在（否则 404）。
     settings = request.app.state.settings
-    csrf = make_csrf(settings.secret_key, user["username"])
-    payload = _load_payload(settings.log_dir, cycle_id)
-    branch = (payload.get("branch_results") or {}).get(target)
-    if branch is None:
-        raise HTTPException(status_code=404, detail="目标分支不存在")
-    # 按需读取各 commit build 日志前 N 行 + 型号脚本标签（不塞进列表/概览页）
-    enrich_build_outcomes(branch, settings.log_dir)
-    return _render(
-        request,
-        "detail.html",
-        view="target",
-        user=user,
-        csrf=csrf,
-        payload=payload,
-        target=target,
-        branch=branch,
-    )
+    _load_payload(settings.log_dir, cycle_id)
+    return RedirectResponse(url=f"/task/{cycle_id}/{target}", status_code=302)
 
 
 @router.get("/{cycle_id}/commit/{sha}")
@@ -143,6 +129,7 @@ def commit_detail(
     cycle_id: str,
     sha: str,
     user: Annotated[dict, Depends(require_login)],
+    target: str | None = None,
 ):
     settings = request.app.state.settings
     csrf = make_csrf(settings.secret_key, user["username"])
@@ -174,6 +161,7 @@ def commit_detail(
         user=user,
         csrf=csrf,
         payload=payload,
+        target=target,
         commit=commit,
         conclusions=conclusions,
         commit_results=commit_results,

@@ -512,6 +512,18 @@ button[type="submit"]:hover, .btn-primary:hover {
 }
 .btn-outline:hover { background: var(--brand); color: #fff; border-color: var(--brand); }
 
+.btn-danger {
+    background: var(--need-bg);
+    border-color: var(--need-bd);
+    color: var(--need);
+}
+.btn-danger:hover {
+    background: var(--need);
+    border-color: var(--need);
+    color: #fff;
+    box-shadow: 0 4px 14px rgba(220, 38, 38, 0.28);
+}
+
 button:disabled { opacity: 0.5; cursor: not-allowed; box-shadow: none !important; }
 
 /* ================= 表单 ================= */
@@ -775,6 +787,8 @@ li.task-panel a { font-weight: 650; }
 .build-outcome { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-bottom: 8px; }
 
 /* diff / 日志预览（深色代码块） */
+.commit-message { white-space: pre-wrap; word-break: break-word; }
+
 .diff-pre {
     background: #0d1526;
     color: #dbe4f4;

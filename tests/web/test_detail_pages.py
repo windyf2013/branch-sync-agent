@@ -241,7 +241,7 @@ class TestCycleDetail:
         monkeypatch.setattr("bsa_web.projection.load_cycle", lambda log_dir, cid: payload)
         r = client.get("/cycle/cycle-2026-08-20")
         assert r.status_code == 200
-        assert "Action Required" in r.text
+        assert "需人工处理" in r.text
         assert "已成功同步" in r.text
         assert "检测信息" in r.text
         assert "a1" in r.text
@@ -335,7 +335,7 @@ class TestTargetDetail:
                 True,
             ),
         )
-        r = client.get("/cycle/cycle-2026-08-20/target/t")
+        r = client.get("/task/cycle-2026-08-20/t")
         assert r.status_code == 200
         assert "line2" in r.text
         assert "下载" in r.text
@@ -361,18 +361,28 @@ class TestTargetDetail:
                 False,
             ),
         )
-        r = client.get("/cycle/cycle-2026-08-20/target/t")
+        r = client.get("/task/cycle-2026-08-20/t")
         assert r.status_code == 200
         assert "基线编译" in r.text
         assert "auto-detect email" in r.text
         assert "/cycle/cycle-2026-08-20/target/t/baseline/2600m/log" in r.text
+
+    def test_target_detail_readonly_redirects_to_task(self, tmp_path, monkeypatch):
+        client = _client(_make_app(tmp_path))
+        _login(client)
+        payload = _payload(branch_results={"t": _branch("t", "SUCCESS")})
+        monkeypatch.setattr("bsa_web.projection.load_cycle", lambda log_dir, cid: payload)
+        r = client.get("/cycle/cycle-2026-08-20/target/t", follow_redirects=False)
+        assert r.status_code == 302
+        assert r.headers["location"] == "/task/cycle-2026-08-20/t"
 
     def test_target_detail_missing_target_404(self, tmp_path, monkeypatch):
         client = _client(_make_app(tmp_path))
         _login(client)
         payload = _payload(branch_results={})
         monkeypatch.setattr("bsa_web.projection.load_cycle", lambda log_dir, cid: payload)
-        r = client.get("/cycle/cycle-2026-08-20/target/nope")
+        # 只读路由 302 到权威页，权威页再因目标不存在而 404
+        r = client.get("/task/cycle-2026-08-20/nope")
         assert r.status_code == 404
 
     def test_baseline_log_download_serves_file(self, tmp_path, monkeypatch):

@@ -30,7 +30,7 @@
         </td>
         <td>
           {%- if r.cycle_id and r.target -%}
-            <a href="/cycle/{{ r.cycle_id }}/target/{{ r.target }}">{{ r.target }}</a>
+            <a href="/task/{{ r.cycle_id }}/{{ r.target }}">{{ r.target }}</a>
           {%- else -%}
             {{ r.target or "" }}
           {%- endif -%}

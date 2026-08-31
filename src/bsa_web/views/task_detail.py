@@ -19,7 +19,7 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import RedirectResponse
 
-from bsa_web import projection
+from bsa_web import failure, projection
 from bsa_web.auth import make_csrf, require_login
 from bsa_web.build_labels import enrich_build_outcomes
 from bsa_web.db import abandoned_keys
@@ -97,6 +97,9 @@ def task_detail(
     ).fetchone()
     if err_row is not None:
         task_error = err_row["error"]
+    # 失败归因：优先从投影 payload 提炼结构化原因，tasks.error 仅作兜底
+    # （写回后二者可能并存，避免双重展示）。
+    failure_reasons = failure.failure_summary(payload, target)
     # 续跑：该 (cycle_id, target) 存在 interrupted 的 tasks 行（executor 重启对账
     # 打标记）→ 提供保留现场续跑入口（rerun retained + --cycle 来源周期）。
     interrupted_row = request.app.state.db.execute(
@@ -123,6 +126,7 @@ def task_detail(
         branch=branch,
         status=status,
         task_error=task_error,
+        failure_reasons=failure_reasons,
         is_current=is_current,
         branch_abandoned=branch_abandoned,
         show_resume=show_resume,

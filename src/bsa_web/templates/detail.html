@@ -13,7 +13,7 @@
 {% if running %}
   <p class="callout pending">该周期进行中，报告尚未生成。</p>
 {% else %}
-<p class="muted"><a href="/history">&larr; 返回历史</a></p>
+<p class="breadcrumb"><a href="/">工作台</a><span class="muted"> / 周期概览</span></p>
 
 <section class="panel">
 <div class="panel-head"><h2>整体任务信息</h2></div>
@@ -29,7 +29,7 @@
 </section>
 
 <section class="panel">
-<div class="panel-head"><h2>Action Required</h2></div>
+<div class="panel-head"><h2>需人工处理</h2></div>
   <div class="panel-body">
 {% if action_required %}
   <ul class="todo-list">
@@ -39,14 +39,14 @@
         <span class="badge failed">{{ item.node }} 节点错误</span> &mdash; {{ item.error }}
       {% else %}
         <span class="badge manual">{{ item.kind }}</span>
-        <a href="/cycle/{{ payload.cycle_id }}/commit/{{ item.sha }}"><code class="mono">{{ item.sha }}</code></a>
+        <a href="/cycle/{{ payload.cycle_id }}/commit/{{ item.sha }}?target={{ item.branch }}"><code class="mono">{{ item.sha }}</code></a>
         <span class="todo-title">→ {{ item.branch }}</span>
         {% if item.evidence %}<ul>{% for e in item.evidence %}<li class="muted">{{ e }}</li>{% endfor %}</ul>{% endif %}
       {% endif %}
     </li>
     {% endfor %}
   </ul>
-  {% else %}<p>本周期无 Action Required 项。</p>{% endif %}
+  {% else %}<p>本周期无需人工处理项。</p>{% endif %}
   </div>
 </section>
 
@@ -58,7 +58,7 @@
     {% for b in synced_branches %}
     <li class="todo-item">
       <span class="badge success">{{ b.status }}</span>
-      <a href="/cycle/{{ payload.cycle_id }}/target/{{ b.target_branch }}" class="todo-title">{{ b.target_branch }}</a>
+      <a href="/task/{{ payload.cycle_id }}/{{ b.target_branch }}" class="todo-title">{{ b.target_branch }}</a>
       <span class="muted">{{ b.worktree_path }}</span>
       {% if b.patch_path %}<a href="/cycle/{{ payload.cycle_id }}/target/{{ b.target_branch }}/patch">下载完整 patch</a>{% endif %}
     </li>
@@ -67,7 +67,7 @@
   {% else %}<p>本周期无成功同步的目标分支。</p>{% endif %}
   <p class="muted">全部目标：
     {% for b in all_branches %}
-    <a href="/cycle/{{ payload.cycle_id }}/target/{{ b.target_branch }}">{{ b.target_branch }}</a>（{{ b.status }}）&nbsp;
+    <a href="/task/{{ payload.cycle_id }}/{{ b.target_branch }}">{{ b.target_branch }}</a>（{{ b.status }}）&nbsp;
     {% endfor %}
   </p>
   </div>
@@ -90,7 +90,7 @@
         {% for c in detected_by_source[src] %}
         <tr>
           <td><a href="/cycle/{{ payload.cycle_id }}/commit/{{ c.sha }}"><code class="mono">{{ c.sha[:10] }}</code></a></td>
-          <td>{{ c.message }}</td>
+          <td class="commit-message" title="{{ c.message }}">{{ c.message }}</td>
           <td class="num">{{ c.changed_files | length }}</td>
         </tr>
         {% endfor %}
@@ -108,7 +108,7 @@
       {% for c in detected_commits %}
       <tr>
         <td><a href="/cycle/{{ payload.cycle_id }}/commit/{{ c.sha }}"><code class="mono">{{ c.sha[:10] }}</code></a></td>
-        <td>{{ c.message }}</td>
+        <td class="commit-message" title="{{ c.message }}">{{ c.message }}</td>
         <td>{{ c.source_branch }}</td>
         <td class="num">{{ c.changed_files | length }}</td>
       </tr>
@@ -136,6 +136,11 @@
 
 {% elif view == "commit" %}
 
+<p class="breadcrumb">
+  <a href="/cycle/{{ payload.cycle_id }}">周期概览</a>
+  {% if target %}<span class="muted"> / </span><a href="/task/{{ payload.cycle_id }}/{{ target }}">目标分支</a>{% endif %}
+  <span class="muted"> / commit {{ commit.sha[:10] }}</span>
+</p>
 <div class="branch-hero">
   <div class="branch-hero-head">
     <h1>commit</h1>
@@ -147,12 +152,16 @@
     <span><span class="k">来源分支</span> {{ commit.source_branch }}</span>
   </div>
 </div>
+{% if target %}
+<p class="muted"><a href="/task/{{ payload.cycle_id }}/{{ target }}">&larr; 返回目标分支</a></p>
+{% else %}
 <p class="muted"><a href="/cycle/{{ payload.cycle_id }}">&larr; 返回周期概览</a></p>
+{% endif %}
 
 <section class="panel">
 <div class="panel-head"><h2>基本信息</h2></div>
   <div class="panel-body">
-<p>{{ commit.message }}</p>
+<p class="commit-message">{{ commit.message }}</p>
   <p class="muted">改动文件：{{ commit.changed_files | join(", ") }}</p>
   </div>
 </section>
@@ -186,7 +195,7 @@
       {% if cr.conflict_resolution %}
         <span class="badge ok">冲突已解决</span>
         <div class="muted">冲突文件：{{ cr.conflict_resolution.files | join(", ") }}</div>
-        {% if cr.conflict_resolution.agent_reason %}<div class="muted">Agent 说明：{{ cr.conflict_resolution.agent_reason }}</div>{% endif %}
+        {% if cr.conflict_resolution.agent_reason %}<div class="muted">智能体说明：{{ cr.conflict_resolution.agent_reason }}</div>{% endif %}
       {% elif cr.cherry_pick == "CONFLICT" %}
         <span class="badge failed">冲突解决失败</span>
         {% if cr.resolution_error %}<div class="muted">原因：{{ cr.resolution_error }}</div>{% endif %}

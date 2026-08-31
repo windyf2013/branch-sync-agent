@@ -21,7 +21,7 @@
         });
       }).then(function (res) {
         if (res.ok) {
-          result.textContent = (res.json && res.json.cancelled) ? "已取消" : "已放弃";
+          result.textContent = (res.json && res.json.cancelled) ? "已放弃并取消任务" : "已放弃";
           window.location.reload();
         } else {
           result.textContent = (res.json && res.json.detail) || "放弃失败";
