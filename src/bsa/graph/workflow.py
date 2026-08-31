@@ -307,11 +307,9 @@ def _route_after_cherry_pick(state: dict) -> str:
     if status == "CHERRY_PICK_CONFLICT":
         return "resolve_conflict"
     if status == "CHERRY_PICK_EMPTY":
-        # EMPTY（空提交/内容已应用）仍需 build 验证当前 worktree 编译通过——
-        # patch 是交付物，无论 cherry-pick 新应用还是内容已存在，都要确认
-        # 目标分支能编译（真机测试: worktree 复用导致 EMPTY 跳过 build，
-        # 掩盖了"该 commit 在目标分支是否编译通过"从未验证的问题）。
-        return "build"
+        # EMPTY = 内容已应用（不变量 #17）：建立 worktree 时 baseline_build 已对
+        # 目标 tip 全量编译通过，EMPTY 未引入任何改动，跳过编译直接下一个 commit。
+        return "next_commit"
     if status == "CHERRY_PICK_FAILED":
         # 决策 18 node boundary: a non-conflict cherry-pick failure is an
         # infrastructure error → report path, NOT fail-fast (决策 32).

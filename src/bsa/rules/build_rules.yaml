@@ -44,3 +44,32 @@ build_models_by_section:
 
   "政企网关产品分支":
     - "2600"
+
+# 编译模块映射：改动文件路径前缀 → 编译脚本模块参数（追加在 ./<script> <product> 之后）。
+# 参数对应 build/make_rcios.sh 的 $2（datapath/plat/plugin/component/image）与 $3
+# （component 的二级子模块名）。多 token 用空格连接，由 runner 逐段 quote 成 argv。
+# 解析规则：所有改动文件须命中且命中同一 token，否则回退全量编译（不做静默猜模块）。
+# 未配置的前缀（如 component/cwmp_dm、component/web 无独立 make_component_* 脚本）
+# 命中即回退全量。
+build_modules:
+  "datapath/": "datapath"
+  "plat/": "plat"
+  "plugin/": "plugin"
+  "component/ac/": "component ac"
+  "component/capwap/": "component capwap"
+  "component/cell/": "component cell"
+  "component/dpiengine/": "component dpiengine"
+  "component/netconf/": "component netconf"
+  "component/netopeer/": "component netopeer"
+  "component/openvpn/": "component openvpn"
+  "component/ovs/": "component ovs"
+  "component/ponolt/": "component ponolt"
+  "component/portal/": "component portal"
+  "component/rcgmp/": "component rcgmp"
+  "component/switch/": "component switch"
+  "component/usm/": "component usm"
+  "component/voice/": "component voice"
+  "component/wlan/": "component wlan"
+  "component/xpon/": "component xpon"
+  "component/zabbix/": "component zabbix"
+  "component/mosquitto/": "component mqtt"

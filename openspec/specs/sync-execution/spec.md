@@ -40,7 +40,8 @@ cherry-pick 冲突由 Conflict Agent 安全解决。
 #### Scenario 每 commit 编译验证。
 - **当** cherry-pick 完成后
 - **则** 在目标分支 worktree 上编译（docker 容器挂载 worktree，exec 执行 RTL9617C_build.sh）
-- **且** 批次开头 clean 一次，commit 间增量编译；公共文件改动时降级全量编译（额外 clean）
+- **且** cherry-pick EMPTY（内容已应用）不引入改动，跳过编译（建立 worktree 时的基线全量编译已验证目标 tip）
+- **且** 基线编译（prepare 后）为唯一 clean 全量；commit 间按改动文件解析编译模块（build_rules.yaml 的 build_modules 路径前缀映射），解析不出（未命中 / 多模块）才回退非 clean 全量
 - **且** 按 required_models 顺序逐个型号编译，某型号失败即停该 commit
 - **且** 编译成功判定三查：产物存在且完整 + 日志成功标志 + 容器状态
 

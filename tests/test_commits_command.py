@@ -67,3 +67,30 @@ def test_without_refresh_does_not_fetch(tmp_path):
     git = _git(ex, tmp_path)
     list_candidate_commits(git, "x", limit=50)
     assert [c[0][0] for c in ex.calls] == ["rev-parse", "log"]
+
+
+def test_cmd_commits_refresh_passes_through_without_lock(monkeypatch, tmp_path, capsys):
+    # --refresh 的 git fetch 只更新远端 ref，不持全局锁，否则被正在跑的任务阻塞。
+    # 此处断言 list_candidate_commits 直接收到 refresh=True（无 flock 包裹）。
+    from types import SimpleNamespace
+
+    from bsa.cli import _cmd_commits
+
+    received: dict = {}
+
+    def fake_list(git, src, limit=50, refresh=False):
+        received["refresh"] = refresh
+        return [{"sha": "a", "message": "m", "committed_at": "t"}]
+
+    monkeypatch.setattr("bsa.cli.load_settings", lambda: SimpleNamespace(log_dir=str(tmp_path)))
+    monkeypatch.setattr(
+        "bsa.cli.build_graph_context",
+        lambda settings: SimpleNamespace(git=SimpleNamespace()),
+    )
+    monkeypatch.setattr("bsa.cli.list_candidate_commits", fake_list)
+
+    code = _cmd_commits(SimpleNamespace(src="x", limit=50, refresh=True))
+
+    assert code == 0
+    assert received["refresh"] is True
+    assert "a" in capsys.readouterr().out

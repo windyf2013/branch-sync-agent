@@ -65,6 +65,28 @@ def _docker_ssh_args(settings: Settings) -> list[str]:
     return ["-v", f"{ssh}:{container_home}/.ssh:ro"]
 
 
+def _docker_gitconfig_args(settings: Settings) -> list[str]:
+    """Mount host ~/.gitconfig into the container so in-build git operations
+    (e.g. strongswan Makefile 的 ``git init && git commit && git am``) have a
+    committer identity.
+
+    真机测试: --user 后容器内用户无 git 身份, ``git commit`` 报
+    'Author identity unknown / unable to auto-detect email address' →
+    make add_patch Error 128 → 基线编译失败. 挂载宿主 ~/.gitconfig (只读) 解决.
+    """
+    import os
+
+    gitconfig = Path(os.path.expanduser("~/.gitconfig"))
+    if not gitconfig.is_file():
+        return []
+    user = (settings.docker_user or "").strip()
+    if user == "root":
+        container_home = "/root"
+    else:
+        container_home = "/home/ubuntu"
+    return ["-v", f"{gitconfig}:{container_home}/.gitconfig:ro"]
+
+
 class BuildResult(BaseModel):
     model: str
     returncode: int
@@ -141,6 +163,7 @@ class BuildRunner:
                 container,
                 *_docker_user_args(self.settings),
                 *_docker_ssh_args(self.settings),
+                *_docker_gitconfig_args(self.settings),
                 "-v",
                 f"{worktree}:{self.settings.docker_mount_workspace}",
                 "-v",
@@ -159,17 +182,24 @@ class BuildRunner:
         # 先 cd build 拉插件，再 cd script_dir 编译（真机测试:
         # cd RTL9617C 后 code_update.sh: command not found）。
         build_root = f"{mount}/build"
-        steps = [
-            f"cd {shlex.quote(build_root)}",
-            "./code_update.sh -d",
-            f"cd {shlex.quote(f'{mount}/{script_dir}')}",
-        ]
+        # code_update.sh -d（删掉并重新 clone voip/xpon/wlan/ac/ponolt 独立子仓库）
+        # 是全量编译的前置准备：模块编译只编主 rcios 仓库里已随 worktree 存在的
+        # 目录，不需要重拉子仓库，故仅在 full 编译（clean 或未解析到模块）时执行。
+        is_full = clean or not module
+        steps = []
+        if is_full:
+            steps.append(f"cd {shlex.quote(build_root)}")
+            steps.append("./code_update.sh -d")
+        steps.append(f"cd {shlex.quote(f'{mount}/{script_dir}')}")
         build_script, product = self._resolve_script(model)
         if clean:
             steps.append(f"./{build_script} {shlex.quote(product)} clean")
         build_cmd = f"./{build_script} {shlex.quote(product)}"
         if module:
-            build_cmd = f"{build_cmd} {shlex.quote(module)}"
+            # module 来自 build_rules.yaml 的数据驱动配置（非用户输入），可含多 token
+            # （如 "component wlan"），逐段 quote 成独立 argv 再拼回 shell 字符串。
+            for tok in shlex.split(module):
+                build_cmd = f"{build_cmd} {shlex.quote(tok)}"
         steps.append(build_cmd)
 
         streaming = log_path is not None
@@ -201,12 +231,20 @@ class BuildRunner:
         log_path.parent.mkdir(parents=True, exist_ok=True)
         if log or not streaming:
             log_path.write_text(log or "", encoding="utf-8", errors="replace")
+        # streaming 时 SubprocessExecutor 返回空 stdout/stderr（输出直接落盘），
+        # 必须从落盘的日志文件解析错误，否则 errors 恒为空 → 平台侧看不到失败原因。
+        errors_text = log
+        if streaming and not log:
+            try:
+                errors_text = log_path.read_text(encoding="utf-8", errors="replace")
+            except OSError:
+                errors_text = ""
         return BuildResult(
             model=model,
             returncode=proc.returncode,
             log_path=log_path,
             succeeded=proc.returncode == 0,
-            errors=self.parse_errors(log),
+            errors=self.parse_errors(errors_text),
         )
 
     def parse_errors(self, log_text: str) -> list[str]:

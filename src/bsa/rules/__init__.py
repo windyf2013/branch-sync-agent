@@ -14,6 +14,7 @@ from bsa.rules.build_rules import (
     BuildType,
     load_build_rules,
     resolve_build_models,
+    resolve_build_modules,
 )
 from bsa.rules.classify import Classification, classify_commit, classify_severity
 from bsa.rules.conclude import CommitAnalysis, TargetSnapshot, conclude_pair
@@ -57,4 +58,5 @@ __all__ = [
     "parse_branch_md",
     "resolve_branch_type",
     "resolve_build_models",
+    "resolve_build_modules",
 ]

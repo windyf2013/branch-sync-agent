@@ -121,6 +121,7 @@ class TestCommitsInWindow:
         assert executor.calls[0][0] == [
             "log",
             "--reverse",
+            "--first-parent",
             "--since=2026-01-01",
             "--until=2026-01-02",
             "--format=%H",
@@ -150,7 +151,17 @@ class TestChangedFiles:
     def test_parses_file_names(self, tmp_path):
         executor = FakeExecutor([ok("parentsha"), ok("a.c\nb.h\n\n")])
         assert GitService(executor, tmp_path).changed_files("abc") == ["a.c", "b.h"]
-        assert executor.calls[1][0] == ["diff-tree", "--no-commit-id", "--name-only", "-r", "abc"]
+        assert executor.calls[1][0] == [
+            "diff-tree", "--no-commit-id", "--name-only", "-r", "parentsha", "abc"
+        ]
+
+    def test_merge_commit_uses_first_parent(self, tmp_path):
+        # merge commit 的 %P 是多个父，取首个作 diff 基准，避免 git show 合流 diff 为空。
+        executor = FakeExecutor([ok("p1 p2"), ok("a.c\nb.h\n\n")])
+        assert GitService(executor, tmp_path).changed_files("merge") == ["a.c", "b.h"]
+        assert executor.calls[1][0] == [
+            "diff-tree", "--no-commit-id", "--name-only", "-r", "p1", "merge"
+        ]
 
     def test_truncates_at_500_files(self, tmp_path):
         names = "\n".join(f"f{i}.c" for i in range(501))

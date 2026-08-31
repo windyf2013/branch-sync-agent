@@ -139,11 +139,14 @@ class BuildAgent:
         *,
         git: GitService | None = None,
         target_branch: str | None = None,
+        module: str | None = None,
     ) -> BuildAttribution:
         """Attribute + auto-fix; ``git`` is the worktree-scoped service (C2).
 
         The applied fix diff is captured on ``attribution.fix_diff`` so the
         graph can persist it into ``BuildOutcome.fix_diff`` (审计闸门 5).
+        ``module`` 与首次失败编译同一模块，保证「复现/修复」重编译与首编译
+        错误签名可比。
         """
         wgit = git or self._git
         tgt = target_branch or self._target_branch
@@ -158,7 +161,7 @@ class BuildAgent:
             )
         if attribution.category == "pre_existing":
             attribution = self._verify_pre_existing(
-                commit, errors, model, attribution, git=wgit, target_branch=tgt
+                commit, errors, model, attribution, git=wgit, target_branch=tgt, module=module
             )
             if attribution.category == "pre_existing":
                 return attribution
@@ -170,7 +173,7 @@ class BuildAgent:
             self._safety.check_editable(attribution.files_to_fix)
         except SafetyViolation:
             return attribution
-        self._fix_loop(commit, errors, model, attribution, git=wgit)
+        self._fix_loop(commit, errors, model, attribution, git=wgit, module=module)
         return attribution
 
     def _context(
@@ -193,6 +196,7 @@ class BuildAgent:
         *,
         git: GitService,
         target_branch: str | None,
+        module: str | None = None,
     ) -> BuildAttribution:
         """Deterministic check (decision 30): revert the commit's files to the
         target tip, compile, and compare error signatures. The original tip
@@ -213,8 +217,9 @@ class BuildAgent:
                     continue
                 path.parent.mkdir(parents=True, exist_ok=True)
                 path.write_text(original, encoding="utf-8")
+            build_module = module if module is not None else self._module
             original_errors = self._runner.build_commit(
-                git.repo_path, model, clean=False, module=self._module
+                git.repo_path, model, clean=False, module=build_module
             ).errors
         except InfrastructureError:
             return attribution
@@ -246,6 +251,7 @@ class BuildAgent:
         attribution: BuildAttribution,
         *,
         git: GitService,
+        module: str | None = None,
     ) -> bool:
         """Snapshot -> LLM fix -> apply -> rebuild; restore and retry on failure."""
         allowed = set(commit.changed_files) | set(
@@ -261,7 +267,9 @@ class BuildAgent:
         for _ in range(self._max_attempts):
             snap = git.snapshot(files_to_fix)
             try:
-                applied = self._attempt_fix(commit, errors, model, files_to_fix, git=git)
+                applied = self._attempt_fix(
+                    commit, errors, model, files_to_fix, git=git, module=module
+                )
                 if applied is not None:
                     attribution.fix_diff = applied
                     return True
@@ -279,6 +287,7 @@ class BuildAgent:
         files_to_fix: list[str],
         *,
         git: GitService,
+        module: str | None = None,
     ) -> str | None:
         """Apply one LLM fix and rebuild; returns the applied diff or None."""
         fix = self._llm.fix_build_error(self._context(commit, errors, model, git=git))
@@ -300,7 +309,10 @@ class BuildAgent:
             return None
         try:
             result = self._runner.build_commit(
-                git.repo_path, model, clean=False, module=self._module
+                git.repo_path,
+                model,
+                clean=False,
+                module=module if module is not None else self._module,
             )
         except InfrastructureError:
             return None

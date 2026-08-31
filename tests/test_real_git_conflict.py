@@ -281,8 +281,8 @@ class GBKSourceResolver:
         )
 
 
-def test_real_git_gbk_conflict_resolves_losslessly(tmp_path):
-    """真实 git：GBK 中文注释 + 代码行冲突，LLM 解决后 GBK 注释字节无损保留。"""
+def test_real_git_gbk_conflict_resolves_to_utf8(tmp_path):
+    """真实 git：GBK 中文注释 + 代码行冲突，LLM 解决后非 UTF-8 内容统一转 UTF-8 合入。"""
     repo, src_sha, gbk = _build_gbk_conflict_repo(tmp_path)
 
     executor = WhitelistExecutor(SubprocessExecutor())
@@ -344,8 +344,8 @@ def test_real_git_gbk_conflict_resolves_losslessly(tmp_path):
     assert update["status"] == "RESOLVED"
     data = (wt_path / "cell_lib.c").read_bytes()
     assert b"<<<<<<<" not in data
-    assert gbk in data
-    assert data == b"int x;\n" + gbk + b"\nint y = 2;\n"
+    # 非 UTF-8 源文件（GBK 中文注释）解决后统一转 UTF-8 合入。
+    assert data == b"int x;\n" + "/* 中文注释 */".encode("utf-8") + b"\nint y = 2;\n"
 
     sequencer = subprocess.run(
         ["git", "-C", str(wt_path), "rev-parse", "--verify", "--quiet", "CHERRY_PICK_HEAD"],

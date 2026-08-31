@@ -426,3 +426,42 @@ def test_cleanup_worktree_cli_prints_result(monkeypatch, tmp_path, capsys):
     code = main(["cleanup-worktree", TARGET, "manual-20260825-1"])
     assert code == 0
     assert "removed=True" in capsys.readouterr().out
+
+
+def test_cleanup_task_cli_docker_rm(monkeypatch, tmp_path, capsys):
+    import subprocess
+
+    from bsa.cli import _cmd_cleanup_task
+
+    settings = SimpleNamespace(
+        docker_prefix="", docker_container_prefix="rcios-sync"
+    )
+    monkeypatch.setattr("bsa.cli.load_settings", lambda: settings)
+    calls = []
+
+    def fake_run(args, **kwargs):
+        calls.append(args)
+        return SimpleNamespace(returncode=0)
+
+    monkeypatch.setattr("bsa.cli.subprocess.run", fake_run)
+    code = _cmd_cleanup_task(SimpleNamespace(cycle="manual-20260825-1"))
+    assert code == 0
+    assert calls == [["docker", "rm", "-f", "rcios-sync-manual-20260825-1"]]
+
+
+def test_cleanup_task_cli_with_docker_prefix_sudo(monkeypatch, tmp_path, capsys):
+    from bsa.cli import _cmd_cleanup_task
+
+    settings = SimpleNamespace(
+        docker_prefix="sudo ", docker_container_prefix="rcios-sync"
+    )
+    monkeypatch.setattr("bsa.cli.load_settings", lambda: settings)
+    calls = []
+
+    def fake_run(args, **kwargs):
+        calls.append(args)
+        return SimpleNamespace(returncode=0)
+
+    monkeypatch.setattr("bsa.cli.subprocess.run", fake_run)
+    _cmd_cleanup_task(SimpleNamespace(cycle="manual-1"))
+    assert calls == [["sudo", "docker", "rm", "-f", "rcios-sync-manual-1"]]

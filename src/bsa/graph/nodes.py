@@ -44,6 +44,7 @@ from bsa.rules import (
     parse_branch_md,
     resolve_branch_type,
     resolve_build_models,
+    resolve_build_modules,
 )
 from bsa.rules.conclude import CommitAnalysis
 from bsa.rules.paths import is_public_file
@@ -343,6 +344,8 @@ def detect_commits(state: dict, ctx: GraphContext) -> dict:
         "branch_md_version": branch_md_version,
         "detected_commits": detected,
         "classifications": classifications,
+        "sources": sorted({s.name for hs in ctx.matrix for s in hs.sources}),
+        "targets": sorted({t.name for hs in ctx.matrix for t in hs.need_sync_targets}),
         "status": "DETECTED",
     }
     # 零同步边 = 扫描面为空 = 周期静默空跑。最常见成因是 CRON_BRANCH_FILE 漏配，
@@ -734,6 +737,7 @@ def resolve_conflict(state: dict, ctx: GraphContext) -> dict:
         update={
             "conflict_resolution": resolution,
             "cherry_pick": "OK" if resolution is not None else branch.commits[index].cherry_pick,
+            "resolution_error": reason if resolution is None else None,
         }
     )
     commits = list(branch.commits)
@@ -854,10 +858,11 @@ def baseline_build(state: dict, ctx: GraphContext) -> dict:
 
 
 def build(state: dict, ctx: GraphContext) -> dict:
-    """Build current_commit/model in the worktree; clean only on public files.
+    """Build current_commit/model in the worktree; module-scoped when determinable.
 
     基线编译（prepare 后 baseline_build）已全量验证 worktree，批次首个 commit
-    不再重复 clean 编译；改动公共文件仍降级全量编译（决策 2）。
+    不再重复 clean 编译；每 commit 按改动文件解析模块编译，解析不出才回退全量
+    （决策 2 的「公共文件降级全量」由全模块化取代）。
     """
     target = state["current_target"]
     sha = state["current_commit"]
@@ -865,12 +870,14 @@ def build(state: dict, ctx: GraphContext) -> dict:
     model = _next_model(state, ctx)
     if model is None:
         return {"status": "BUILD_OK"}
-    clean = bool(
-        ctx.is_public_file is not None and any(ctx.is_public_file(f) for f in commit.changed_files)
+    module = (
+        resolve_build_modules(commit.changed_files, ctx.build_rules)
+        if ctx.build_rules is not None
+        else None
     )
     log_path = _log_path(ctx, state, target, sha)
     result = ctx.runner.build_commit(
-        _worktree_path(state, ctx), model, clean=clean, module=None, log_path=log_path
+        _worktree_path(state, ctx), model, clean=False, module=module, log_path=log_path
     )
     ok = ctx.runner.is_success(result)
     outcome = BuildOutcome(
@@ -895,12 +902,17 @@ def fix_build(state: dict, ctx: GraphContext) -> dict:
         return {"status": "BUILD_OK"}
     model, failed = current
     wg = _worktree_git(state, ctx)
+    module = (
+        resolve_build_modules(commit.changed_files, ctx.build_rules)
+        if ctx.build_rules is not None
+        else None
+    )
     attribution = ctx.build_agent.fix(
-        commit, failed.errors, model, git=wg, target_branch=target
+        commit, failed.errors, model, git=wg, target_branch=target, module=module
     )
     log_path = _log_path(ctx, state, target, sha)
     result = ctx.runner.build_commit(
-        _worktree_path(state, ctx), model, clean=False, module=None, log_path=log_path
+        _worktree_path(state, ctx), model, clean=False, module=module, log_path=log_path
     )
     ok = ctx.runner.is_success(result)
     outcome = BuildOutcome(

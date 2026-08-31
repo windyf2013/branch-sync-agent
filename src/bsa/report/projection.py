@@ -42,6 +42,8 @@ def projection_payload(state: dict[str, Any]) -> dict[str, Any]:
         "cycle_id": state.get("cycle_id"),
         "status": state.get("status"),
         "scan_window": state.get("scan_window"),
+        "sources": state.get("sources") or [],
+        "targets": state.get("targets") or [],
         "detected_commits": [c.model_dump() for c in state.get("detected_commits") or []],
         "decisions": {
             sha: {t: c.model_dump() for t, c in per.items()}
@@ -51,6 +53,36 @@ def projection_payload(state: dict[str, Any]) -> dict[str, Any]:
             t: b.model_dump() for t, b in (state.get("branch_results") or {}).items()
         },
         "action_required": (rep.action_required if rep is not None else []) or [],
+    }
+
+
+def cycle_summary(payload: dict[str, Any]) -> dict[str, int]:
+    """从投影 payload 算周期级检测/同步/跳过计数（工作台与周期概览共用）。
+
+    - 检测：窗口内扫描到的 commit 总数；
+    - 同步：已实际应用到目标分支的 distinct commit 数（cherry_pick OK/EMPTY）；
+    - 跳过：未应用且对该分支判定为 AlreadyIncluded/OutOfScope 的 distinct commit 数。
+    其余（ManualReview 待确认等）计入差值。
+    """
+    detected = len(payload.get("detected_commits") or [])
+    synced_shas: set[str] = set()
+    for branch in (payload.get("branch_results") or {}).values():
+        for cr in branch.get("commits") or []:
+            if cr.get("sha") and cr.get("cherry_pick") in ("OK", "EMPTY"):
+                synced_shas.add(cr["sha"])
+    skipped_shas: set[str] = set()
+    decisions = payload.get("decisions") or {}
+    for c in payload.get("detected_commits") or []:
+        sha = c.get("sha")
+        if not sha or sha in synced_shas:
+            continue
+        kinds = {(d.get("kind") or "") for d in (decisions.get(sha) or {}).values()}
+        if kinds and kinds <= {"AlreadyIncluded", "OutOfScope"}:
+            skipped_shas.add(sha)
+    return {
+        "cycle_detected": detected,
+        "cycle_synced": len(synced_shas),
+        "cycle_skipped": len(skipped_shas),
     }
 
 

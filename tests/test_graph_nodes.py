@@ -40,6 +40,7 @@ from bsa.graph.nodes import (
     sync_decision,
 )
 from bsa.rules import (
+    BuildRules,
     Classification,
     ConcludeThresholds,
     DecisionRules,
@@ -388,8 +389,8 @@ class FakeBuildAgent:
             category=category, reason="fixed", files_to_fix=[]
         )
 
-    def fix(self, commit, errors, model, *, git=None, target_branch=None):
-        self.calls.append((commit, errors, model, git, target_branch))
+    def fix(self, commit, errors, model, *, git=None, target_branch=None, module=None):
+        self.calls.append((commit, errors, model, git, target_branch, module))
         return self.attribution
 
 
@@ -1347,6 +1348,8 @@ def test_resolve_conflict_records_last_reason_into_errors(tmp_path):
     assert update["status"] == "RESOLUTION_FAILED"
     assert "resolve_conflict" in update["errors"]
     assert "UTF-8" in update["errors"]["resolve_conflict"].error
+    # 转人工原因同时落到 commit 级 resolution_error，供详情页透出
+    assert "UTF-8" in update["branch_results"][TARGET].commits[0].resolution_error
 
 
 # --- baseline_build ---
@@ -1466,16 +1469,28 @@ def test_build_success_records_outcome_and_incremental(tmp_path):
     assert update["status"] == "BUILD_OK"
 
 
-def test_build_public_file_triggers_clean(tmp_path):
-    # 决策 2：改动公共文件（component/ 等）→ 全量编译降级，基线编译不豁免。
+def _build_rules_with_modules() -> BuildRules:
+    return BuildRules(
+        build_types={},
+        build_models_by_section={},
+        build_modules={
+            "datapath/": "datapath",
+            "plat/": "plat",
+            "component/wlan/": "component wlan",
+        },
+    )
+
+
+def test_build_public_file_module_scoped_when_mapped(tmp_path):
+    # 全模块化：改动文件命中 build_modules 前缀 → 模块编译；不再因 public_dirs 强制 clean。
     ctx = make_ctx(tmp_path)
+    ctx.build_rules = _build_rules_with_modules()
     ctx.runner = FakeRunner(success=True)
     ctx.worktree_path = Path("/wt")
-    ctx.is_public_file = lambda path: True
     state = base_state(
         current_target=TARGET,
         current_commit="a1",
-        detected_commits=[commit("a1", changed_files=["component/dhcp.c"])],
+        detected_commits=[commit("a1", changed_files=["plat/demo.c"])],
         batches={TARGET: ["a1"]},
         branch_results={
             TARGET: branch_result(
@@ -1487,14 +1502,14 @@ def test_build_public_file_triggers_clean(tmp_path):
 
     build(state, ctx)
 
-    assert ctx.runner.build_calls[0]["clean"] is True
+    assert ctx.runner.build_calls[0]["clean"] is False
+    assert ctx.runner.build_calls[0]["module"] == "plat"
 
 
 def test_build_incremental_when_not_first_in_batch(tmp_path):
     ctx = make_ctx(tmp_path)
     ctx.runner = FakeRunner(success=True)
     ctx.worktree_path = Path("/wt")
-    ctx.is_public_file = lambda path: False
     state = base_state(
         current_target=TARGET,
         current_commit="a2",
@@ -1513,15 +1528,16 @@ def test_build_incremental_when_not_first_in_batch(tmp_path):
     assert ctx.runner.build_calls[0]["clean"] is False
 
 
-def test_build_clean_for_public_file(tmp_path):
+def test_build_unmapped_file_falls_back_full(tmp_path):
+    # 改动文件未命中任何 build_modules 前缀（如 component/dhcp.c 无独立脚本）→ 回退全量。
     ctx = make_ctx(tmp_path)
+    ctx.build_rules = _build_rules_with_modules()
     ctx.runner = FakeRunner(success=True)
     ctx.worktree_path = Path("/wt")
-    ctx.is_public_file = lambda path: path == "plat/public.c"
     state = base_state(
         current_target=TARGET,
         current_commit="a2",
-        detected_commits=[commit("a2", changed_files=["plat/public.c"])],
+        detected_commits=[commit("a2", changed_files=["component/dhcp.c"])],
         batches={TARGET: ["a1", "a2"]},
         branch_results={
             TARGET: branch_result(
@@ -1533,7 +1549,8 @@ def test_build_clean_for_public_file(tmp_path):
 
     build(state, ctx)
 
-    assert ctx.runner.build_calls[0]["clean"] is True
+    assert ctx.runner.build_calls[0]["clean"] is False
+    assert ctx.runner.build_calls[0]["module"] is None
 
 
 def test_build_failed_status(tmp_path):

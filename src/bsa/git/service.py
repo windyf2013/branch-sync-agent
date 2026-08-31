@@ -102,6 +102,7 @@ class GitService:
         args = [
             "log",
             "--reverse",
+            "--first-parent",
             f"--since={since}",
             f"--until={until}",
             "--format=%H",
@@ -118,10 +119,11 @@ class GitService:
         return parts[0], parts[1], parts[2]
 
     def _parent_sha(self, sha: str) -> str | None:
+        """第一父 SHA（merge commit 取 %P 首个，即主线父）；根 commit 返回 None。"""
         result = self.executor.run(["log", "-1", "--format=%P", sha], cwd=self.repo_path)
         if result.returncode != 0:
             return None
-        return result.stdout.strip() or None
+        return result.stdout.split()[0] if result.stdout.split() else None
 
     def _numstat(self, sha: str) -> tuple[int, int] | None:
         """Return (file_count, total_lines) or None when the commit is too large."""
@@ -153,9 +155,14 @@ class GitService:
         return self._parent_sha(sha) is None or self._numstat(sha) is None
 
     def changed_files(self, sha: str) -> list[str]:
-        if self._parent_sha(sha) is None:
+        parent = self._parent_sha(sha)
+        if parent is None:
             return []
-        result = self._run(["diff-tree", "--no-commit-id", "--name-only", "-r", sha])
+        # 对第一父求 diff（决策 16 变体）：merge commit 经 ``diff-tree -r <first_parent>
+        # <sha>`` 拿到主线聚合改动文件，而非 ``git show`` 的合流 diff（对 merge 恒空）。
+        result = self._run(
+            ["diff-tree", "--no-commit-id", "--name-only", "-r", parent, sha]
+        )
         names = [line.strip() for line in result.stdout.splitlines() if line.strip()]
         return names[:MAX_CHANGED_FILES]
 

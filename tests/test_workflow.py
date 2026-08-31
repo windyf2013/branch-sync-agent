@@ -192,9 +192,9 @@ def test_single_branch_success_patch_and_report(tmp_path):
     assert branch.commits[0].build["RTL9617C"].status == "OK"
 
 
-def test_empty_cherry_pick_still_builds(tmp_path):
-    # 真机测试: worktree 复用导致 cherry_pick 判 EMPTY（内容已应用），
-    # 但当前 worktree 是否编译通过从未验证。EMPTY 也必须走 build 验证。
+def test_empty_cherry_pick_skips_build(tmp_path):
+    # 不变量 #17：建立 worktree 时 baseline_build 已全量编译，EMPTY（内容已应用）
+    # 未引入改动，跳过编译直接下一个 commit，不产生 build 记录。
     write_branch_md(tmp_path)
     ctx = batch_ctx(tmp_path, shas=["a1"])
     wg = worktree_git_for(ctx, TARGET)
@@ -205,9 +205,10 @@ def test_empty_cherry_pick_still_builds(tmp_path):
     assert out["status"] == "SUCCESS"
     branch = out["branch_results"][TARGET]
     assert branch.commits[0].cherry_pick == "EMPTY"
-    assert "RTL9617C" in branch.commits[0].build
-    assert branch.commits[0].build["RTL9617C"].status == "OK"
+    assert branch.commits[0].build == {}
     assert branch.patch_path is not None
+    # 全程只发生 baseline 编译，没有 commit 编译。
+    assert [c["model"] for c in ctx.runner.build_calls] == ["RTL9617C"]
 
 
 def test_multi_commit_order_per_branch(tmp_path):

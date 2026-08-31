@@ -79,6 +79,32 @@ class TestExtractErrors:
     def test_case_insensitive_error_marker(self):
         assert extract_errors("make[1]: Error: failure in target\n") != []
 
+    def test_git_identity_fatal_is_hard_error(self):
+        # 真机基线编译失败：容器无 git 身份 → strongswan make add_patch Error 128。
+        log = (
+            "hint: Using 'master' as the name for the initial branch.\n"
+            "Author identity unknown\n"
+            "*** Please tell me who you are.\n"
+            "fatal: unable to auto-detect email address (got 'ubuntu@x.(none)')\n"
+            "Committer identity unknown\n"
+            "fatal: unable to auto-detect email address (got 'ubuntu@x.(none)')\n"
+            "make[2]: *** [Makefile:58: add_patch] Error 128\n"
+            "Plat make failed\n"
+        )
+        result = extract_errors(log)
+        joined = "\n".join(result)
+        assert "unable to auto-detect email" in joined
+        assert "identity unknown" in joined
+        assert "Plat make failed" in joined
+        assert "Error 128" in joined
+
+    def test_benign_fatal_not_a_git_repository_still_ignored(self):
+        log = (
+            "fatal: not a git repository: '.../FleetConntrackDriver/.git'\n"
+            "  CC [M]  drivers/net/ethernet/realtek/rtl86900/FleetConntrackDriver/src/x.o\n"
+        )
+        assert extract_errors(log) == []
+
 
 class TestHasSuccessMarker:
     def test_real_success_log_is_success(self):
@@ -126,6 +152,44 @@ class TestParseErrors:
         assert "line 29" in result[0]
 
 
+class TestDockerGitconfigArgs:
+    def test_mounts_gitconfig_when_present(self, tmp_path, monkeypatch):
+        from bsa.build.runner import _docker_gitconfig_args
+
+        home = tmp_path / "home"
+        home.mkdir()
+        gitconfig = home / ".gitconfig"
+        gitconfig.write_text("[user]\n\tname = yangfu\n", encoding="utf-8")
+        monkeypatch.setattr("os.path.expanduser", lambda p: str(gitconfig))
+        assert _docker_gitconfig_args(make_settings(tmp_path)) == [
+            "-v",
+            f"{gitconfig}:/home/ubuntu/.gitconfig:ro",
+        ]
+
+    def test_no_args_when_gitconfig_missing(self, tmp_path, monkeypatch):
+        from bsa.build.runner import _docker_gitconfig_args
+
+        home = tmp_path / "home"
+        home.mkdir()
+        monkeypatch.setattr("os.path.expanduser", lambda p: str(home / ".gitconfig"))
+        assert _docker_gitconfig_args(make_settings(tmp_path)) == []
+
+    def test_root_user_targets_root_home(self, tmp_path, monkeypatch):
+        from bsa.build.runner import _docker_gitconfig_args
+
+        home = tmp_path / "home"
+        home.mkdir()
+        gitconfig = home / ".gitconfig"
+        gitconfig.write_text("[user]\n\tname = yangfu\n", encoding="utf-8")
+        monkeypatch.setattr("os.path.expanduser", lambda p: str(gitconfig))
+        settings = make_settings(tmp_path)
+        settings.docker_user = "root"
+        assert _docker_gitconfig_args(settings) == [
+            "-v",
+            f"{gitconfig}:/root/.gitconfig:ro",
+        ]
+
+
 class TestBuildCommit:
     def test_docker_sequence_with_sudo_and_module(self, tmp_path):
         settings = make_settings(tmp_path)
@@ -142,6 +206,13 @@ class TestBuildCommit:
                 "-v",
                 f"{ssh}:/home/ubuntu/.ssh:ro",
             ]
+        gitconfig_expected = []
+        gitconfig = Path(os.path.expanduser("~/.gitconfig"))
+        if gitconfig.is_file():
+            gitconfig_expected = [
+                "-v",
+                f"{gitconfig}:/home/ubuntu/.gitconfig:ro",
+            ]
         assert executor.calls[0][0] == [
             "sudo",
             "docker",
@@ -152,6 +223,7 @@ class TestBuildCommit:
             "--user",
             f"{os.getuid()}:{os.getgid()}",
             *ssh_expected,
+            *gitconfig_expected,
             "-v",
             f"{tmp_path / 'wt'}:/workspace/rcios",
             "-v",
@@ -167,9 +239,9 @@ class TestBuildCommit:
             "-w",
             "/workspace/rcios",
         ]
+        # 模块编译不跑 code_update.sh -d（那是全量前置，重拉独立子仓库）
         assert executor.calls[1][0][-1] == (
-            "cd /workspace/rcios/build && ./code_update.sh -d "
-            "&& cd /workspace/rcios/build/platform/RTL9617C "
+            "cd /workspace/rcios/build/platform/RTL9617C "
             "&& ./RTL9617C_build.sh 5200 rtk_api"
         )
         assert executor.calls[2][0] == ["sudo", "docker", "rm", "-f", "rcios-sync-20260821"]
@@ -225,6 +297,28 @@ class TestBuildCommit:
         )
         assert log_path.read_text(encoding="utf-8") == "streamed build output"
         assert executor.calls[1][1]["stream_to"] == str(log_path)
+
+    def test_build_parses_errors_from_log_file_when_streamed(self, tmp_path):
+        # stream_to 时 SubprocessExecutor 返回空输出，错误必须从落盘的日志解析。
+        def respond(args, kwargs):
+            if kwargs.get("stream_to"):
+                Path(kwargs["stream_to"]).write_text(
+                    "fatal: unable to auto-detect email address\n"
+                    "make[2]: *** [Makefile:58: add_patch] Error 128\n",
+                    encoding="utf-8",
+                )
+            return CompletedProcess(returncode=2, stdout="", stderr="")
+
+        executor = FakeExecutor([ok(), respond, ok()])
+        runner = BuildRunner(executor, make_settings(tmp_path), cycle_id="c1")
+        log_path = tmp_path / "logs" / "build.log"
+        result = runner.build_commit(
+            tmp_path / "wt", "5200", clean=False, module=None, log_path=log_path
+        )
+        assert result.errors != []
+        joined = "\n".join(result.errors)
+        assert "unable to auto-detect email" in joined
+        assert "Error 128" in joined
 
     def test_unknown_model_without_build_types_legacy_inference(self, tmp_path):
         executor = FakeExecutor([ok(), ok(), ok()])
@@ -300,6 +394,21 @@ class TestBuildCommit:
         runner.build_commit(tmp_path / "wt", "5200; echo pwned", clean=False, module="x$(id)")
         inner = executor.calls[1][0][-1]
         assert "'5200; echo pwned'" in inner
+        assert "'x$(id)'" in inner
+
+    def test_module_multi_token_quoted_separately(self, tmp_path):
+        # 数据驱动 module（如 "component wlan"）逐段 quote 成独立 argv。
+        executor = FakeExecutor([ok(), ok(), ok()])
+        runner = BuildRunner(executor, make_settings(tmp_path), cycle_id="c1")
+        runner.build_commit(tmp_path / "wt", "5200", clean=False, module="component wlan")
+        inner = executor.calls[1][0][-1]
+        assert inner.endswith(" component wlan")
+
+    def test_module_multi_token_special_chars_quoted(self, tmp_path):
+        executor = FakeExecutor([ok(), ok(), ok()])
+        runner = BuildRunner(executor, make_settings(tmp_path), cycle_id="c1")
+        runner.build_commit(tmp_path / "wt", "5200", clean=False, module="component x$(id)")
+        inner = executor.calls[1][0][-1]
         assert "'x$(id)'" in inner
 
     def test_public_file_injection(self, tmp_path):

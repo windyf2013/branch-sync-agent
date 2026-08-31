@@ -9,6 +9,7 @@ from bsa.rules.build_rules import (
     BuildType,
     load_build_rules,
     resolve_build_models,
+    resolve_build_modules,
 )
 
 _BRANCH_MD = """\
@@ -122,3 +123,55 @@ def test_resolve_build_models_single_match_still_returns():
     )
     assert resolve_build_models({"br_x": "4.34"}, "br_x", rules) == ["a"]
     assert resolve_build_models({"br_y": "1.1 组网产品分支"}, "br_y", rules) == ["b"]
+
+
+def _module_rules() -> BuildRules:
+    return BuildRules(
+        build_types={},
+        build_models_by_section={},
+        build_modules={
+            "datapath/": "datapath",
+            "plat/": "plat",
+            "plugin/": "plugin",
+            "component/wlan/": "component wlan",
+            "component/capwap/": "component capwap",
+            "component/netconf/": "component netconf",
+        },
+    )
+
+
+def test_resolve_build_modules_single_module():
+    rules = _module_rules()
+    assert resolve_build_modules(["plat/route/bgpd/bgpd.c"], rules) == "plat"
+
+
+def test_resolve_build_modules_longest_prefix_wins():
+    rules = _module_rules()
+    assert (
+        resolve_build_modules(
+            ["component/wlan/rtk_wifi6/driver.c", "component/wlan/rtk_wifi6/os.c"], rules
+        )
+        == "component wlan"
+    )
+
+
+def test_resolve_build_modules_multi_module_returns_none():
+    rules = _module_rules()
+    assert (
+        resolve_build_modules(
+            ["component/wlan/a.c", "component/capwap/b.c"], rules
+        )
+        is None
+    )
+
+
+def test_resolve_build_modules_unmapped_returns_none():
+    rules = _module_rules()
+    assert resolve_build_modules(["component/dhcp.c"], rules) is None
+    assert resolve_build_modules(["component/cwmp_dm/x.c"], rules) is None
+
+
+def test_resolve_build_modules_empty_returns_none():
+    rules = _module_rules()
+    assert resolve_build_modules([], rules) is None
+    assert resolve_build_modules(["docs/readme.md"], rules) is None

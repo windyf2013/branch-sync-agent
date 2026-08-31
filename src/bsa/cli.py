@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import subprocess
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -122,6 +123,13 @@ def _build_parser() -> argparse.ArgumentParser:
     cleanup_p.add_argument("target", help="目标分支名")
     cleanup_p.add_argument("cycle", help="周期 id（如 manual-xxx / cycle-xxx）")
     cleanup_p.set_defaults(handler=_cmd_cleanup_worktree)
+
+    cleanup_task_p = sub.add_parser(
+        "cleanup-task",
+        help="回收某周期 keep-alive 编译容器（docker rm -f，供平台取消任务联动清理）",
+    )
+    cleanup_task_p.add_argument("cycle", help="周期 id（如 manual-xxx / cycle-xxx）")
+    cleanup_task_p.set_defaults(handler=_cmd_cleanup_task)
 
     return parser
 
@@ -290,15 +298,12 @@ def _cmd_commits(args: argparse.Namespace) -> int:
         return 2
     ctx = build_graph_context(settings)
     try:
-        if args.refresh:
-            from bsa.executor.lock import flock_acquire
-
-            with flock_acquire(Path(settings.log_dir) / "bsa.lock"):
-                commits = list_candidate_commits(
-                    ctx.git, args.src, limit=args.limit, refresh=True
-                )
-        else:
-            commits = list_candidate_commits(ctx.git, args.src, limit=args.limit)
+        # git fetch 只更新 .git/refs/remotes/* 与对象库（原子、append-only），与
+        # worktree 里的编译完全无冲突，不持全局锁——否则正在跑的 sync/cycle 任务
+        # 独占 bsa.lock 会让候选 commit 加载一直阻塞到超时。
+        commits = list_candidate_commits(
+            ctx.git, args.src, limit=args.limit, refresh=args.refresh
+        )
     except Exception as exc:
         print(f"候选 commit 加载失败: {exc}", file=sys.stderr)
         return 1
@@ -533,6 +538,30 @@ def _cmd_cleanup_worktree(args: argparse.Namespace) -> int:
         f"清理完成: target={args.target} cycle={args.cycle} "
         f"removed={result.get('removed')}"
     )
+    return 0
+
+
+def _cmd_cleanup_task(args: argparse.Namespace) -> int:
+    """回收某周期 keep-alive 编译容器（docker rm -f，best-effort）。
+
+    docker 知识留在 V1：容器名与 build/runner.py:_container_name 一致
+    （{docker_container_prefix}-{cycle_id}），docker_prefix（如 sudo）一并继承。
+    容器不存在/清理失败不报错（幂等），取消任务不能因回收失败而中断。
+    """
+    try:
+        settings = load_settings()
+    except Exception as exc:
+        print(f"配置错误: {exc}", file=sys.stderr)
+        return 2
+    prefix = settings.docker_prefix.strip().split()
+    container = f"{settings.docker_container_prefix}-{args.cycle}"
+    proc = subprocess.run(
+        [*prefix, "docker", "rm", "-f", container],
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+    print(f"清理完成: container={container} rc={proc.returncode}")
     return 0
 
 

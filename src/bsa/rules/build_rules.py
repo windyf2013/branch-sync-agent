@@ -19,6 +19,7 @@ class BuildType(BaseModel):
 class BuildRules(BaseModel):
     build_types: dict[str, BuildType]
     build_models_by_section: dict[str, list[str]]
+    build_modules: dict[str, str] = {}
 
 
 def load_build_rules(path: Path) -> BuildRules:
@@ -60,3 +61,27 @@ def resolve_build_models(
     raise BuildConfigError(
         f"产品线「{section}」未配置编译型号，停止任务（请在 build_rules.yaml 补充）"
     )
+
+
+def resolve_build_modules(changed_files: list[str], rules: BuildRules) -> str | None:
+    """改动文件 → 编译脚本模块参数；无法确定时返回 None（全量编译兜底）。
+
+    按最长前缀匹配每个改动文件的模块 token；所有文件命中**同一** token 才返回该
+    token（如 ``"component wlan"``），任一文件未命中、或命中多个不同 token 均返回
+    None——绝不静默猜测模块（与 resolve_build_models 的「多命中即停」同一精神）。
+    """
+    if not changed_files or not rules.build_modules:
+        return None
+    token: str | None = None
+    for path in changed_files:
+        matched = None
+        for prefix, value in rules.build_modules.items():
+            if path.startswith(prefix) and (matched is None or len(prefix) > len(matched[0])):
+                matched = (prefix, value)
+        if matched is None:
+            return None
+        if token is None:
+            token = matched[1]
+        elif token != matched[1]:
+            return None
+    return token
