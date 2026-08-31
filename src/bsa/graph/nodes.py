@@ -910,6 +910,21 @@ def fix_build(state: dict, ctx: GraphContext) -> dict:
     attribution = ctx.build_agent.fix(
         commit, failed.errors, model, git=wg, target_branch=target, module=module
     )
+    # 非「本次引入」的归因（LLM 不可用 / 原分支已有 / 环境 / 无法归因）不进入
+    # 修复循环、不重编译，立即停批转人工（不变量 #6）。否则会空转重编译
+    # max_build_attempts 次。introduced_by_commit 才进入下方修复循环。
+    if attribution.category != "introduced_by_commit":
+        outcome = BuildOutcome(
+            model=model,
+            status="FAILED",
+            log_path=str(failed.log_path),
+            errors=failed.errors,
+            agent_attempts=failed.agent_attempts,  # 不虚增：未进入修复循环
+            fix_diff=None,
+            reason=attribution.reason or "无法自动修复",
+        )
+        results = _record_build(state, ctx, outcome)
+        return {"branch_results": results, "status": "UNRESOLVABLE"}
     log_path = _log_path(ctx, state, target, sha)
     result = ctx.runner.build_commit(
         _worktree_path(state, ctx), model, clean=False, module=module, log_path=log_path

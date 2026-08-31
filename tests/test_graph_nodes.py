@@ -1687,6 +1687,43 @@ def test_fix_build_still_failed_after_attempts(tmp_path):
     assert update["status"] == "BUILD_FAILED"
 
 
+def test_fix_build_unresolvable_no_rebuild_no_attempt_bump(tmp_path):
+    """LLM 不可用（unresolvable）→ 不重编译、agent_attempts 不虚增、路由 UNRESOLVABLE。"""
+    ctx = make_ctx(tmp_path)
+    ctx.build_agent = FakeBuildAgent(category="unresolvable")
+    ctx.runner = FakeRunner(success=False)
+    ctx.worktree_path = Path("/wt")
+    wg = FakeGit()
+    ctx.worktree_gits[str(Path("/wt"))] = wg
+    state = base_state(
+        current_target=TARGET,
+        current_commit="a1",
+        detected_commits=[commit("a1")],
+        branch_results={
+            TARGET: branch_result(
+                TARGET,
+                commits=[
+                    CommitResult(
+                        sha="a1",
+                        cherry_pick="OK",
+                        conflict_resolution=None,
+                        build={"RTL9617C": failed_outcome()},
+                    )
+                ],
+            )
+        },
+    )
+
+    update = fix_build(state, ctx)
+
+    outcome = update["branch_results"][TARGET].commits[0].build["RTL9617C"]
+    assert outcome.status == "FAILED"
+    assert outcome.agent_attempts == 0  # 未进入修复循环，不虚增
+    assert outcome.reason == "fixed"  # FakeBuildAgent 的 reason
+    assert update["status"] == "UNRESOLVABLE"
+    # 未触发第二次 build_commit（runner.build_commit 只被 baseline/首次 build 调用，fix_build 不重编）
+
+
 # --- generate_patch ---
 
 

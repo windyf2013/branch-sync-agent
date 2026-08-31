@@ -347,6 +347,9 @@ def _make_route_after_fix_build(ctx: GraphContext) -> Callable[[dict], str]:
             if _remaining_models(state, ctx):
                 return "build"
             return "next_commit"
+        # LLM 不可用 / 无法归因：立即停批，不空转重编译
+        if state.get("status") == "UNRESOLVABLE":
+            return "fail_fast"
         if _agent_attempts(state, ctx) >= ctx.settings.max_build_attempts:
             return "fail_fast"
         return "fix_build"

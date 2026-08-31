@@ -97,9 +97,20 @@ def _active_manual_count(*task_lists: list[dict]) -> int:
 
 
 def _kpi_counts(auto_tasks: list[dict]) -> dict:
-    """KPI 恒显所需的计数：自动任务总数 + 已完成分支数（闭环）。"""
-    done = sum(1 for t in auto_tasks if t.get("status") == "SUCCESS")
-    return {"auto_total": len(auto_tasks), "done_count": done}
+    """KPI 恒显所需的计数：自动任务总数。"""
+    return {"auto_total": len(auto_tasks)}
+
+
+def _done_count(db) -> int:
+    """「已完成」卡 = 历史累计成功任务数（succeeded），非当前周期分支数。
+
+    空周期时当前周期无 SUCCESS 分支，若用当前分支数则「已完成」恒 0，
+    让维护者误以为系统从没成功过。改为历史累计成功，形成闭环。
+    """
+    row = db.execute(
+        "SELECT COUNT(*) AS n FROM tasks WHERE state='succeeded'"
+    ).fetchone()
+    return row["n"] if row is not None else 0
 
 
 def _auto_failed_targets(auto_tasks: list[dict]) -> set[str]:
@@ -392,6 +403,7 @@ def workbench(request: Request, user: Annotated[dict, Depends(require_login)]):
             cycle_task=_cycle_task(db, running.get("cycle_id")),
             active_manual=_active_manual_count(manual_rows),
             **_kpi_counts(auto_tasks),
+            done_count=_done_count(db),
             op_error=op_error,
         )
 
@@ -410,6 +422,7 @@ def workbench(request: Request, user: Annotated[dict, Depends(require_login)]):
             cycle_task=_cycle_task(db, cycle_id),
             active_manual=_active_manual_count(manual_rows),
             **_kpi_counts(auto_tasks),
+            done_count=_done_count(db),
             op_error=op_error,
         )
 
@@ -430,6 +443,7 @@ def workbench(request: Request, user: Annotated[dict, Depends(require_login)]):
             cycle_task=_cycle_task(db, cycle_id),
             active_manual=_active_manual_count(manual_rows),
             **_kpi_counts(auto_tasks),
+            done_count=_done_count(db),
             op_error=op_error,
         )
 
@@ -458,6 +472,7 @@ def workbench(request: Request, user: Annotated[dict, Depends(require_login)]):
         active_manual=active_manual,
         decisions_json=json.dumps(payload.get("decisions") or {}, ensure_ascii=False),
         **_kpi_counts(auto_tasks),
+            done_count=_done_count(db),
         **_cycle_commit_summary(payload, auto_tasks),
         op_error=op_error,
         **todo,
