@@ -32,6 +32,7 @@ _STATUS_LABELS = {
     "RUNNING": "进行中",
     "QUEUED": "排队中",
     "INTERRUPTED": "已中断",
+    "CANCELLED": "已取消",
 }
 
 # tasks.state → 展示状态（与投影 branch_results.status 语义对齐）
@@ -41,6 +42,7 @@ _TASK_STATE_STATUS = {
     "succeeded": "SUCCESS",
     "failed": "FAILED",
     "interrupted": "INTERRUPTED",
+    "cancelled": "CANCELLED",
 }
 
 _ACTIVE_STATES = ("queued", "running")
@@ -217,34 +219,8 @@ def _auto_tasks(
 
 
 def _cycle_commit_summary(payload: dict, auto_tasks: list[dict]) -> dict:
-    """周期级检测/同步/跳过摘要（上下文条展示）。
-
-    - 检测：窗口内扫描到的 commit 总数；
-    - 同步：已实际应用到目标分支的 distinct commit 数（cherry_pick OK/EMPTY）；
-    - 跳过：未应用且对该分支判定为 AlreadyIncluded/OutOfScope 的 distinct commit 数。
-    其余（ManualReview 待确认等）计入差值，由待确认行体现。
-    """
-    detected = len(payload.get("detected_commits") or [])
-    synced_shas: set[str] = set()
-    for t in auto_tasks:
-        synced_shas.update(t.get("_applied_shas") or [])
-    skipped_shas: set[str] = set()
-    decisions = payload.get("decisions") or {}
-    for c in payload.get("detected_commits") or []:
-        sha = c.get("sha")
-        if not sha or sha in synced_shas:
-            continue
-        kinds = {
-            (d.get("kind") or "")
-            for d in (decisions.get(sha) or {}).values()
-        }
-        if kinds and kinds <= {"AlreadyIncluded", "OutOfScope"}:
-            skipped_shas.add(sha)
-    return {
-        "cycle_detected": detected,
-        "cycle_synced": len(synced_shas),
-        "cycle_skipped": len(skipped_shas),
-    }
+    """周期级检测/同步/跳过摘要（上下文条展示）——委托共享实现。"""
+    return projection.cycle_summary(payload)
 
 
 def _task_commits(task: dict) -> int | None:
@@ -345,13 +321,7 @@ def _link_rerun_children(
 
 def _window_start(log_dir: str) -> str | None:
     """最近完成周期扫描窗口起点；无完成周期/投影失败返回 None（不过滤手动任务）。"""
-    cycle_id = projection.latest_completed_cycle(log_dir)
-    if cycle_id is None:
-        return None
-    payload = projection.load_cycle(log_dir, cycle_id)
-    if payload is None:
-        return None
-    return (payload.get("scan_window") or [None])[0]
+    return projection.window_start(log_dir)
 
 
 def _cycle_task(db, cycle_id: str | None) -> dict | None:

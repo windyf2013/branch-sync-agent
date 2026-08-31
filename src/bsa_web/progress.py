@@ -54,6 +54,7 @@ def read_progress(log_dir: str | Path, cycle_id: str) -> list[dict[str, Any]]:
                 "model": r.get("model"),
                 "target": r.get("target"),
                 "sha": r.get("sha"),
+                "log_path": r.get("log_path"),
                 "running": False,
                 "duration_ms": _duration_ms(start, r),
             }

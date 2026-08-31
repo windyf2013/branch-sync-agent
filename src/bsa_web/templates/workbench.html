@@ -253,7 +253,16 @@
       })();
       </script>
     {% else %}
+      {% if payload %}
+      <p class="muted">本周期无可同步任务
+        {% if payload.sources %}· 源分支：{{ payload.sources | join("、") }}{% endif %}
+        {% if payload.targets %}· 目标分支：{{ payload.targets | join("、") }}{% endif %}
+        · 检测 {{ cycle_detected }} · 同步 {{ cycle_synced }} · 跳过 {{ cycle_skipped }}
+        · <a href="/cycle/{{ payload.cycle_id }}">查看周期概览</a>
+      </p>
+      {% else %}
       <p class="muted">当前无任务记录。</p>
+      {% endif %}
     {% endif %}
   </div>
 </section>
@@ -404,9 +413,13 @@
     selected = {};
     showHint("加载中…");
     updateCount();
+    var controller = new AbortController();
+    var timer = setTimeout(function () { controller.abort(); }, 30000);
     fetch("/api/commits?src=" + encodeURIComponent(src) + "&limit=50", {
       headers: { "Accept": "application/json" },
+      signal: controller.signal,
     }).then(function (r) {
+      clearTimeout(timer);
       if (!r.ok) {
         throw new Error("http " + r.status);
       }
@@ -419,6 +432,7 @@
         showHint("无候选 commit");
       }
     }).catch(function () {
+      clearTimeout(timer);
       showHint("候选 commit 加载失败");
     });
   }

@@ -131,6 +131,30 @@ class TestWorkbenchView:
         assert "feat/x" in r.text
         assert "推送" in r.text
 
+    def test_workbench_completed_cycle_no_syncable_shows_summary(self, tmp_path, monkeypatch):
+        # 当日完成周期无可同步任务（branch_results 空）也要显示周期摘要，不落入"无任务记录"。
+        client = _client(_make_app(tmp_path))
+        _login(client)
+        payload = _payload()
+        payload["sources"] = ["br_fttr", "br_msg"]
+        payload["targets"] = ["br_develop"]
+        monkeypatch.setattr(
+            "bsa_web.projection.list_cycles",
+            lambda log_dir: [{"cycle_id": "cycle-2026-08-20", "status": "SUCCESS"}],
+        )
+        monkeypatch.setattr(
+            "bsa_web.projection.latest_completed_cycle", lambda log_dir: "cycle-2026-08-20"
+        )
+        monkeypatch.setattr(
+            "bsa_web.projection.load_cycle", lambda log_dir, cycle_id: payload
+        )
+        r = client.get("/")
+        assert r.status_code == 200
+        assert "本周期无可同步任务" in r.text
+        assert "br_fttr" in r.text
+        assert "br_msg" in r.text
+        assert "/cycle/cycle-2026-08-20" in r.text
+
     def test_workbench_shows_manual_review_pending(self, tmp_path, monkeypatch):
         # 待确认项收敛为 KPI 计数；具体 sha 在分支详情页人工项展示，不再占任务表行
         client = _client(_make_app(tmp_path))

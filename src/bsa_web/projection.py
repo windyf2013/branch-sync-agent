@@ -11,7 +11,10 @@ import os
 import subprocess
 import sys
 
+from bsa.report.projection import cycle_summary
 from bsa.scheduler.cycle import list_cycle_records
+
+__all__ = ["load_cycle", "latest_completed_cycle", "list_cycles", "cycle_summary"]
 
 
 def load_cycle(log_dir: str, cycle_id: str) -> dict | None:
@@ -52,3 +55,14 @@ def latest_completed_cycle(log_dir: str) -> str | None:
 def list_cycles(log_dir: str) -> list[dict]:
     """周期记录列表，按 started_at 倒序（最新在前）。"""
     return list(reversed(list_cycle_records(log_dir)))
+
+
+def window_start(log_dir: str) -> str | None:
+    """最近完成周期扫描窗口起点；无完成周期/投影失败返回 None（不过滤）。"""
+    cycle_id = latest_completed_cycle(log_dir)
+    if cycle_id is None:
+        return None
+    payload = load_cycle(log_dir, cycle_id)
+    if payload is None:
+        return None
+    return (payload.get("scan_window") or [None])[0]

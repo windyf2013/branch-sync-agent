@@ -69,17 +69,24 @@ def _read_build_log(log_dir: str, log_path: str | None, max_lines: int = 100):
     return "\n".join(lines[-max_lines:]), truncated
 
 
+def _enrich_outcomes(builds: dict | None, log_dir: str) -> None:
+    """就地补充一组 ``model -> outcome`` 的展示字段（commit build 与 baseline 共用）。"""
+    for model, outcome in (builds or {}).items():
+        outcome["model_label"] = model_script_label(model)
+        outcome["log_preview"] = None
+        outcome["log_truncated"] = False
+        if outcome.get("status") == "FAILED":
+            preview = _read_build_log(log_dir, outcome.get("log_path"))
+            outcome["log_preview"] = preview[0] if preview else None
+            outcome["log_truncated"] = preview[1] if preview else False
+
+
 def enrich_build_outcomes(branch: dict, log_dir: str) -> None:
     """就地补充每个 build outcome 的展示字段：log_preview/truncated/model_label。
 
     log_preview 只在 outcome 为 FAILED（最终失败）时读——OK 结果不需要拖全量日志。
+    同时覆盖 commit build 与 baseline（基线编译失败也要在详情页透出日志/错误）。
     """
     for cr in branch.get("commits") or []:
-        for model, outcome in (cr.get("build") or {}).items():
-            outcome["model_label"] = model_script_label(model)
-            outcome["log_preview"] = None
-            outcome["log_truncated"] = False
-            if outcome.get("status") == "FAILED":
-                preview = _read_build_log(log_dir, outcome.get("log_path"))
-                outcome["log_preview"] = preview[0] if preview else None
-                outcome["log_truncated"] = preview[1] if preview else False
+        _enrich_outcomes(cr.get("build"), log_dir)
+    _enrich_outcomes(branch.get("baseline"), log_dir)

@@ -25,6 +25,41 @@
   </div>
 </section>
 
+{% if branch.baseline %}
+<section class="panel">
+  <div class="panel-head"><h2>基线编译</h2><span class="panel-note">目标分支 tip 的 clean 全编译（任何 cherry-pick 之前）</span></div>
+  <div class="panel-body">
+  {% for model, o in branch.baseline.items() %}
+    <div class="build-outcome">
+      <span class="badge {{ o.status | lower }}">{{ o.status }}</span>
+      <strong>{{ o.model_label or model }}</strong>
+      {% if o.status == "FAILED" %}
+        {% if o.errors %}
+        <details class="build-error">
+          <summary>最终错误（{{ o.errors | length }} 条，截断展示）</summary>
+          <ul>
+            {% for err in o.errors[:5] %}
+            <li class="muted"><code>{{ err[:300] }}</code></li>
+            {% endfor %}
+          </ul>
+        </details>
+        {% endif %}
+        {% if o.log_preview %}
+        <details class="build-log">
+          <summary>build 日志尾部{% if o.log_truncated %}（截断至 100 行）{% endif %}</summary>
+          <pre class="build-log-tail">{{ o.log_preview }}</pre>
+        </details>
+        {% endif %}
+        {% if o.log_path %}
+          <a href="/cycle/{{ payload.cycle_id }}/target/{{ target }}/baseline/{{ model }}/log">下载完整日志</a>
+        {% endif %}
+      {% endif %}
+    </div>
+  {% endfor %}
+  </div>
+</section>
+{% endif %}
+
 <section class="panel">
   <div class="panel-head"><h2>commit 处理明细</h2><span class="panel-note">点击行展开冲突 / build 详情</span></div>
   <div class="panel-body">
@@ -47,6 +82,7 @@
             {% if cr.conflict_resolution.agent_reason %}<div class="muted">Agent 说明：{{ cr.conflict_resolution.agent_reason }}</div>{% endif %}
           {% elif cr.cherry_pick == "CONFLICT" %}
             <span class="badge failed">冲突解决失败</span>
+            {% if cr.resolution_error %}<div class="muted">原因：{{ cr.resolution_error }}</div>{% endif %}
           {% else %}<span class="muted">无</span>{% endif %}
         </td>
         <td>

@@ -174,6 +174,32 @@ def test_read_progress_running_step_carries_log_path(tmp_path):
     assert steps[0]["log_path"] == "logs/c1/build/t/abc/build.log"
 
 
+def test_read_progress_completed_step_carries_log_path(tmp_path):
+    """失败步骤结束后也要带出 log_path，任务页才能展开查看基线/编译失败日志。"""
+    from bsa_web.progress import read_progress
+
+    cycle = tmp_path / "c1"
+    cycle.mkdir()
+    (cycle / "progress.jsonl").write_text(
+        json.dumps({"cycle_id": "c1", "node": "baseline_build", "step": "基线编译",
+                    "model": "2600m", "phase": "start",
+                    "log_path": "logs/c1/build/t/baseline/2600m.log"})
+        + "\n"
+        + json.dumps({"cycle_id": "c1", "node": "baseline_build", "step": "基线编译",
+                      "model": "2600m", "phase": "end", "status": "BASELINE_FAILED",
+                      "log_path": "logs/c1/build/t/baseline/2600m.log"})
+        + "\n",
+        encoding="utf-8",
+    )
+
+    steps = read_progress(str(tmp_path), "c1")
+
+    assert len(steps) == 1
+    assert steps[0]["running"] is False
+    assert steps[0]["status"] == "BASELINE_FAILED"
+    assert steps[0]["log_path"] == "logs/c1/build/t/baseline/2600m.log"
+
+
 def test_read_progress_missing_file_returns_empty(tmp_path):
     from bsa_web.progress import read_progress
 

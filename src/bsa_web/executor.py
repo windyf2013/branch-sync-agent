@@ -143,18 +143,7 @@ def cleanup_task(
     db.execute("DELETE FROM tasks WHERE id=?", (task_id,))
     db.commit()
 
-    checkpoint_deleted = False
-    state_db = Path(log_dir) / "state.sqlite3"
-    if cycle_id and state_db.is_file():
-        try:
-            conn = sqlite3.connect(str(state_db))
-            conn.execute("DELETE FROM checkpoints WHERE thread_id=?", (cycle_id,))
-            conn.execute("DELETE FROM writes WHERE thread_id=?", (cycle_id,))
-            conn.commit()
-            conn.close()
-            checkpoint_deleted = True
-        except sqlite3.Error:
-            pass
+    checkpoint_deleted = _delete_checkpoint(log_dir, cycle_id)
 
     worktree_removed = False
     if cycle_id and target:
@@ -173,6 +162,24 @@ def cleanup_task(
     }
 
 
+def _delete_checkpoint(log_dir: str, cycle_id: str | None) -> bool:
+    """删除 state.sqlite3 中该 cycle 的 checkpoints/writes（幂等，失败吞掉）。"""
+    if not cycle_id:
+        return False
+    state_db = Path(log_dir) / "state.sqlite3"
+    if not state_db.is_file():
+        return False
+    try:
+        conn = sqlite3.connect(str(state_db))
+        conn.execute("DELETE FROM checkpoints WHERE thread_id=?", (cycle_id,))
+        conn.execute("DELETE FROM writes WHERE thread_id=?", (cycle_id,))
+        conn.commit()
+        conn.close()
+        return True
+    except sqlite3.Error:
+        return False
+
+
 def _cleanup_worktree_cli(log_dir: str, target: str, cycle_id: str) -> dict:
     """经 V1 CLI 子进程删除 worktree（持 flock，与周期清理串行）。"""
     env = dict(os.environ)
@@ -187,6 +194,74 @@ def _cleanup_worktree_cli(log_dir: str, target: str, cycle_id: str) -> dict:
     if proc.returncode != 0:
         raise subprocess.SubprocessError(proc.stderr or "cleanup-worktree failed")
     return {"removed": "removed=True" in proc.stdout or "removed=True" in proc.stderr}
+
+
+def _cleanup_docker_cli(log_dir: str, cycle_id: str) -> None:
+    """经 V1 CLI 子进程回收该周期 keep-alive 编译容器（docker rm -f，best-effort）。"""
+    env = dict(os.environ)
+    env["LOG_DIR"] = str(log_dir)
+    subprocess.run(
+        [sys.executable, "-m", "bsa.cli", "cleanup-task", cycle_id],
+        capture_output=True,
+        text=True,
+        timeout=120,
+        env=env,
+    )
+
+
+def cancel_task(
+    db,
+    log_dir: str,
+    task_id: int,
+    *,
+    docker_cleaner=None,
+    worktree_cleaner=None,
+) -> dict:
+    """取消一个任务：标 cancelled 终态 + 杀子进程 + 清 docker 容器 + 删 checkpoint/worktree。
+
+    ``queued`` 只标终态（executor 认领时 ``WHERE state='queued'`` rowcount=0 不会执行）；
+    ``running`` 先标终态（保证 executor 兜底 ``_run_one`` 见 ``state != 'running'`` 不再
+    覆盖），再 SIGKILL 子进程（pid 在 tasks 行），清 docker 容器（真正停编译），最后删
+    checkpoint 与 worktree。返回 ``{"cancelled": True, "task_id": ...}``；任务不存在返回
+    ``{"cancelled": False}``。
+    """
+    row = db.execute(
+        "SELECT id, state, pid, cycle_id, target FROM tasks WHERE id=?", (task_id,)
+    ).fetchone()
+    if row is None:
+        return {"cancelled": False, "task_id": task_id}
+    now = _now_iso()
+    db.execute(
+        "UPDATE tasks SET state='cancelled', error='用户放弃', finished_at=? WHERE id=?",
+        (now, task_id),
+    )
+    db.commit()
+
+    if row["state"] == "running":
+        pid = row["pid"]
+        if pid:
+            try:
+                os.kill(pid, 9)  # SIGKILL：终止 executor Popen 的 CLI 子进程，释放 bsa.lock
+            except (OSError, ProcessLookupError):
+                pass
+        cycle_id = row["cycle_id"]
+        if cycle_id:
+            cleaner = docker_cleaner if docker_cleaner is not None else _cleanup_docker_cli
+            try:
+                cleaner(log_dir, cycle_id)
+            except (OSError, subprocess.SubprocessError):
+                pass
+            _delete_checkpoint(log_dir, cycle_id)
+            target = row["target"]
+            if target:
+                wt_cleaner = (
+                    worktree_cleaner if worktree_cleaner is not None else _cleanup_worktree_cli
+                )
+                try:
+                    wt_cleaner(log_dir, target, cycle_id)
+                except (OSError, subprocess.SubprocessError):
+                    pass
+    return {"cancelled": True, "task_id": task_id}
 
 
 def _converge_cycle_record(log_dir: str, cycle_id: str | None, status: str) -> None:

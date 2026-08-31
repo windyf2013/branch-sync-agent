@@ -51,3 +51,28 @@ def test_enrich_legacy_model_uses_legacy_script_label(tmp_path):
     assert branch["commits"][0]["build"]["2600_CMCC"]["model_label"] == (
         "RTL9617C_build_cmcc.sh 2600"
     )
+
+
+def test_enrich_covers_baseline_outcomes(tmp_path):
+    from bsa_web.build_labels import enrich_build_outcomes
+
+    fail_log = tmp_path / "baseline.log"
+    fail_log.write_text("fatal: unable to auto-detect email address\n", encoding="utf-8")
+    branch = {
+        "commits": [],
+        "baseline": {
+            "2600m": {
+                "status": "FAILED",
+                "agent_attempts": 0,
+                "log_path": str(fail_log),
+                "errors": [],
+            }
+        },
+    }
+
+    enrich_build_outcomes(branch, str(tmp_path))
+
+    outcome = branch["baseline"]["2600m"]
+    assert outcome["model_label"] == "RTL9617C_build_ci.sh 2600m"
+    assert outcome["log_preview"] is not None
+    assert "auto-detect email" in outcome["log_preview"]

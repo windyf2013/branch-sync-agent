@@ -81,6 +81,14 @@ def cycle_detail(
             user=user, csrf=csrf,
         )
     branches = payload.get("branch_results") or {}
+    detected = payload.get("detected_commits") or []
+    sources = payload.get("sources") or sorted(
+        {c.get("source_branch") for c in detected if c.get("source_branch")}
+    )
+    targets = payload.get("targets") or list(branches.keys())
+    detected_by_source: dict[str, list[dict]] = {}
+    for c in detected:
+        detected_by_source.setdefault(c.get("source_branch") or "未知来源", []).append(c)
     return _render(
         request,
         "detail.html",
@@ -94,7 +102,11 @@ def cycle_detail(
             b for b in branches.values() if b.get("status") == "SUCCESS"
         ],
         all_branches=list(branches.values()),
-        detected_commits=payload.get("detected_commits") or [],
+        detected_commits=detected,
+        sources=sources,
+        targets=targets,
+        detected_by_source=detected_by_source,
+        cycle_summary=projection.cycle_summary(payload),
     )
 
 
@@ -141,13 +153,20 @@ def commit_detail(
     )
     if commit is None:
         raise HTTPException(status_code=404, detail="commit 不存在")
-    patch_text = commit.get("patch_text") or ""
-    patch_lines = patch_text.splitlines()
-    patch_truncated = len(patch_lines) > _PATCH_PREVIEW_LINES
+    diff_text = commit.get("patch_text") or ""
+    diff_lines = diff_text.splitlines()
+    diff_truncated = len(diff_lines) > _PATCH_PREVIEW_LINES
     conclusions = sorted(
         ((t, c) for t, c in ((payload.get("decisions") or {}).get(sha) or {}).items()),
         key=lambda kv: kv[0],
     )
+    # 该 commit 在各目标分支上的处理结果（冲突解决 / 冲突失败原因 / 编译结果），
+    # 供 commit 详情页透出，避免只看结论看不出处理过程。
+    commit_results = []
+    for target, b in (payload.get("branch_results") or {}).items():
+        cr = next((c for c in (b.get("commits") or []) if c.get("sha") == sha), None)
+        if cr is not None:
+            commit_results.append((target, cr))
     return _render(
         request,
         "detail.html",
@@ -157,8 +176,9 @@ def commit_detail(
         payload=payload,
         commit=commit,
         conclusions=conclusions,
-        patch_preview="\n".join(patch_lines[:_PATCH_PREVIEW_LINES]),
-        patch_truncated=patch_truncated,
+        commit_results=commit_results,
+        diff_preview="\n".join(diff_lines[:_PATCH_PREVIEW_LINES]),
+        diff_truncated=diff_truncated,
     )
 
 
@@ -197,6 +217,28 @@ def build_log_download(
         (c for c in (branch.get("commits") or []) if c.get("sha") == sha), None
     )
     outcome = ((cr or {}).get("build") or {}).get(model) if cr else None
+    log_path = (outcome or {}).get("log_path")
+    if not log_path:
+        raise HTTPException(status_code=404, detail="build 日志不存在")
+    path = _resolve_within_log_dir(request.app.state.settings.log_dir, log_path)
+    if path is None or not path.is_file():
+        raise HTTPException(status_code=404, detail="build 日志不存在")
+    return FileResponse(path, media_type="text/plain", filename=path.name)
+
+
+@router.get("/{cycle_id}/target/{target}/baseline/{model}/log")
+def baseline_log_download(
+    request: Request,
+    cycle_id: str,
+    target: str,
+    model: str,
+    user: Annotated[dict, Depends(require_login)],
+):
+    payload = _load_payload(request.app.state.settings.log_dir, cycle_id)
+    branch = (payload.get("branch_results") or {}).get(target)
+    if branch is None:
+        raise HTTPException(status_code=404, detail="目标分支不存在")
+    outcome = ((branch or {}).get("baseline") or {}).get(model)
     log_path = (outcome or {}).get("log_path")
     if not log_path:
         raise HTTPException(status_code=404, detail="build 日志不存在")

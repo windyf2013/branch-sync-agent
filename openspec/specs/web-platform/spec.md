@@ -81,8 +81,9 @@ Branch Sync Agent V2 的 Web 分支维护工作台：维护人员通过浏览器
 #### Scenario: 历史报告查看
 
 - **当** 用户查看历史报告
-- **则** 按日期列出已完成周期报告，三区块视图（Action Required / 已成功同步 / 检测信息）
-- **且** 支持按结论筛选（NeedSync/AlreadyIncluded/ManualReview/OutOfScope/失败/停批）
+- **则** 列出所有超期归档任务（手动 sync/rerun + cron 周期，统一来自 tasks 表）
+- **且** 归档分界 = 最近完成周期扫描窗口起点：超期前任务留在工作台，超期后收敛进历史
+- **且** 历史只做归档显示，不提供「待同步/已包含」等操作型结论筛选
 
 #### Scenario: 详情展开
 
@@ -263,6 +264,13 @@ Branch Sync Agent V2 的 Web 分支维护工作台：维护人员通过浏览器
 - **且** 操作者可恢复已放弃项，恢复后重新进入任务流程
 - **且** 放弃/恢复行为记录操作日志
 
+#### Scenario: 运行中任务放弃即取消
+
+- **当** 操作者对分支级放弃（sha=None）且该周期仍有排队/执行中任务
+- **则** 平台取消该任务：tasks 行标 cancelled（保留行，仅记审计与放弃记录）、终止子进程、
+  回收 keep-alive 编译容器、删除 checkpoint 与 worktree
+- **且** commit 级放弃仅过滤待办，不取消执行
+
 ### Requirement: 新建同步候选 commit 数据源
 
 平台经 V1 只读 CLI 获取源分支候选 commit 列表，不直接读取 git。
@@ -273,3 +281,5 @@ Branch Sync Agent V2 的 Web 分支维护工作台：维护人员通过浏览器
 - **则** 平台调用 `bsa commits <src>` 获取候选 commit 列表（sha + 提交说明 + 时间，最近 N 条平铺）
 - **且** 列表仅作展示供勾选，不做已同步/已包含过滤
 - **且** 加载失败时提示"候选 commit 加载失败"，不阻塞其他操作
+- **且** 候选加载的 `git fetch` 不持全局锁（fetch 只更新远端 ref 与对象库，原子安全），
+  不被正在运行的同步/周期任务阻塞

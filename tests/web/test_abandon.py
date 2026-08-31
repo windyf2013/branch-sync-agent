@@ -158,6 +158,48 @@ def test_commit_level_abandon_matches_specific_sha(tmp_path):
     assert is_abandoned(app.state.db, "c1", "feat/x", "def") is True  # 分支级覆盖全部 commit
 
 
+def test_branch_abandon_cancels_running_task(tmp_path, monkeypatch):
+    # 分支级放弃运行中任务 → 触发 cancel_task，tasks 行变 cancelled。
+    app = _make_app(tmp_path)
+    client = _client(app)
+    _login(client)
+    db = app.state.db
+    # 造一个 running 任务（executor 认领后状态）
+    db.execute(
+        "INSERT INTO tasks(kind, user, target, src, fresh, state, created_at, "
+        "cycle_id, pid) VALUES ('sync','alice','feat/x','main',0,'running',?,?,4242)",
+        ("2026-08-31T00:00:00+00:00", "manual-20260831-120000-99"),
+    )
+    db.commit()
+    # 拦截 cancel 内部子进程/清理动作，避免真杀进程与 docker 调用
+    monkeypatch.setattr(
+        "bsa_web.api.abandon.cancel_task",
+        lambda db, log_dir, task_id: {"cancelled": True, "task_id": task_id},
+    )
+
+    r = _post(client, "/api/abandon", {"cycle_id": "manual-20260831-120000-99", "target": "feat/x"})
+
+    assert r.status_code == 200
+    assert r.json()["cancelled"] is True
+    assert r.json()["task_id"] is not None
+
+    # commit 级放弃不触发取消
+    r2 = _post(
+        client, "/api/abandon",
+        {"cycle_id": "manual-20260831-120000-99", "target": "feat/x", "sha": "abc"},
+    )
+    assert r2.json().get("cancelled") is False
+
+
+def test_branch_abandon_without_active_task_no_cancel(tmp_path):
+    app = _make_app(tmp_path)
+    client = _client(app)
+    _login(client)
+    r = _post(client, "/api/abandon", {"cycle_id": "c1", "target": "feat/x"})
+    assert r.status_code == 200
+    assert r.json().get("cancelled") is False
+
+
 def test_abandon_viewer_forbidden_and_restore_too(tmp_path):
     users = {
         "alice": f"{hash_password('op')}:{OPERATOR}",

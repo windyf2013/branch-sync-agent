@@ -18,6 +18,7 @@ from pydantic import BaseModel
 
 from bsa_web import audit
 from bsa_web.auth import require_csrf, require_operator
+from bsa_web.executor import cancel_task
 
 router = APIRouter(prefix="/api", tags=["abandon"])
 
@@ -59,11 +60,36 @@ def api_abandon(
         sha=body.sha,
         result="ok",
     )
+
+    # 分支级放弃（sha=None）且该周期仍有排队/执行中任务 → 取消执行（标 cancelled +
+    # 杀进程 + 清 docker + 删 checkpoint/worktree）。commit 级放弃仅过滤待办，不取消。
+    cancelled = None
+    if body.sha is None:
+        row = db.execute(
+            "SELECT id FROM tasks WHERE cycle_id=? AND state IN ('queued','running') "
+            "ORDER BY id DESC LIMIT 1",
+            (body.cycle_id,),
+        ).fetchone()
+        if row is not None:
+            cancelled = cancel_task(
+                db, request.app.state.settings.log_dir, row["id"]
+            )
+            audit.record(
+                db,
+                user["username"],
+                "cancel",
+                cycle_id=body.cycle_id,
+                target=body.target,
+                result="cancelled" if cancelled.get("cancelled") else "noop",
+            )
+
     return {
         "ok": True,
         "cycle_id": body.cycle_id,
         "target": body.target,
         "sha": body.sha,
+        "cancelled": bool(cancelled and cancelled.get("cancelled")),
+        "task_id": cancelled.get("task_id") if cancelled else None,
     }
 
 

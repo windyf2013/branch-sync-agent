@@ -27,6 +27,8 @@ STATE_LABELS = {
     "running": "执行中",
     "succeeded": "成功",
     "failed": "失败",
+    "cancelled": "已取消",
+    "interrupted": "已中断",
 }
 
 

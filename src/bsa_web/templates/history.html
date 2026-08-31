@@ -4,49 +4,46 @@
 <div class="page-head">
   <div>
     <h1>历史报告</h1>
-    <p class="page-sub">按周期查看历史同步报告（只读）</p>
+    <p class="page-sub">超期归档任务（手动同步与 cron 周期）</p>
   </div>
-  {% if kind %}<span class="badge neutral">当前筛选：{{ kind }}</span>{% endif %}
 </div>
 
 <section class="panel">
-<div class="panel-head"><h2>按结论筛选</h2></div>
+<div class="panel-head"><h2>归档任务</h2><span class="panel-note">{{ tasks | length }} 个</span></div>
   <div class="panel-body">
-<div class="filter-links">
-    <a class="btn {% if not kind %}btn-outline{% endif %}" href="/history">全部</a>
-    {% for value, label in kind_filters %}
-    <a class="btn {% if kind == value %}btn-outline{% endif %}" href="/history?kind={{ value }}">{{ label }}</a>
-    {% endfor %}
-</div>
-  {% if kind %}
-    <p class="muted">当前筛选：<span class="badge">{{ kind }}</span>（仅显示存在该结论的周期）</p>
-  {% endif %}
-  </div>
-</section>
-
-<section class="panel">
-<div class="panel-head"><h2>周期列表</h2><span class="panel-note">{{ cycles | length }} 个周期</span></div>
-  <div class="panel-body">
-{% if cycles %}
+{% if tasks %}
   <div class="table-wrap">
   <table>
     <thead>
-      <tr><th>周期</th><th>状态</th><th>开始时间</th>{% if kind %}<th>计数</th>{% endif %}</tr>
+      <tr>
+        <th>类型</th>
+        <th>目标分支</th>
+        <th>源分支</th>
+        <th>状态</th>
+        <th>commit 数</th>
+        <th>发起人</th>
+        <th>创建时间</th>
+        <th>完成时间</th>
+      </tr>
     </thead>
     <tbody>
-      {% for c in cycles %}
+      {% for t in tasks %}
       <tr>
-        <td><a href="/cycle/{{ c.cycle_id }}"><code class="mono">{{ c.cycle_id }}</code></a></td>
-        <td><span class="badge {{ c.status | lower }}">{{ c.status }}</span></td>
-        <td>{{ c.started_at | localtime }}</td>
-        {% if kind %}<td class="num">{{ c.count }}</td>{% endif %}
+        <td><span class="badge neutral">{{ t.kind_label }}</span></td>
+        <td><a href="{{ t.detail_url }}"><code class="mono">{{ t.target or t.cycle_id or ("#" ~ t.task_id) }}</code></a></td>
+        <td><span class="muted">{{ t.src or "—" }}</span></td>
+        <td><span class="badge {{ t.state | lower }}">{{ t.badge }}</span></td>
+        <td class="num">{{ t.commits or "—" }}</td>
+        <td><span class="muted">{{ t.user or "—" }}</span></td>
+        <td><span class="muted">{% if t.created_at %}{{ t.created_at | localtime }}{% endif %}</span></td>
+        <td><span class="muted">{% if t.finished_at %}{{ t.finished_at | localtime }}{% endif %}</span></td>
       </tr>
       {% endfor %}
     </tbody>
   </table>
   </div>
   {% else %}
-    <div class="empty-state"><span class="empty-ico">▤</span>暂无周期记录{% if kind %}（当前筛选下）{% endif %}。</div>
+    <div class="empty-state"><span class="empty-ico">▤</span>暂无归档任务。</div>
   {% endif %}
   </div>
 </section>

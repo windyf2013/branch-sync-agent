@@ -14,7 +14,7 @@ import time
 import pytest
 
 from bsa_web.db import init_db
-from bsa_web.runner import TaskRunner, cleanup_task, enqueue_task
+from bsa_web.runner import TaskRunner, cancel_task, cleanup_task, enqueue_task
 
 
 def _make_runner(tmp_path, *, run_func=None, timeout_sec=3600):
@@ -628,6 +628,75 @@ class TestCleanupTask:
         assert result["deleted"] is True
         assert result["checkpoint_deleted"] is False
         assert result["worktree_removed"] is False
+
+
+class TestCancelTask:
+    def test_cancel_running_kills_and_cleans(self, tmp_path, monkeypatch):
+        db = init_db(tmp_path / "platform.sqlite3")
+        tid = enqueue_task(
+            db, "sync", "alice", "feat/x", shas=["a"], src="main",
+            cycle_id="manual-20260825-120000-99",
+        )
+        # 置 running + pid，模拟 executor 已认领执行
+        db.execute("UPDATE tasks SET state='running', pid=4242 WHERE id=?", (tid,))
+        db.commit()
+
+        killed: list[int] = []
+        docker_called: list[str] = []
+        wt_called: list[tuple] = []
+
+        def fake_kill(pid, sig):
+            killed.append(pid)
+
+        def fake_docker(log_dir, cycle_id):
+            docker_called.append(cycle_id)
+
+        def fake_wt(log_dir, target, cycle_id):
+            wt_called.append((target, cycle_id))
+            return {"removed": True}
+
+        monkeypatch.setattr("bsa_web.executor.os.kill", fake_kill)
+        result = cancel_task(
+            db, str(tmp_path), tid,
+            docker_cleaner=fake_docker, worktree_cleaner=fake_wt,
+        )
+
+        assert result["cancelled"] is True
+        row = db.execute("SELECT state, error FROM tasks WHERE id=?", (tid,)).fetchone()
+        assert row["state"] == "cancelled"
+        assert row["error"] == "用户放弃"
+        assert killed == [4242]
+        assert docker_called == ["manual-20260825-120000-99"]
+        assert wt_called == [("feat/x", "manual-20260825-120000-99")]
+
+    def test_cancel_queued_marks_only(self, tmp_path, monkeypatch):
+        db = init_db(tmp_path / "platform.sqlite3")
+        tid = enqueue_task(
+            db, "sync", "alice", "feat/x", shas=["a"], src="main",
+            cycle_id="manual-20260825-120000-99",
+        )
+        killed: list[int] = []
+        monkeypatch.setattr("bsa_web.executor.os.kill", lambda pid, sig: killed.append(pid))
+        # 注入 docker/worktree cleaner，断言 queued 不触发清理
+        docker_called: list[str] = []
+        wt_called: list[tuple] = []
+
+        result = cancel_task(
+            db, str(tmp_path), tid,
+            docker_cleaner=lambda ld, cid: docker_called.append(cid),
+            worktree_cleaner=lambda ld, t, cid: wt_called.append((t, cid)),
+        )
+
+        assert result["cancelled"] is True
+        row = db.execute("SELECT state FROM tasks WHERE id=?", (tid,)).fetchone()
+        assert row["state"] == "cancelled"
+        assert killed == []
+        assert docker_called == []
+        assert wt_called == []
+
+    def test_cancel_missing_task(self, tmp_path):
+        db = init_db(tmp_path / "platform.sqlite3")
+        assert cancel_task(db, str(tmp_path), 999) == {"cancelled": False, "task_id": 999}
 
 
 class TestCronScheduler:
