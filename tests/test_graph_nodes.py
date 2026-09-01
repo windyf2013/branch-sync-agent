@@ -658,6 +658,9 @@ def test_detect_commits_populates_commits_and_classifications(tmp_path):
     assert update["classifications"]["a2"].needs_agent is True
     assert update["branch_md_version"]
     assert ctx.matrix is not None
+    # 完整拓扑（含零检出源）作为独立字段落盘投影：sources/targets 全集而非检出去重。
+    assert update["sources"] == [DEVELOP]
+    assert update["targets"] == [TARGET]
 
 
 def test_detect_commits_reads_cron_branch_file_not_full_inventory(tmp_path):

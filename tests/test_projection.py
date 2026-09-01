@@ -11,6 +11,7 @@ from bsa.domain.models import (
     CommitResult,
     Report,
 )
+from bsa.graph.state import TaskState
 from bsa.report.projection import (
     _cycle_status,
     projection_payload,
@@ -22,6 +23,34 @@ from tests.test_config import valid_env
 from tests.test_graph_nodes import TARGET, base_state, commit
 
 CYCLE = "cycle-2026-08-20"
+
+
+def test_taskstate_declares_sources_and_targets():
+    # LangGraph 按 TypedDict 声明建 channel，未声明的键在节点 update 中被静默丢弃。
+    # 必须显式声明 sources/targets，否则 detect_commits 已算好的完整拓扑（含零检出源）
+    # 落不到 checkpoint，投影顶层恒为空，「零检出」与「漏扫」无法区分。
+    assert "sources" in TaskState.__annotations__
+    assert "targets" in TaskState.__annotations__
+
+
+def test_projection_payload_includes_sources_and_targets():
+    state = base_state(
+        status="REPORTED",
+        sources=["br_src_zero", "br_src_has_commits"],
+        targets=["br_target"],
+    )
+
+    payload = projection_payload(state)
+
+    assert payload["sources"] == ["br_src_zero", "br_src_has_commits"]
+    assert payload["targets"] == ["br_target"]
+
+
+def test_projection_payload_sources_default_empty():
+    # 旧周期无 sources/targets → 空列表兜底，不崩（存量降级）。
+    payload = projection_payload(base_state())
+    assert payload["sources"] == []
+    assert payload["targets"] == []
 
 
 def _settings(tmp_path, *, with_db: bool = True):
