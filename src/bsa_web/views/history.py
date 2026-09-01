@@ -94,9 +94,10 @@ def _cycle_summary(log_dir: str, cycle_id: str) -> dict[str, int]:
 
 def _archived_tasks(db, log_dir: str) -> list[dict]:
     """读 tasks 表，构建「主任务」归档列表（cycle 去重 + rerun 归并 + sync 独立）。"""
-    start = _parse_ts(projection.window_start(log_dir))
+    start = projection.latest_cycle_start(log_dir)
     if start is None:
         return []
+    latest_cycle = projection.latest_completed_cycle(log_dir)
     rows = db.execute(
         "SELECT id, kind, target, src, state, cycle_id, user, source, "
         "created_at, finished_at, shas "
@@ -109,6 +110,10 @@ def _archived_tasks(db, log_dir: str) -> list[dict]:
     reruns: list[dict] = []
     for row in rows:
         task = dict(row)
+        # 最近完成周期本身不归档——其 tasks 行 created_at 早于 cycle.json started_at
+        # （进程边界固有 1 秒差），否则同一周期会同时出现在工作台和历史页。
+        if task["kind"] == "cycle" and task.get("cycle_id") == latest_cycle:
+            continue
         created = _parse_ts(task["created_at"])
         if created is None or created >= start:
             continue

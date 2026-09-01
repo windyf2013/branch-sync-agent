@@ -225,6 +225,43 @@ class TestHistory:
         assert "暂无周期任务" in r.text
         assert "暂无同步任务" in r.text
 
+    def test_history_excludes_latest_completed_cycle(self, tmp_path, monkeypatch):
+        # 最近完成周期自己的 tasks 行（created_at 早于 latest_cycle_start 1 秒）
+        # 不得被归档进历史页——否则同一周期同时出现在工作台和历史页。
+        app = _make_app(tmp_path)
+        client = _client(app)
+        _login(client)
+        db = app.state.db
+        # 最近完成周期：cron 行 created_at 早于 cycle.json started_at（差 1 秒）
+        db.execute(
+            "INSERT INTO tasks(kind, user, target, src, fresh, state, error, "
+            "cycle_id, created_at, finished_at, source, shas) "
+            "VALUES ('cycle',?,NULL,NULL,0,'succeeded',NULL,?,?,?,'cron',NULL)",
+            ("alice", "cycle-2026-09-01", "2026-08-31T16:00:03+00:00", "2026-08-31T16:00:59+00:00"),
+        )
+        # 更早的历史周期：应照常归档
+        db.execute(
+            "INSERT INTO tasks(kind, user, target, src, fresh, state, error, "
+            "cycle_id, created_at, finished_at, source, shas) "
+            "VALUES ('cycle',?,NULL,NULL,0,'succeeded',NULL,?,?,?,'cron',NULL)",
+            ("alice", "cycle-2026-08-30", "2026-08-29T16:00:03+00:00", "2026-08-29T16:00:59+00:00"),
+        )
+        db.commit()
+        monkeypatch.setattr(
+            "bsa_web.projection.latest_completed_cycle",
+            lambda log_dir: "cycle-2026-09-01",
+        )
+        monkeypatch.setattr(
+            "bsa_web.projection.latest_cycle_start",
+            lambda log_dir: datetime(2026, 8, 31, 16, 0, 4),
+        )
+        r = client.get("/history")
+        assert r.status_code == 200
+        # 最近完成周期不归档
+        assert "cycle-2026-09-01" not in r.text
+        # 更早的历史周期照常归档
+        assert "cycle-2026-08-30" in r.text
+
     def test_history_cutoff_is_cycle_started_at_not_window_start(self, tmp_path, monkeypatch):
         # 回归：历史页归档边界与面板一致 = 周期启动时刻。8/30T15:00Z 在旧边界
         # （窗口起点 08-30T22:00+08:00=14:00Z）之内、新边界（周期启动 08-30T16:00Z）
