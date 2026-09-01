@@ -249,6 +249,7 @@ def conclude_pair(
             kind="ManualReview",
             evidence=["关联文件存在，但目标分支上函数/符号疑似已重命名。"],
             confidence="medium",
+            cause="function_renamed",
         )
 
     if (
@@ -262,6 +263,7 @@ def conclude_pair(
                 f"（{similarity_low:.2f}～{similarity_high:.2f}）。"
             ],
             confidence="medium",
+            cause="similarity_gray",
         )
 
     if target.branch_type == "unknown":
@@ -269,6 +271,7 @@ def conclude_pair(
             kind="ManualReview",
             evidence=["目标分支类型未知。"],
             confidence="low",
+            cause="unknown_branch_type",
         )
 
     gate_reason = _severity_gate_reason(source, target)
@@ -277,6 +280,7 @@ def conclude_pair(
             kind="ManualReview",
             evidence=[gate_reason],
             confidence="high",
+            cause="severity_gate",
         )
 
     if not _anchor_symbols_ok(source, target):
@@ -284,6 +288,7 @@ def conclude_pair(
             kind="ManualReview",
             evidence=["关联符号在目标分支上未全部存在。"],
             confidence="medium",
+            cause="symbols_missing",
         )
 
     if source.needs_agent or source.recognition_source.startswith("pending:"):
@@ -292,6 +297,7 @@ def conclude_pair(
             kind="ManualReview",
             evidence=["LLM 未判定（pending），转人工审核"],
             confidence="medium",
+            cause="pending",
         )
 
     if not target.fix_clearly_missing:
@@ -312,6 +318,7 @@ def conclude_pair(
             kind="ManualReview",
             evidence=["目标分支上修复是否缺失无法判定。"],
             confidence="low",
+            cause="fix_missing",
         )
 
     anchor_bits: list[str] = []

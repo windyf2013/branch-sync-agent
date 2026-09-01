@@ -3,6 +3,16 @@ from typing import Any, Literal
 
 from pydantic import BaseModel
 
+ReviewCause = Literal[
+    "pending",
+    "severity_gate",
+    "fix_missing",
+    "function_renamed",
+    "similarity_gray",
+    "symbols_missing",
+    "unknown_branch_type",
+]
+
 
 class CommitInfo(BaseModel):
     sha: str
@@ -32,6 +42,8 @@ class Conclusion4(BaseModel):
     kind: Literal["NeedSync", "AlreadyIncluded", "ManualReview", "OutOfScope"]
     evidence: list[str]
     confidence: Literal["high", "medium", "low"]
+    # ManualReview 的结构化成因（纯标注，不改判定结果/优先级）；非 ManualReview 为 None。
+    cause: ReviewCause | None = None
 
 
 class ConflictResolution(BaseModel):

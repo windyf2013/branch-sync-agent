@@ -1124,3 +1124,73 @@ def test_duplicate_branch_reported_and_used_once():
     assert doc.duplicates[0]["count"] == 2
     # 无"主分支"/"业务分支"标注的 section 不产出同步边（新语义）。
     assert build_matrix(doc) == []
+
+
+# --- conclude: ManualReview 结构化成因 cause（纯标注，不改判定结果） ---
+
+
+def test_cause_function_renamed():
+    source = _analysis()
+    target = _target(function_renamed=True, fix_clearly_missing=True)
+    conclusion = conclude_pair(source, target, similarity_high=0.90, similarity_low=0.50)
+    assert conclusion.kind == "ManualReview"
+    assert conclusion.cause == "function_renamed"
+
+
+def test_cause_similarity_gray():
+    source = _analysis()
+    target = _target(file_similarity=0.70)
+    conclusion = conclude_pair(source, target, similarity_high=0.90, similarity_low=0.50)
+    assert conclusion.kind == "ManualReview"
+    assert conclusion.cause == "similarity_gray"
+
+
+def test_cause_severity_gate():
+    source = _analysis(risk="low")
+    target = _target(branch_type="fix", branch_name="br_v4_LineA_fix_20260201")
+    conclusion = conclude_pair(source, target, similarity_high=0.90, similarity_low=0.50)
+    assert conclusion.kind == "ManualReview"
+    assert conclusion.cause == "severity_gate"
+
+
+def test_cause_symbols_missing():
+    source = _analysis(symbols=["demo_check", "other_fn"])
+    target = _target(
+        symbols_on_target={"demo_check": True, "other_fn": False},
+        fix_clearly_missing=True,
+    )
+    conclusion = conclude_pair(source, target, similarity_high=0.90, similarity_low=0.50)
+    assert conclusion.kind == "ManualReview"
+    assert conclusion.cause == "symbols_missing"
+
+
+def test_cause_pending():
+    source = _analysis(risk="high", needs_agent=True)
+    target = _target(fix_clearly_missing=True)
+    conclusion = conclude_pair(source, target, similarity_high=0.90, similarity_low=0.50)
+    assert conclusion.kind == "ManualReview"
+    assert conclusion.cause == "pending"
+
+
+def test_cause_fix_missing():
+    # risk 非 high 且 fix_clearly_missing=False → 修复是否缺失无法判定。
+    source = _analysis(risk="medium")
+    target = _target(fix_clearly_missing=False)
+    conclusion = conclude_pair(source, target, similarity_high=0.90, similarity_low=0.50)
+    assert conclusion.kind == "ManualReview"
+    assert conclusion.cause == "fix_missing"
+
+
+def test_cause_none_for_non_manual_review():
+    # NeedSync / AlreadyIncluded / OutOfScope 的 cause 均为 None。
+    need_sync = conclude_pair(_analysis(), _target(fix_clearly_missing=True))
+    assert need_sync.kind == "NeedSync"
+    assert need_sync.cause is None
+
+    included = conclude_pair(_analysis(sha="abcdef1234567890"), _target(has_source_sha=True))
+    assert included.kind == "AlreadyIncluded"
+    assert included.cause is None
+
+    out_of_scope = conclude_pair(_analysis(), _target(in_same_homologous_set=False))
+    assert out_of_scope.kind == "OutOfScope"
+    assert out_of_scope.cause is None
