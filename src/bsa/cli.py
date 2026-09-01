@@ -90,6 +90,11 @@ def _build_parser() -> argparse.ArgumentParser:
     override_p.add_argument(
         "--risk", choices=["low", "medium", "high"], help="人工判定严重性"
     )
+    override_p.add_argument(
+        "--clear",
+        action="store_true",
+        help="清除该 sha 的人工覆盖（与 --is-bug-fix/--risk 互斥）",
+    )
     override_p.set_defaults(handler=_cmd_override)
 
     sync_p = sub.add_parser(
@@ -312,6 +317,9 @@ def _cmd_commits(args: argparse.Namespace) -> int:
 
 
 def _cmd_override(args: argparse.Namespace) -> int:
+    if args.clear and (args.is_bug_fix is not None or args.risk is not None):
+        print("override: --clear 不能与 --is-bug-fix/--risk 同时使用", file=sys.stderr)
+        return 2
     try:
         settings = load_settings()
     except Exception as exc:
@@ -340,6 +348,7 @@ def _cmd_override(args: argparse.Namespace) -> int:
         risk=args.risk,
         message=message,
         patch_id=patch_id,
+        clear=args.clear,
     )
     print(json.dumps(entry, ensure_ascii=False, indent=2))
     return 0

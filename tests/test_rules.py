@@ -182,6 +182,37 @@ def test_classify_agent_judgment_not_bug_fix():
     assert result.recognition_source == "agent:not-bug-fix"
 
 
+def test_classify_judgment_missing_is_bug_fix_key_not_false():
+    # 只写 risk 的 judgment（无 is_bug_fix 键）不得被误判为 not-bug-fix，
+    # 继续走机器规则 → pending（needs_agent=True），交 LLM 判 is_bug_fix。
+    result = classify_commit(
+        "fix",
+        ["plat/demo/demo.c"],
+        ["demo_check"],
+        "+    if (NULL == ptr)\n+    {\n+        return -1;\n+    }\n",
+        sha="abc1234567890",
+        agent_judgments={"abc1234567890": {"risk": "high"}},
+    )
+    assert result.is_bug_fix is False
+    assert result.recognition_source == "pending:claude-agent"
+    assert result.needs_agent is True
+
+
+def test_classify_judgment_explicit_false_still_applies():
+    # 显式 is_bug_fix=false 仍生效（区别于键缺失）。
+    result = classify_commit(
+        "fix",
+        ["plat/demo/demo.c"],
+        ["demo_check"],
+        "+    if (NULL == ptr)\n+    {\n+        return -1;\n+    }\n",
+        sha="abc1234567890",
+        agent_judgments={"abc1234567890": {"is_bug_fix": False}},
+    )
+    assert result.is_bug_fix is False
+    assert result.recognition_source == "agent:not-bug-fix"
+    assert result.needs_agent is False
+
+
 def test_classify_lookup_agent_judgment_prefix():
     from bsa.rules.classify import lookup_agent_judgment
 

@@ -387,6 +387,35 @@ def test_minimal_human_entry_defaults_source(tmp_path: Path) -> None:
     assert llm.calls == []
 
 
+def test_run_risk_only_judgment_does_not_short_circuit_llm(tmp_path: Path) -> None:
+    # 只写 risk 的 judgment（无 is_bug_fix 键）不得被 Agent 层当非 bug-fix 短路；
+    # 交 LLM 判 is_bug_fix，仅把 entry 的 risk 当覆盖应用，不把 needs_agent 压 False。
+    sha = "add5e0000000000000000000000000000000000"
+    path = tmp_path / "judgments.json"
+    path.write_text(json.dumps({sha: {"risk": "high", "recognition_source": "manual-override"}}), encoding="utf-8")
+    llm = FakeLLM()  # 默认返回 is_bug_fix=True
+    agent = SyncDecisionAgent(llm, path)
+
+    result = agent.run([make_commit(sha=sha)])
+
+    assert llm.calls == [make_commit(sha=sha)]
+    assert result[sha].is_bug_fix is True
+    assert result[sha].risk == "high"
+
+
+def test_run_risk_only_judgment_preserves_rule_layer_risk(tmp_path: Path) -> None:
+    # 规则层 prior_risks 优先级仍最高，压过 entry 的 risk。
+    sha = "add5e0000000000000000000000000000000000"
+    path = tmp_path / "judgments.json"
+    path.write_text(json.dumps({sha: {"risk": "high", "recognition_source": "manual-override"}}), encoding="utf-8")
+    llm = FakeLLM()
+    agent = SyncDecisionAgent(llm, path)
+
+    result = agent.run([make_commit(sha=sha)], prior_risks={sha: "medium"})
+
+    assert result[sha].risk == "medium"
+
+
 def test_run_preserves_rule_layer_high_over_llm(tmp_path: Path) -> None:
     sha = "5eed00000000000000000000000000000000000"
     path = tmp_path / "judgments.json"

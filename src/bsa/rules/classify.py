@@ -241,8 +241,10 @@ def classify_commit(
     issue_ids = _extract_issue_ids(message, rules.issue_id_re, rules.issue_prefixes)
     fp = compute_fingerprint(message, patch_id) if patch_id else None
     judgment = lookup_agent_judgment(sha or "", agent_judgments, fingerprint=fp)
-    if judgment is not None:
+    if judgment is not None and "is_bug_fix" in judgment:
         # 决策 6: 人工判定最高优先级，先于所有机器规则。
+        # 只写 risk 的 judgment（无 is_bug_fix 键）不得覆盖 is_bug_fix——
+        # 继续走机器规则/LLM，避免把「键缺失」误判成「非 bug-fix」。
         is_bug = bool(judgment.get("is_bug_fix"))
         reason = str(judgment.get("reason") or "").strip() or "Claude 主 Agent 判定结果。"
         return Classification(

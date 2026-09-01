@@ -121,6 +121,59 @@ def test_entry_readable_by_sync_decision_agent(tmp_path):
     assert llm.calls == []
 
 
+def test_clear_removes_sha_and_fp_key(tmp_path):
+    from bsa.rules.classify import compute_fingerprint
+
+    sha = "a1b2c3d4e5f6"
+    fp = compute_fingerprint("[BUG] fix null deref\n\nrefactor it", "pid123")
+    (tmp_path / "judgments.json").write_text(
+        json.dumps(
+            {
+                sha: {"is_bug_fix": True, "recognition_source": "manual-override"},
+                f"fp:{fp}": {"is_bug_fix": True, "recognition_source": "manual-override"},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    apply_override(
+        tmp_path,
+        sha,
+        clear=True,
+        message="[BUG] fix null deref\n\nrefactor it",
+        patch_id="pid123",
+    )
+
+    data = _read(tmp_path)
+    assert sha not in data
+    assert f"fp:{fp}" not in data
+    assert data == {}
+
+
+def test_clear_removes_sha_only_without_fingerprint(tmp_path):
+    sha = "a1b2c3d4e5f6"
+    (tmp_path / "judgments.json").write_text(
+        json.dumps({sha: {"is_bug_fix": True, "recognition_source": "manual-override"}}),
+        encoding="utf-8",
+    )
+
+    apply_override(tmp_path, sha, clear=True)
+
+    assert _read(tmp_path) == {}
+
+
+def test_clear_missing_sha_is_noop_preserving_others(tmp_path):
+    other = "ffeeddccbbaa"
+    (tmp_path / "judgments.json").write_text(
+        json.dumps({other: {"is_bug_fix": False, "recognition_source": "agent:not-bug-fix"}}),
+        encoding="utf-8",
+    )
+
+    apply_override(tmp_path, "a1b2c3d4e5f6", clear=True)
+
+    assert _read(tmp_path) == {other: {"is_bug_fix": False, "recognition_source": "agent:not-bug-fix"}}
+
+
 def test_override_cli_writes_judgment(monkeypatch, tmp_path, capsys):
     from bsa.cli import main
     from tests.test_config import valid_env
@@ -169,6 +222,47 @@ def test_override_cli_rejects_invalid_is_bug_fix(monkeypatch, tmp_path):
         main(["override", "a1b2c3d4e5f6", "--is-bug-fix", "maybe"])
     assert exc.value.code == 2
     assert not (tmp_path / "judgments.json").exists()
+
+
+def test_override_cli_clear_removes_entry(monkeypatch, tmp_path, capsys):
+    from bsa.cli import main
+    from tests.test_config import valid_env
+
+    env = valid_env()
+    env["LOG_DIR"] = str(tmp_path)
+    monkeypatch.setattr("bsa.config.settings.os.environ", env)
+    sha = "a1b2c3d4e5f6"
+    (tmp_path / "judgments.json").write_text(
+        json.dumps({sha: {"is_bug_fix": True, "recognition_source": "manual-override"}}),
+        encoding="utf-8",
+    )
+
+    code = main(["override", sha, "--clear"])
+
+    assert code == 0
+    assert _read(tmp_path) == {}
+
+
+def test_override_cli_clear_mutually_exclusive_with_is_bug_fix(monkeypatch, tmp_path):
+    from bsa.cli import main
+    from tests.test_config import valid_env
+
+    env = valid_env()
+    env["LOG_DIR"] = str(tmp_path)
+    monkeypatch.setattr("bsa.config.settings.os.environ", env)
+
+    assert main(["override", "a1b2c3d4e5f6", "--clear", "--is-bug-fix", "true"]) == 2
+
+
+def test_override_cli_clear_mutually_exclusive_with_risk(monkeypatch, tmp_path):
+    from bsa.cli import main
+    from tests.test_config import valid_env
+
+    env = valid_env()
+    env["LOG_DIR"] = str(tmp_path)
+    monkeypatch.setattr("bsa.config.settings.os.environ", env)
+
+    assert main(["override", "a1b2c3d4e5f6", "--clear", "--risk", "high"]) == 2
 
 
 def test_override_cli_missing_env_exits_two(monkeypatch, tmp_path):
