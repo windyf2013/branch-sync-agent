@@ -96,3 +96,54 @@ def test_list_cycle_records_sees_running_record(monkeypatch, tmp_path):
     running = [r for r in seen["listed"] if r["status"] == "running"]
     assert len(running) == 1
     assert running[0]["cycle_id"] == CYCLE_ID
+
+
+def _write_record(log_dir: Path, cycle_id: str, status: str, started_at: str) -> None:
+    d = log_dir / cycle_id
+    d.mkdir(parents=True, exist_ok=True)
+    (d / "cycle.json").write_text(
+        json.dumps(
+            {
+                "cycle_id": cycle_id,
+                "status": status,
+                "report_path": None,
+                "mail_status": None,
+                "started_at": started_at,
+                "finished_at": started_at,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+
+def test_list_cycle_records_enumerates_scan_cycles(tmp_path):
+    log_dir = tmp_path / "logs"
+    _write_record(log_dir, "cycle-2026-09-01", "SUCCESS", "2026-09-01T00:00:04")
+    _write_record(
+        log_dir,
+        "scan-2026-08-30T22:00:00+08:00-2026-08-31T22:00:00+08:00",
+        "SUCCESS",
+        "2026-09-01T16:10:17",
+    )
+
+    records = list_cycle_records(log_dir)
+
+    ids = [r["cycle_id"] for r in records]
+    assert "cycle-2026-09-01" in ids
+    assert "scan-2026-08-30T22:00:00+08:00-2026-08-31T22:00:00+08:00" in ids
+    # 按 started_at 升序：cycle（00:00）在 scan（16:10）之前
+    assert ids == [
+        "cycle-2026-09-01",
+        "scan-2026-08-30T22:00:00+08:00-2026-08-31T22:00:00+08:00",
+    ]
+
+
+def test_list_cycle_records_ignores_manual_dir_without_cycle_json(tmp_path):
+    log_dir = tmp_path / "logs"
+    _write_record(log_dir, "cycle-2026-09-01", "SUCCESS", "2026-09-01T00:00:04")
+    # manual 目录无 cycle.json → 不被枚举
+    (log_dir / "manual-20260831-150139826484-688273").mkdir(parents=True)
+
+    records = list_cycle_records(log_dir)
+
+    assert [r["cycle_id"] for r in records] == ["cycle-2026-09-01"]

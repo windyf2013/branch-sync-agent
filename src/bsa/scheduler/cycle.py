@@ -176,11 +176,15 @@ def list_cycle_records(log_dir: str | Path) -> list[dict]:
     if not root.is_dir():
         return []
     records = []
-    for path in root.glob("cycle-*/cycle.json"):
-        try:
-            records.append(json.loads(path.read_text(encoding="utf-8")))
-        except (OSError, json.JSONDecodeError):
-            continue
+    # 有 cycle.json 的周期 = run_cycle 落盘的周期，即 cron 每日（cycle-*）与
+    # manual-scan 重扫（scan-*）两类。manual-*（手动同步）/ rerun-*（重跑）走
+    # 单目标子图、不写 cycle.json，本就不该被枚举。
+    for glob in ("cycle-*/cycle.json", "scan-*/cycle.json"):
+        for path in root.glob(glob):
+            try:
+                records.append(json.loads(path.read_text(encoding="utf-8")))
+            except (OSError, json.JSONDecodeError):
+                continue
     records.sort(key=_started_sort_key)
     return records
 
