@@ -304,6 +304,7 @@ def detect_commits(state: dict, ctx: GraphContext) -> dict:
                 patch_text = ctx.git.commit_patch(sha)
                 symbols = extract_symbols(patch_text)
                 patch_id = ctx.git.patch_id(sha)
+                diff_stat = ctx.git.diff_stat(sha)
                 classification = ctx.classify(
                     message,
                     changed_files,
@@ -328,6 +329,7 @@ def detect_commits(state: dict, ctx: GraphContext) -> dict:
                         issue_ids=list(classification.issue_ids),
                         source_branch=source.name,
                         homologous_section=hs.section,
+                        diff_stat=diff_stat,
                     )
                 )
                 classifications[sha] = SyncDecision(

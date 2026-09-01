@@ -97,6 +97,7 @@ def _detect_source_commits(
         patch_text = ctx.git.commit_patch(sha)
         symbols = extract_symbols(patch_text)
         patch_id = ctx.git.patch_id(sha)
+        diff_stat = ctx.git.diff_stat(sha)
         classification = ctx.classify(
             message,
             changed_files,
@@ -120,6 +121,7 @@ def _detect_source_commits(
                 issue_ids=list(classification.issue_ids),
                 source_branch=source,
                 homologous_section="manual",
+                diff_stat=diff_stat,
             )
         )
         classifications[sha] = SyncDecision(

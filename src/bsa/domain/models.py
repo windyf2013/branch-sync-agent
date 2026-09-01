@@ -16,6 +16,7 @@ class CommitInfo(BaseModel):
     issue_ids: list[str]
     source_branch: str
     homologous_section: str
+    diff_stat: dict[str, int] | None = None
 
 
 class SyncDecision(BaseModel):

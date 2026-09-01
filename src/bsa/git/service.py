@@ -151,9 +151,6 @@ class GitService:
                 return None
         return file_count, total_lines
 
-    def _too_big(self, sha: str) -> bool:
-        return self._parent_sha(sha) is None or self._numstat(sha) is None
-
     def changed_files(self, sha: str) -> list[str]:
         parent = self._parent_sha(sha)
         if parent is None:
@@ -167,16 +164,49 @@ class GitService:
         return names[:MAX_CHANGED_FILES]
 
     def commit_patch(self, sha: str, max_chars: int = MAX_PATCH_CHARS) -> str:
-        if self._too_big(sha):
+        parent = self._parent_sha(sha)
+        if parent is None or self._numstat(sha) is None:
             return ""
-        result = self._run(["show", "--pretty=format:", sha])
+        result = self._run(
+            ["diff-tree", "--no-commit-id", "-p", "-r", parent, sha]
+        )
         return (result.stdout or "")[:max_chars]
 
     def patch_id(self, sha: str) -> str | None:
-        if self._too_big(sha):
+        parent = self._parent_sha(sha)
+        if parent is None or self._numstat(sha) is None:
             return None
-        result = self._run(["show", "--pretty=format:", sha])
+        result = self._run(
+            ["diff-tree", "--no-commit-id", "-p", "-r", parent, sha]
+        )
         return _stable_patch_id(result.stdout)
+
+    def diff_stat(self, sha: str) -> dict[str, int] | None:
+        """第一父聚合变更统计 ``{files, insertions, deletions}``。
+
+        与 ``changed_files``/``commit_patch``/``patch_id`` 同源（第一父聚合），
+        单独计算、不设截断上限——超大 commit 即使 ``patch_text`` 因超限为空，
+        ``diff_stat`` 仍保留文件数与增删行统计。根 commit（无父）返回 None。
+        """
+        parent = self._parent_sha(sha)
+        if parent is None:
+            return None
+        result = self._run(
+            ["diff-tree", "--no-commit-id", "--numstat", "-r", parent, sha]
+        )
+        files = 0
+        insertions = 0
+        deletions = 0
+        for line in result.stdout.splitlines():
+            parts = line.split("\t", 2)
+            if len(parts) < 2:
+                continue
+            files += 1
+            if parts[0] != "-":
+                insertions += int(parts[0])
+            if parts[1] != "-":
+                deletions += int(parts[1])
+        return {"files": files, "insertions": insertions, "deletions": deletions}
 
     def file_exists(self, ref: str, path: str) -> bool:
         result = self.executor.run(["rev-parse", "--verify", f"{ref}:{path}"], cwd=self.repo_path)

@@ -158,6 +158,7 @@ class FakeGit:
         self.changed: dict[str, list[str]] = {}
         self.patches: dict[str, str] = {}
         self.patch_ids: dict[str, str] = {}
+        self.diff_stats: dict[str, dict[str, int]] = {}
         self.is_ancestor_results: dict[tuple[str, str], bool] = {}
         self.file_exists_results: dict[tuple[str, str], bool] = {}
         self.cherry_pick_result: CherryPickResult | None = None
@@ -199,6 +200,10 @@ class FakeGit:
     def patch_id(self, sha: str) -> str | None:
         self._record("patch_id", (sha,))
         return self.patch_ids.get(sha)
+
+    def diff_stat(self, sha: str) -> dict[str, int] | None:
+        self._record("diff_stat", (sha,))
+        return self.diff_stats.get(sha)
 
     def is_ancestor(self, sha: str, ref: str) -> bool:
         self._record("is_ancestor", (sha, ref))
