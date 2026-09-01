@@ -104,7 +104,7 @@ detect_commits → sync_decision → next_branch → prepare_worktree → baseli
 2. **Agent/平台永不 push。** 推送仅经平台受限 executor + 人工二次确认；`--force` 禁止；non-fast-forward 必须干净失败。
 3. **SafetyEnforcer 压过 LLM。** `forbidden_paths` / `forbidden_branches` / `max_single_edit_lines` / `required_models` 由代码在 LLM 产出 diff **之后**强制执行。
 4. **git 白名单**（`executor/whitelist.py`）：只放行 fetch/checkout/cherry-pick/log/diff/show/format-patch/worktree/merge-base/status/add/rev-parse/diff-tree。docker 命令**刻意绕过**白名单（走裸 SubprocessExecutor），两条链路不可混用。
-5. **四态判定 `NeedSync / AlreadyIncluded / ManualReview / OutOfScope` 只出自确定性规则**，LLM 从不产出四态、从不覆盖规则层的 risk。优先级：人工覆盖（`judgments.json`，按 fingerprint 匹配）> 规则 > LLM。
+5. **四态判定 `NeedSync / AlreadyIncluded / ManualReview / OutOfScope` 只出自确定性规则**，LLM 从不产出四态、从不覆盖规则层的 risk。优先级：人工覆盖（`judgments.json`，按 fingerprint 匹配）> 规则 > LLM。**人工覆盖作用于 classify 层的分类与风险（`is_bug_fix`/`risk`）**，压过规则与 LLM；**四态客观结论（已包含/不同产品线）由规则层按 git 快照独立判定，不接收人工覆盖**——人工对四态的拍板走「确认继续（直同步）/放弃」，而非 override。`is_bug_fix` 键缺失的 judgment（只写 risk）不覆盖 `is_bug_fix`，继续走机器规则/LLM。
 6. **LLM 不可用 = 节点失败 = 转人工**，统一约定，工作流层没有"重试恢复"语义。未判定的 commit 一律落 ManualReview，绝不自动同步。
 7. **回滚先行。** ConflictAgent（字节级快照）与 BuildAgent 在任何 LLM 改动前必先快照、失败必还原，worktree 永不留半成品。
 8. **基线编译先行。** `prepare_worktree → baseline_build` 先对未改动的目标 tip 做一次 clean 全编译；失败则整个分支 `FAILED` + 批次全部记 ledger `blocked`，不做任何 cherry-pick。这消灭了 `pre_existing` 这一归因类别。
