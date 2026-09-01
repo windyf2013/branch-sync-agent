@@ -318,6 +318,33 @@ class TestCycleDetail:
         assert "br_msg" in r.text
         assert "0 个 commit" in r.text
 
+    def test_cycle_overview_zero_detected_source_labeled(self, tmp_path, monkeypatch):
+        # 零检出源标注「本期无新 commit（正常）」，与检出过 commit 的源视觉区分，
+        # 让「零检出」与「漏扫」可区分。
+        client = _client(_make_app(tmp_path))
+        _login(client)
+        payload = _payload(
+            sources=["br_fttr", "br_msg"],
+            detected_commits=[_commit_info("a1")],
+        )
+        payload["detected_commits"][0]["source_branch"] = "br_fttr"
+        monkeypatch.setattr("bsa_web.projection.load_cycle", lambda log_dir, cid: payload)
+        r = client.get("/cycle/cycle-2026-08-20")
+        assert r.status_code == 200
+        assert "本期无新 commit" in r.text
+
+    def test_cycle_overview_topology_missing_degrade_label(self, tmp_path, monkeypatch):
+        # sources/targets 字段缺失时降级推导，并标注「拓扑字段缺失」，
+        # 不误报「漏扫」。
+        client = _client(_make_app(tmp_path))
+        _login(client)
+        payload = _payload(detected_commits=[_commit_info("a1")])
+        payload["detected_commits"][0]["source_branch"] = "br_fttr"
+        monkeypatch.setattr("bsa_web.projection.load_cycle", lambda log_dir, cid: payload)
+        r = client.get("/cycle/cycle-2026-08-20")
+        assert r.status_code == 200
+        assert "拓扑字段缺失" in r.text
+
     def test_cycle_detail_running_shows_friendly_notice(self, tmp_path, monkeypatch):
         client = _client(_make_app(tmp_path))
         _login(client)

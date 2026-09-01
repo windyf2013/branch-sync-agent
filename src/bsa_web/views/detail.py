@@ -81,6 +81,9 @@ def cycle_detail(
         )
     branches = payload.get("branch_results") or {}
     detected = payload.get("detected_commits") or []
+    # 完整拓扑字段（含零检出源）由引擎投影提供（change1）；缺失时降级从
+    # detected_commits 推导，仅能覆盖检出过 commit 的源，零检出源不可推导。
+    topology_degraded = "sources" not in payload and "targets" not in payload
     sources = payload.get("sources") or sorted(
         {c.get("source_branch") for c in detected if c.get("source_branch")}
     )
@@ -88,6 +91,10 @@ def cycle_detail(
     detected_by_source: dict[str, list[dict]] = {}
     for c in detected:
         detected_by_source.setdefault(c.get("source_branch") or "未知来源", []).append(c)
+    # 零检出源 = 完整源全集 - 检出过 commit 的源，标注「本期无新 commit（正常）」。
+    zero_detected_sources = [
+        s for s in sources if s not in detected_by_source
+    ]
     return _render(
         request,
         "detail.html",
@@ -105,6 +112,8 @@ def cycle_detail(
         sources=sources,
         targets=targets,
         detected_by_source=detected_by_source,
+        topology_degraded=topology_degraded,
+        zero_detected_sources=zero_detected_sources,
         cycle_summary=projection.cycle_summary(payload),
         decision_breakdown=failure.decision_breakdown(payload),
         cycle_failures=failure.failure_summary(payload),

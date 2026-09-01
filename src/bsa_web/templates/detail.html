@@ -32,6 +32,7 @@
     <div class="branch-hero-meta" style="margin-top:0">
       <span><span class="k">源分支</span> {% if sources %}{{ sources | join("、") }}{% else %}—{% endif %}</span>
       <span><span class="k">目标分支</span> {% if targets %}{{ targets | join("、") }}{% else %}—{% endif %}</span>
+      {% if topology_degraded %}<span class="muted">拓扑字段缺失，仅展示检出过 commit 的分支</span>{% endif %}
       <span><span class="k">检测</span> {{ cycle_summary.cycle_detected }}</span>
       <span><span class="k">同步</span> {{ cycle_summary.cycle_synced }}</span>
       <span><span class="k">跳过</span> {{ cycle_summary.cycle_skipped }}</span>
@@ -119,7 +120,7 @@
   {% for src in sources %}
   <div class="detect-group">
     <div class="detect-group-head"><h3>{{ src }}</h3>
-      <span class="muted">{% if detected_by_source.get(src) %}{{ detected_by_source[src] | length }} 个 commit{% else %}0 个 commit{% endif %}</span>
+      <span class="muted">{% if detected_by_source.get(src) %}{{ detected_by_source[src] | length }} 个 commit{% else %}0 个 commit{% if src in zero_detected_sources %}（本期无新 commit，正常）{% endif %}{% endif %}</span>
     </div>
     {% if detected_by_source.get(src) %}
     <div class="table-wrap">
