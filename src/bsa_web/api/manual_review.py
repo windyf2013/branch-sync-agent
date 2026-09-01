@@ -47,6 +47,7 @@ class OverrideBody(BaseModel):
     sha: str | None = None
     is_bug_fix: bool | None = None
     risk: str | None = None
+    clear: bool | None = None
 
 
 class ConfirmBody(BaseModel):
@@ -64,6 +65,26 @@ def api_override(
         raise HTTPException(status_code=400, detail="缺少 sha")
     if body.risk is not None and body.risk not in _RISKS:
         raise HTTPException(status_code=400, detail="risk 非法（low/medium/high）")
+    if body.clear:
+        if body.is_bug_fix is not None or body.risk is not None:
+            raise HTTPException(status_code=400, detail="clear 不能与 is_bug_fix/risk 同时使用")
+        cmd = [sys.executable, "-m", "bsa.cli", "override", body.sha, "--clear"]
+        try:
+            proc = _run_cli(cmd, request.app.state.settings.log_dir)
+        except subprocess.SubprocessError as exc:
+            raise HTTPException(status_code=500, detail=f"清除覆盖失败: {exc}") from None
+        if proc.returncode != 0:
+            detail = (proc.stderr or proc.stdout or "清除覆盖失败").strip()
+            raise HTTPException(status_code=500, detail=detail)
+        audit.record(
+            request.app.state.db,
+            user["username"],
+            "override",
+            sha=body.sha,
+            detail={"clear": True},
+            result="ok",
+        )
+        return {"message": "覆盖判定已清除，将在下一次决策执行时生效", "sha": body.sha}
     if body.is_bug_fix is None and body.risk is None:
         raise HTTPException(status_code=400, detail="至少提供 is_bug_fix 或 risk 之一")
 

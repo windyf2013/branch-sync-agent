@@ -134,11 +134,18 @@ def task_detail(
     # 推送开放范围：最近完成周期的自动 SUCCESS 现场 + 手动/重跑 SUCCESS 现场
     # （手动/重跑周期不写 cycle record，latest_completed_cycle 不可见，须显式放行）。
     is_current = cycle_id == projection.latest_completed_cycle(settings.log_dir)
-    review_items = [
-        item
-        for item in (payload.get("action_required") or [])
-        if item.get("kind") == "ManualReview" and item.get("branch") == target
-    ]
+    # ManualReview 成因 cause 从 payload.decisions[sha][target].cause 补进 review_item，
+    # 供模板按成因精确渲染 override 控件（pending→标记 bug fix、severity_gate/
+    # fix_missing→风险、其余/缺失→无 override，仅确认继续/放弃）。
+    decisions = payload.get("decisions") or {}
+    review_items = []
+    for item in (payload.get("action_required") or []):
+        if item.get("kind") != "ManualReview" or item.get("branch") != target:
+            continue
+        item = dict(item)
+        concl = (decisions.get(item.get("sha")) or {}).get(target) or {}
+        item["cause"] = concl.get("cause")
+        review_items.append(item)
     return _render(
         request,
         user=user,

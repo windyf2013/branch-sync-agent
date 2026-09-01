@@ -58,7 +58,7 @@
       {% if show_webssh %}
       <a class="btn" href="/ssh/task/{{ cycle_id }}/{{ target }}">WebSSH 在线处理</a>
       {% endif %}
-      <form method="post" action="/rerun" class="inline-form">
+      <form method="post" action="/rerun" class="inline-form" id="rerun-form">
         <input type="hidden" name="_csrf" value="{{ csrf }}">
         <input type="hidden" name="target" value="{{ target }}">
         <label class="inline"><input type="checkbox" name="fresh" value="on"> 重建重同步（--fresh）</label>
@@ -93,6 +93,10 @@
         {% if item.reason %}<span class="review-reason">{{ item.reason }}</span>{% endif %}
         {% if item.override_stale %}
         <span class="badge warn" title="该 commit 内容已变化，此前的改判定不再匹配，请重新判定">⚠️ 覆盖已失效</span>
+        {% if user.role == "operator" %}
+        <button type="button" data-override-clear="{{ item.sha }}">清除覆盖</button>
+        <span class="override-clear-result"></span>
+        {% endif %}
         {% endif %}
       </div>
       {% if item.evidence %}
@@ -102,8 +106,16 @@
       <div class="review-actions">
         <div class="review-action-main">
           <button type="button" data-confirm-target="{{ target }}" data-confirm-sha="{{ item.sha }}" class="btn-primary">确认继续</button>
+          <span class="confirm-hint">将发起一条独立手动同步任务（单个 commit 直同步），不在原周期内收敛</span>
           <span class="confirm-result"></span>
         </div>
+        {% if item.cause == "pending" %}
+        <div class="review-action-fields">
+          <label class="inline"><input type="checkbox" data-override-bugfix="{{ item.sha }}"> 标记 bug fix</label>
+          <button type="button" data-override-sha="{{ item.sha }}">改判定</button>
+          <span class="override-result"></span>
+        </div>
+        {% elif item.cause == "severity_gate" or item.cause == "fix_missing" %}
         <div class="review-action-fields">
           <label>风险
             <select data-override-risk="{{ item.sha }}">
@@ -113,10 +125,10 @@
               <option value="high">high</option>
             </select>
           </label>
-          <label class="inline"><input type="checkbox" data-override-bugfix="{{ item.sha }}"> 标记 bug fix</label>
           <button type="button" data-override-sha="{{ item.sha }}">改判定</button>
           <span class="override-result"></span>
         </div>
+        {% endif %}
       </div>
       {% endif %}
     </div>
@@ -156,10 +168,10 @@
       var sha = btn.getAttribute("data-override-sha");
       var result = btn.closest(".review-card").querySelector(".override-result");
       var body = { _csrf: csrf, sha: sha };
-      var risk = document.querySelector('[data-override-risk="' + sha + '"]').value;
-      var bugfix = document.querySelector('[data-override-bugfix="' + sha + '"]').checked;
-      if (risk) { body.risk = risk; }
-      if (bugfix) { body.is_bug_fix = true; }
+      var riskEl = document.querySelector('[data-override-risk="' + sha + '"]');
+      var bugfixEl = document.querySelector('[data-override-bugfix="' + sha + '"]');
+      if (riskEl && riskEl.value) { body.risk = riskEl.value; }
+      if (bugfixEl && bugfixEl.checked) { body.is_bug_fix = true; }
       btn.disabled = true;
       result.textContent = "提交中…";
       fetch("/api/override", {
@@ -171,6 +183,29 @@
       }).then(function (res) {
         btn.disabled = false;
         result.textContent = res.ok ? (res.json.message || "已改判定") : ((res.json && res.json.detail) || "改判定失败");
+        if (res.ok && document.getElementById("rerun-form")) {
+          result.innerHTML = (res.json.message || "已改判定") + ' <a href="#rerun-form">立即重跑该分支</a>';
+        }
+      });
+    });
+  });
+
+  document.querySelectorAll("[data-override-clear]").forEach(function (btn) {
+    btn.addEventListener("click", function () {
+      var sha = btn.getAttribute("data-override-clear");
+      var result = btn.closest(".review-card").querySelector(".override-clear-result");
+      btn.disabled = true;
+      if (result) result.textContent = "提交中…";
+      fetch("/api/override", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ _csrf: csrf, sha: sha, clear: true }),
+      }).then(function (r) {
+        return r.json().then(function (json) { return { ok: r.ok, json: json }; });
+      }).then(function (res) {
+        btn.disabled = false;
+        if (result) result.textContent = res.ok ? (res.json.message || "已清除") : ((res.json && res.json.detail) || "清除失败");
+        if (res.ok) { window.location.reload(); }
       });
     });
   });

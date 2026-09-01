@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 import re
+from datetime import datetime
 
 from fastapi.testclient import TestClient
 
@@ -161,7 +162,11 @@ class TestTaskCenter:
         _login(client)
         payload = _payload(branch_results={"feat/auto": _branch("feat/auto", "SUCCESS")})
         _mount_cycle(monkeypatch, payload)
-        # 窗口起点 2026-08-20T22:00+08:00（= 14:00 UTC），8/19 已超窗口
+        # 归档边界 = 最近周期启动时刻（UTC-naive）；8/19 已超边界，8/21 在边界内
+        monkeypatch.setattr(
+            "bsa_web.projection.latest_cycle_start",
+            lambda log_dir: datetime(2026, 8, 20, 14, 0, 0),
+        )
         _add_task(
             app, target="feat/old", state="succeeded",
             created_at="2026-08-19T10:00:00+00:00",
@@ -594,6 +599,7 @@ class TestTaskDetail:
         assert "parentElement" in r.text
 
     def test_detail_shows_manual_review_ops(self, tmp_path, monkeypatch):
+        # 无 cause 的人工项（存量降级）只给确认继续/放弃，不给 override 控件。
         app = _make_app(tmp_path)
         client = _client(app)
         _login(client)
@@ -610,7 +616,86 @@ class TestTaskDetail:
         assert "人工项" in r.text
         assert "abc123" in r.text
         assert 'data-confirm-target="feat/m"' in r.text
-        assert 'data-override-sha="abc123"' in r.text
+        assert 'data-override-sha="abc123"' not in r.text
+
+    def _manual_review_payload(self, cause):
+        # decisions 携带 cause；action_required 由引擎产出（不含 cause，web 从 decisions 补）。
+        decisions = {
+            "abc123": {
+                "feat/m": {"kind": "ManualReview", "evidence": ["ev"],
+                           "confidence": "medium", "cause": cause}
+            }
+        }
+        payload = _payload(
+            branch_results={"feat/m": _branch("feat/m", "MANUAL")},
+            action_required=[
+                {"sha": "abc123", "branch": "feat/m", "kind": "ManualReview",
+                 "reason": "存疑", "evidence": ["ev"]}
+            ],
+        )
+        payload["decisions"] = decisions
+        return payload
+
+    def test_detail_pending_cause_only_bugfix_control(self, tmp_path, monkeypatch):
+        app = _make_app(tmp_path)
+        client = _client(app)
+        _login(client)
+        _mount_cycle(monkeypatch, self._manual_review_payload("pending"))
+        r = client.get(f"/task/{_CYCLE}/feat/m")
+        assert r.status_code == 200
+        # pending → 只给「标记 bug fix」, 不给风险下拉
+        assert 'data-override-bugfix="abc123"' in r.text
+        assert 'data-override-risk="abc123"' not in r.text
+
+    def test_detail_severity_gate_cause_only_risk_control(self, tmp_path, monkeypatch):
+        app = _make_app(tmp_path)
+        client = _client(app)
+        _login(client)
+        _mount_cycle(monkeypatch, self._manual_review_payload("severity_gate"))
+        r = client.get(f"/task/{_CYCLE}/feat/m")
+        assert r.status_code == 200
+        # severity_gate → 只给风险下拉，不给 bug-fix 勾选
+        assert 'data-override-risk="abc123"' in r.text
+        assert 'data-override-bugfix="abc123"' not in r.text
+
+    def test_detail_other_cause_no_override_control(self, tmp_path, monkeypatch):
+        app = _make_app(tmp_path)
+        client = _client(app)
+        _login(client)
+        _mount_cycle(monkeypatch, self._manual_review_payload("similarity_gray"))
+        r = client.get(f"/task/{_CYCLE}/feat/m")
+        assert r.status_code == 200
+        # 其余成因 → 不显示 override，仅确认继续/放弃
+        assert 'data-confirm-target="feat/m"' in r.text
+        assert 'data-override-sha="abc123"' not in r.text
+
+    def test_detail_no_cause_no_override_control(self, tmp_path, monkeypatch):
+        # 存量无 cause → 保守降级，不显示 override，仅确认继续/放弃（闭环仍完整）
+        app = _make_app(tmp_path)
+        client = _client(app)
+        _login(client)
+        payload = _payload(
+            branch_results={"feat/m": _branch("feat/m", "MANUAL")},
+            action_required=[
+                {"sha": "abc123", "branch": "feat/m", "kind": "ManualReview",
+                 "reason": "存疑", "evidence": ["ev"]}
+            ],
+        )
+        _mount_cycle(monkeypatch, payload)
+        r = client.get(f"/task/{_CYCLE}/feat/m")
+        assert r.status_code == 200
+        assert 'data-confirm-target="feat/m"' in r.text
+        assert 'data-override-sha="abc123"' not in r.text
+
+    def test_detail_confirm_transparency_hint(self, tmp_path, monkeypatch):
+        # confirm 前明确提示「将发起一条独立手动同步任务」，避免误以为在原周期内收敛
+        app = _make_app(tmp_path)
+        client = _client(app)
+        _login(client)
+        _mount_cycle(monkeypatch, self._manual_review_payload("pending"))
+        r = client.get(f"/task/{_CYCLE}/feat/m")
+        assert r.status_code == 200
+        assert "独立手动同步" in r.text
 
     def test_detail_renders_patch_and_build_log_evidence(self, tmp_path, monkeypatch):
         app = _make_app(tmp_path)

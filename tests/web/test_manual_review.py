@@ -211,6 +211,29 @@ class TestOverrideApi:
         )
         assert r.status_code == 400
 
+    def test_override_clear_runs_cli_and_audits(self, tmp_path, monkeypatch):
+        app = _make_app(tmp_path)
+        client = _client(app)
+        _login(client)
+        calls = []
+
+        def fake_run(cmd, *args, **kwargs):
+            calls.append(cmd)
+            return CompletedProcess(cmd, 0, stdout="{}", stderr="")
+
+        monkeypatch.setattr("bsa_web.api.manual_review._run_cli", fake_run)
+        r = client.post(
+            "/api/override",
+            json={"sha": "abc123", "clear": True, "_csrf": _csrf(client)},
+        )
+        assert r.status_code == 200
+        assert "--clear" in calls[0]
+        assert "--is-bug-fix" not in calls[0]
+        assert "--risk" not in calls[0]
+        audit = [row for row in _audit_rows(app) if row["action"] == "override"]
+        assert len(audit) == 1
+        assert audit[0]["sha"] == "abc123"
+
 
 class TestConfirmApi:
     def test_confirm_triggers_direct_sync_and_audits(self, tmp_path):
