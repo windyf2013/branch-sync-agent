@@ -78,7 +78,22 @@ def task_detail(
         active_id = _active_task_id(request.app.state.db, cycle_id)
         if active_id is not None:
             return RedirectResponse(f"/tasks/{active_id}", status_code=303)
-        raise HTTPException(status_code=404, detail="目标分支不存在")
+        # decision 层 ManualReview：branch_results 无该 target，但 action_required
+        # 有该 target 的 ManualReview 项 → 降级渲染「仅人工项」视图，不再 404。
+        if any(
+            item.get("kind") == "ManualReview" and item.get("branch") == target
+            for item in (payload.get("action_required") or [])
+        ):
+            branch = {
+                "target_branch": target,
+                "worktree_path": "",
+                "status": "MANUAL",
+                "commits": [],
+                "patch_path": None,
+                "stop_reason": None,
+            }
+        else:
+            raise HTTPException(status_code=404, detail="目标分支不存在")
 
     # 按需读取各 commit build 日志尾部 + 型号脚本标签（复用 detail 的读取逻辑）
     enrich_build_outcomes(branch, settings.log_dir)

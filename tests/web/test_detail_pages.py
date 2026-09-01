@@ -1,10 +1,15 @@
 import re
+from datetime import datetime
 
 from fastapi.testclient import TestClient
 
 from bsa_web.app import create_app
 from bsa_web.auth import hash_password
 from bsa_web.rbac import OPERATOR
+
+# 历史页归档边界 = 最近周期启动时刻（UTC-naive）；2026-08-21T08:00Z 之后发起
+# 的终态任务保留在工作台，之前归档进历史页。
+_CUTOFF = datetime(2026, 8, 21, 8, 0, 0)
 
 
 def _make_app(tmp_path):
@@ -149,7 +154,7 @@ class TestHistory:
         _login(client)
         self._seed_tasks(app)
         monkeypatch.setattr(
-            "bsa_web.projection.window_start", lambda log_dir: "2026-08-20T22:00:00+08:00"
+            "bsa_web.projection.latest_cycle_start", lambda log_dir: _CUTOFF
         )
         r = client.get("/history")
         assert r.status_code == 200
@@ -167,7 +172,7 @@ class TestHistory:
         _login(client)
         self._seed_tasks(app)
         monkeypatch.setattr(
-            "bsa_web.projection.window_start", lambda log_dir: "2026-08-20T22:00:00+08:00"
+            "bsa_web.projection.latest_cycle_start", lambda log_dir: _CUTOFF
         )
         r = client.get("/history")
         assert r.status_code == 200
@@ -185,7 +190,7 @@ class TestHistory:
         _login(client)
         self._seed_tasks(app)
         monkeypatch.setattr(
-            "bsa_web.projection.window_start", lambda log_dir: "2026-08-20T22:00:00+08:00"
+            "bsa_web.projection.latest_cycle_start", lambda log_dir: _CUTOFF
         )
         r = client.get("/history")
         assert r.status_code == 200
@@ -200,7 +205,7 @@ class TestHistory:
         _login(client)
         self._seed_tasks(app)
         monkeypatch.setattr(
-            "bsa_web.projection.window_start", lambda log_dir: "2026-08-20T22:00:00+08:00"
+            "bsa_web.projection.latest_cycle_start", lambda log_dir: _CUTOFF
         )
         r = client.get("/history")
         assert r.status_code == 200
@@ -214,11 +219,39 @@ class TestHistory:
         client = _client(app)
         _login(client)
         self._seed_tasks(app)
-        monkeypatch.setattr("bsa_web.projection.window_start", lambda log_dir: None)
+        monkeypatch.setattr("bsa_web.projection.latest_cycle_start", lambda log_dir: None)
         r = client.get("/history")
         assert r.status_code == 200
         assert "暂无周期任务" in r.text
         assert "暂无同步任务" in r.text
+
+    def test_history_cutoff_is_cycle_started_at_not_window_start(self, tmp_path, monkeypatch):
+        # 回归：历史页归档边界与面板一致 = 周期启动时刻。8/30T15:00Z 在旧边界
+        # （窗口起点 08-30T22:00+08:00=14:00Z）之内、新边界（周期启动 08-30T16:00Z）
+        # 之前 → 应归档进历史页。
+        app = _make_app(tmp_path)
+        client = _client(app)
+        _login(client)
+        db = app.state.db
+        for target, created in (
+            ("br_old", "2026-08-30T15:00:00+00:00"),
+            ("br_new", "2026-08-31T02:00:00+00:00"),
+        ):
+            db.execute(
+                "INSERT INTO tasks(kind, user, target, src, fresh, state, error, "
+                "cycle_id, created_at, finished_at, source, shas) "
+                "VALUES ('sync',?,?,?,0,'succeeded',NULL,?,?,?,'web',NULL)",
+                ("alice", target, "br_src", f"manual-{target}", created, created),
+            )
+        db.commit()
+        monkeypatch.setattr(
+            "bsa_web.projection.latest_cycle_start",
+            lambda log_dir: datetime(2026, 8, 30, 16, 0, 0),
+        )
+        r = client.get("/history")
+        assert r.status_code == 200
+        assert "br_old" in r.text
+        assert "br_new" not in r.text
 
     def test_history_unauthenticated_redirects_to_login(self, tmp_path):
         client = _client(_make_app(tmp_path))
@@ -383,6 +416,40 @@ class TestTargetDetail:
         payload = _payload(branch_results={})
         monkeypatch.setattr("bsa_web.projection.load_cycle", lambda log_dir, cid: payload)
         # 只读路由 302 到权威页，权威页再因目标不存在而 404
+        r = client.get("/task/cycle-2026-08-20/nope")
+        assert r.status_code == 404
+
+    def test_task_detail_decision_layer_manual_review_not_404(self, tmp_path, monkeypatch):
+        # decision 层 ManualReview：branch_results 无该 target，但 action_required
+        # 有该 target 的 ManualReview 项 → 降级渲染「仅人工项」视图，不 404。
+        client = _client(_make_app(tmp_path))
+        _login(client)
+        payload = _payload(
+            branch_results={},
+            action_required=[
+                {
+                    "sha": "a1",
+                    "branch": "t",
+                    "kind": "ManualReview",
+                    "evidence": ["LLM 未判定（pending），转人工审核"],
+                }
+            ],
+        )
+        monkeypatch.setattr("bsa_web.projection.load_cycle", lambda log_dir, cid: payload)
+        r = client.get("/task/cycle-2026-08-20/t")
+        assert r.status_code == 200
+        assert "人工项" in r.text
+        assert "确认继续" in r.text
+        assert "a1" in r.text
+        # 无 worktree 现场 → 不暴露 WebSSH/推送操作按钮
+        assert "WebSSH" not in r.text
+        assert 'data-push-target' not in r.text
+
+    def test_task_detail_no_branch_no_manual_review_still_404(self, tmp_path, monkeypatch):
+        client = _client(_make_app(tmp_path))
+        _login(client)
+        payload = _payload(branch_results={}, action_required=[])
+        monkeypatch.setattr("bsa_web.projection.load_cycle", lambda log_dir, cid: payload)
         r = client.get("/task/cycle-2026-08-20/nope")
         assert r.status_code == 404
 
