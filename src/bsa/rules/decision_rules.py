@@ -11,6 +11,7 @@ class ConcludeThresholds(BaseModel):
     similarity_high: float = 0.90
     similarity_low: float = 0.50
     need_sync_target_types: list[str] = ["develop", "release", "fix"]
+    ineligible_target_types: list[str] = ["feature", "personal"]
 
 
 class SeverityRules(BaseModel):

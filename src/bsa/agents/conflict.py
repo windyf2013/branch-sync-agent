@@ -13,6 +13,37 @@ _HUNK_RE = re.compile(r"^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@")
 _NO_NEWLINE = "\\ No newline at end of file"
 
 
+def _snapshot_bytes(conflict_files: list[str], *, git: GitService) -> dict[str, bytes]:
+    """字节级快照冲突文件，回滚时字节无损恢复（不依赖 utf-8 假设）。"""
+    snapshots: dict[str, bytes] = {}
+    for rel in conflict_files:
+        path = git.repo_path / rel
+        if path.is_file():
+            snapshots[rel] = path.read_bytes()
+    return snapshots
+
+
+def _decode_text(data: bytes) -> str | None:
+    """把冲突文件字节解码为 Unicode 文本；非 UTF-8 编码统一转 UTF-8 合入。
+
+    git 冲突是字节级、按行合并的，冲突标记是 ASCII。RCIOS 源文件常见 GBK 中文
+    注释（非 UTF-8 字节）：utf-8 严格解码失败时用 gb18030（GBK 超集）兜底，二者
+    解出的中文都是正确 Unicode。两者都失败时（真机：GBK 主体 + 冲突标记行里 git
+    追加的 UTF-8 提交标题混编，任一种编码都解不了全文件）用 gb18030 + replace
+    兜底——主体中文正确解码，仅冲突标记提示行里的 UTF-8 片段变 U+FFFD，而该标记
+    行在解决时会被删除。含 NUL 字节才是真二进制（git 判定 binary 的依据），返回
+    None 转人工。所有非 UTF-8 内容解码后都按 UTF-8 写回（合入统一编码）。
+    """
+    if b"\x00" in data:
+        return None
+    for enc in ("utf-8", "gb18030"):
+        try:
+            return data.decode(enc)
+        except UnicodeDecodeError:
+            continue
+    return data.decode("gb18030", errors="replace")
+
+
 def _diff_files(diff_text: str) -> dict[str, str]:
     """Split a git-format unified diff into per-target-path patches."""
     patches: dict[str, str] = {}
@@ -132,6 +163,7 @@ class ConflictAgent:
         self._safety = safety
         self._max_attempts = max_attempts
         self._target_branch = target_branch
+        self.last_reason: str | None = None
 
     def resolve(
         self,
@@ -150,12 +182,30 @@ class ConflictAgent:
         """
         wgit = git or self._git
         tgt = target_branch or self._target_branch
+        self.last_reason = None
         try:
             self._safety.check_editable(conflict_files)
         except SafetyViolation:
             return None
+        # 冲突文件解码为 Unicode 文本（utf-8 → gb18030 → gb18030+replace 兜底），
+        # 非 UTF-8 内容统一转 UTF-8 合入。真二进制（含 NUL 字节）才转人工；RCIOS
+        # 常见 GBK 注释与 GBK+UTF-8 混编照常进入 LLM 解决，非冲突行字节无损保留。
+        texts: dict[str, str] = {}
+        for rel in conflict_files:
+            path = wgit.repo_path / rel
+            if not path.is_file():
+                continue
+            text = _decode_text(path.read_bytes())
+            if text is None:
+                self.last_reason = (
+                    f"冲突文件 {rel} 疑似二进制（含 NUL 字节），"
+                    "无法安全自动解决，转人工处理"
+                )
+                return None
+            texts[rel] = text
+        self._texts = texts
         for _ in range(self._max_attempts):
-            snapshots = wgit.snapshot(conflict_files)
+            snapshots = _snapshot_bytes(conflict_files, git=wgit)
             try:
                 resolution = self._attempt(commit, conflict_files, git=wgit, target_branch=tgt)
             except LLMUnavailable:
@@ -175,9 +225,8 @@ class ConflictAgent:
     ) -> ConflictResolution | None:
         markers: dict[str, str] = {}
         for rel in conflict_files:
-            path = git.repo_path / rel
-            if path.is_file():
-                markers[rel] = path.read_text(encoding="utf-8")
+            if rel in self._texts:
+                markers[rel] = self._texts[rel]
         ctx = ConflictContext(
             commit=commit,
             conflict_files=conflict_files,
@@ -212,8 +261,9 @@ class ConflictAgent:
                 if path not in allowed:
                     return False
                 target = git.repo_path / path
-                current = target.read_text(encoding="utf-8") if target.is_file() else ""
+                current = self._texts.get(path, "")
                 target.parent.mkdir(parents=True, exist_ok=True)
+                # 统一按 UTF-8 写回合入：非 UTF-8 源文件（GBK / 混编）解码后在此转码。
                 target.write_text(_apply_patch(current, patch), encoding="utf-8")
         except Exception:
             return False
@@ -228,6 +278,7 @@ class ConflictAgent:
             path = git.repo_path / rel
             if not path.is_file():
                 continue
+            # _apply 已按 UTF-8 写回，这里用 UTF-8 读回校验冲突标记是否清空。
             for line in path.read_text(encoding="utf-8").splitlines():
                 if line.startswith(_MARKERS):
                     return False
@@ -244,11 +295,14 @@ class ConflictAgent:
     def _rollback(
         self,
         conflict_files: list[str],
-        snapshots: dict[str, str],
+        snapshots: dict[str, bytes],
         *,
         git: GitService,
     ) -> None:
-        git.restore(snapshots)
+        for rel, data in snapshots.items():
+            path = git.repo_path / rel
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(data)
         for rel in conflict_files:
             if rel not in snapshots:
                 path = git.repo_path / rel

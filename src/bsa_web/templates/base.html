@@ -1,0 +1,76 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}BSA 分支维护工作台{% endblock %}</title>
+  <link rel="stylesheet" href="/static/style.css">
+  {% block extra_head %}{% endblock %}
+</head>
+<body>
+  <header class="topbar">
+    <div class="topbar-inner">
+      <div class="brand-mark">
+        <div class="brand-logo">BSA</div>
+        <div class="brand-copy">
+          <p class="eyebrow">Branch Sync Agent</p>
+          <h1>分支维护工作台</h1>
+        </div>
+      </div>
+      <div class="topbar-right">
+        <div class="user-chip-top">
+          <span class="user-avatar">{{ user.username[:1] | upper }}</span>
+          <span class="user-chip-name">{{ user.username }}</span>
+          <span class="user-chip-role">{{ '操作者' if user.role == 'operator' else '查看者' }}</span>
+        </div>
+        <form method="post" action="/logout" class="logout-form">
+          <input type="hidden" name="_csrf" value="{{ csrf }}">
+          <button type="submit" class="logout-btn">登出</button>
+        </form>
+      </div>
+    </div>
+  </header>
+
+  <div class="app">
+    <aside class="sidebar">
+      <nav class="sidebar-nav">
+        <div class="nav-group-label">工作台</div>
+        <a href="/" class="{% if request.url.path == '/' %}active{% endif %}">
+          <span class="nav-ico">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/></svg>
+          </span>
+          工作台
+        </a>
+        <a href="/history" class="{% if request.url.path.startswith('/history') %}active{% endif %}">
+          <span class="nav-ico">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 3"/></svg>
+          </span>
+          历史报告
+        </a>
+
+        <div class="nav-group-label">系统</div>
+        <a href="/audit" class="{% if request.url.path.startswith('/audit') %}active{% endif %}">
+          <span class="nav-ico">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/><path d="M9 13h6M9 17h6"/></svg>
+          </span>
+          操作日志
+        </a>
+        <a href="/settings" class="{% if request.url.path.startswith('/settings') %}active{% endif %}">
+          <span class="nav-ico">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+          </span>
+          设置
+        </a>
+      </nav>
+    </aside>
+
+    <main class="main">
+      {% block content %}{% endblock %}
+      <footer class="footer">
+        <span>Branch Sync Agent · 分支维护工作台</span>
+        <span>内部维护工具 · 仅授权用户可访问</span>
+      </footer>
+    </main>
+  </div>
+</body>
+</html>

@@ -19,7 +19,11 @@ class Settings(BaseSettings):
 
     # --- repo / git ---
     repo_path: str
+    # 完整分支清单：服务手动同步的型号解析与平台工作台下拉。
     branch_file: str
+    # cron 周期专用分支文件（带「主分支/业务分支」标注，决定同步拓扑）。
+    # 空 = 回退 branch_file，老部署零改动兼容。
+    cron_branch_file: str = ""
     worktree_root: str
 
     # --- LLM ---
@@ -70,6 +74,15 @@ class Settings(BaseSettings):
 
     # NOTE: required_models (型号) deliberately NOT in Settings — single
     # authoritative source is safety_rules.yaml, loaded by the rules module.
+
+    @property
+    def cron_branch_file_resolved(self) -> str:
+        """cron 读取的分支文件：显式配置则用之，否则回退 branch_file。
+
+        用 property 而非字段承载派生值，``Settings.model_fields`` 保持只含真实
+        env 映射项（避免 CRON_BRANCH_FILE_RESOLVED 这种不存在的环境变量）。
+        """
+        return self.cron_branch_file or self.branch_file
 
 
 def load_settings(*, env_file: str | None = ".env") -> Settings:

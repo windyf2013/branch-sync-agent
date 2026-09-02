@@ -1,0 +1,30 @@
+<script>
+(function () {
+  var csrf = "{{ csrf }}";
+  document.querySelectorAll("[data-restore-target]").forEach(function (btn) {
+    btn.addEventListener("click", function () {
+      var cycleId = btn.getAttribute("data-restore-cycle");
+      var target = btn.getAttribute("data-restore-target");
+      var sha = btn.getAttribute("data-restore-sha") || null;
+      var result = btn.parentElement.querySelector(".restore-result");
+      result.textContent = "恢复中…";
+      fetch("/api/restore", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ _csrf: csrf, cycle_id: cycleId, target: target, sha: sha }),
+      }).then(function (r) {
+        return r.json().then(function (json) {
+          return { ok: r.ok, json: json };
+        });
+      }).then(function (res) {
+        if (res.ok) {
+          result.textContent = "已恢复";
+          window.location.reload();
+        } else {
+          result.textContent = (res.json && res.json.detail) || "恢复失败";
+        }
+      });
+    });
+  });
+})();
+</script>

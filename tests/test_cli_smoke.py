@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import contextlib
 import json
 from datetime import datetime
 from pathlib import Path
+
+import pytest
 
 from bsa.cli import main
 from bsa.domain.models import (
@@ -57,8 +60,9 @@ def test_validate_config_exits_zero_with_env(monkeypatch, tmp_path):
     assert main(["validate-config"]) == 0
 
 
-def test_validate_config_missing_env_exits_two(monkeypatch):
+def test_validate_config_missing_env_exits_two(monkeypatch, tmp_path):
     monkeypatch.setattr("bsa.config.settings.os.environ", {})
+    monkeypatch.chdir(tmp_path)  # 隔离 cwd 的 .env，确保配置缺失
 
     assert main(["validate-config"]) == 2
 
@@ -115,8 +119,13 @@ def test_run_cycle_dry_run_full_cycle_produces_artifacts(tmp_path):
     assert (cycle_dir / "report.html").exists()
     assert (cycle_dir / "decisions.json").exists()
     assert (cycle_dir / "run.log").exists()
+    # G11：投影数据源落盘结构化 state.json
+    assert (cycle_dir / "state.json").exists()
+    state_json = json.loads((cycle_dir / "state.json").read_text(encoding="utf-8"))
+    assert state_json["status"] == "SUCCESS"
+    assert state_json["cycle_id"] == "cycle-2026-08-20"
     record = json.loads((cycle_dir / "cycle.json").read_text(encoding="utf-8"))
-    assert record["status"] == "REPORTED"
+    assert record["status"] == "SUCCESS"
     assert record["mail_status"] == "skipped"
     html = (cycle_dir / "report.html").read_text(encoding="utf-8")
     assert "检测信息" in html
@@ -142,7 +151,7 @@ def test_run_cycle_window_override_honored(tmp_path):
     assert recorded[0][1] == "2026-08-19T22:00:00+08:00"
 
 
-def test_manual_scan_passes_window_override_to_run_cycle(monkeypatch):
+def test_manual_scan_passes_window_override_to_run_cycle(monkeypatch, tmp_path):
     seen: dict = {}
 
     def fake_run_cycle(*args, **kwargs):
@@ -150,6 +159,9 @@ def test_manual_scan_passes_window_override_to_run_cycle(monkeypatch):
         seen["kwargs"] = kwargs
         return 0
 
+    env = valid_env()
+    env["LOG_DIR"] = str(tmp_path / "logs")
+    monkeypatch.setattr("bsa.config.settings.os.environ", env)
     monkeypatch.setattr("bsa.cli.run_cycle", fake_run_cycle)
 
     code = main(
@@ -165,6 +177,33 @@ def test_manual_scan_passes_window_override_to_run_cycle(monkeypatch):
     assert code == 0
     assert seen["kwargs"]["since"] == "2026-08-18T22:00:00+08:00"
     assert seen["kwargs"]["until"] == "2026-08-19T22:00:00+08:00"
+    # P2-7：登记/执行用同一 scan-* 周期 id
+    assert seen["kwargs"]["cycle_id"] == (
+        "scan-2026-08-18T22:00:00+08:00-2026-08-19T22:00:00+08:00"
+    )
+
+
+def test_manual_scan_registers_task_source_cli(monkeypatch, tmp_path):
+    # P2-7：manual-scan CLI 直启登记 kind=cycle 任务（source=cli）
+    import sqlite3
+
+    env = valid_env()
+    env["LOG_DIR"] = str(tmp_path / "logs")
+    monkeypatch.setattr("bsa.config.settings.os.environ", env)
+    monkeypatch.setattr("bsa.cli.run_cycle", lambda *args, **kw: 0)
+
+    assert main(
+        ["manual-scan", "--since", "2026-08-18T22:00:00+08:00",
+         "--until", "2026-08-19T22:00:00+08:00"]
+    ) == 0
+
+    conn = sqlite3.connect(str(tmp_path / "logs" / "platform.sqlite3"))
+    conn.row_factory = sqlite3.Row
+    row = conn.execute("SELECT * FROM tasks").fetchone()
+    assert row is not None
+    assert row["kind"] == "cycle"
+    assert row["source"] == "cli"
+    assert row["cycle_id"].startswith("scan-")
 
 
 def test_run_cycle_cli_passes_dry_run(monkeypatch):
@@ -180,10 +219,56 @@ def test_run_cycle_cli_passes_dry_run(monkeypatch):
     assert seen["kwargs"]["dry_run"] is True
 
 
-def test_run_cycle_missing_env_exits_one(monkeypatch):
+def test_run_cycle_missing_env_exits_one(monkeypatch, tmp_path):
     monkeypatch.setattr("bsa.config.settings.os.environ", {})
+    monkeypatch.chdir(tmp_path)  # 隔离 cwd 的 .env，确保配置缺失
 
     assert main(["run-cycle"]) == 1
+
+
+@pytest.mark.parametrize(
+    ("cycle_status", "expected_state"),
+    [("SUCCESS", "succeeded"), ("FAILED", "failed"), ("PARTIAL", "failed")],
+)
+def test_run_cycle_folds_terminal_status_into_task(
+    monkeypatch, tmp_path, cycle_status, expected_state
+):
+    # P0-2/G10：cycle 终态按 fold 规则折叠到 tasks.state，SUCCESS 才记 succeeded。
+    import sqlite3
+
+    env = valid_env()
+    env["LOG_DIR"] = str(tmp_path / "logs")
+    monkeypatch.setattr("bsa.config.settings.os.environ", env)
+    monkeypatch.setenv("BSA_CYCLE_ID", "cycle-2026-08-20")
+
+    def fake_run_cycle(date, **kwargs):
+        cid = kwargs.get("cycle_id") or f"cycle-{date}"
+        d = Path(tmp_path / "logs") / cid
+        d.mkdir(parents=True, exist_ok=True)
+        (d / "cycle.json").write_text(
+            json.dumps(
+                {
+                    "cycle_id": cid,
+                    "status": cycle_status,
+                    "report_path": None,
+                    "mail_status": None,
+                    "started_at": "2026-08-20T00:00:00",
+                    "finished_at": "2026-08-20T00:00:01",
+                }
+            ),
+            encoding="utf-8",
+        )
+        return 0
+
+    monkeypatch.setattr("bsa.cli.run_cycle", fake_run_cycle)
+
+    assert main(["run-cycle", "--date", "2026-08-20"]) == 0
+
+    conn = sqlite3.connect(str(tmp_path / "logs" / "platform.sqlite3"))
+    conn.row_factory = sqlite3.Row
+    row = conn.execute("SELECT * FROM tasks").fetchone()
+    assert row["state"] == expected_state
+    assert row["cycle_id"] == "cycle-2026-08-20"
 
 
 def test_run_cycle_checkpoint_resume_reuses_state(tmp_path):
@@ -214,7 +299,7 @@ def test_status_shows_latest_cycle(monkeypatch, tmp_path, capsys):
     assert main(["status"]) == 0
     captured = capsys.readouterr().out
     assert "cycle-2026-08-20" in captured
-    assert "REPORTED" in captured
+    assert "SUCCESS" in captured
 
 
 def test_render_html_report_three_sections(tmp_path):
@@ -352,3 +437,99 @@ def test_status_picks_latest_by_started_at(monkeypatch, tmp_path, capsys):
     captured = capsys.readouterr().out
     assert "cycle-2026-08-20" in captured
     assert "cycle-2026-08-21" not in captured
+
+
+def _sync_branch_result(status: str, target: str = "feat/x") -> BranchResult:
+    return BranchResult(
+        target_branch=target,
+        worktree_path="/wt",
+        status=status,
+        commits=[],
+        patch_path=None,
+        stop_reason=None,
+    )
+
+
+def _sync_env(monkeypatch, tmp_path, status: str):
+    """让 ``bsa sync`` 走到 run_sync_command 后按给定 status 收尾的 env。"""
+    env = valid_env()
+    env["LOG_DIR"] = str(tmp_path / "logs")
+    monkeypatch.setattr("bsa.config.settings.os.environ", env)
+    monkeypatch.setattr("bsa.cli.manual_cycle_id", lambda: "cycle-2026-08-24")
+    monkeypatch.setattr("bsa.cli.build_graph_context", lambda settings, cycle_id=None: object())
+    monkeypatch.setattr(
+        "bsa.cli.build_source_target_batch",
+        lambda ctx, src, target, since, until: (["abc123"], {}),
+    )
+    monkeypatch.setattr("bsa.cli.open_checkpointer", contextlib.nullcontext)
+    monkeypatch.setattr(
+        "bsa.cli.run_sync_command",
+        lambda ctx, cycle_id=None, target=None, batch=None, checkpointer=None: {
+            "branch_results": {"feat/x": _sync_branch_result(status)}
+        },
+    )
+
+
+def test_sync_success_returns_zero_on_stdout(monkeypatch, tmp_path, capsys):
+    _sync_env(monkeypatch, tmp_path, "SUCCESS")
+    assert main(["sync", "main", "feat/x"]) == 0
+    assert "SUCCESS" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("status", ["FAILED", "PARTIAL", "MANUAL"])
+def test_sync_bad_status_returns_nonzero_on_stderr(monkeypatch, tmp_path, capsys, status):
+    # I2：FAILED/PARTIAL/MANUAL 同步不得伪装成功，平台 runner 按非零返回码标记 failed
+    _sync_env(monkeypatch, tmp_path, status)
+    assert main(["sync", "main", "feat/x"]) == 1
+    captured = capsys.readouterr()
+    assert status in captured.err
+
+
+def test_sync_cli_direct_registers_task_source_cli(monkeypatch, tmp_path):
+    # CLI 直启（无 BSA_TASK_ID）→ 引擎 task_reporter 登记 source=cli 任务
+    import sqlite3
+
+    _sync_env(monkeypatch, tmp_path, "SUCCESS")
+    assert main(["sync", "main", "feat/x"]) == 0
+    conn = sqlite3.connect(str(tmp_path / "logs" / "platform.sqlite3"))
+    conn.row_factory = sqlite3.Row
+    row = conn.execute("SELECT * FROM tasks").fetchone()
+    assert row is not None
+    assert row["source"] == "cli"
+    assert row["kind"] == "sync"
+    assert row["target"] == "feat/x"
+    assert row["state"] == "succeeded"
+    assert row["cycle_id"] == "cycle-2026-08-24"
+
+
+def test_sync_executor_triggered_reuses_task_id(monkeypatch, tmp_path):
+    # executor 触发（BSA_TASK_ID 存在）→ 引擎复用该行回填 cycle_id，不 INSERT
+    import sqlite3
+
+    from bsa_web.db import init_db
+    from bsa_web.runner import enqueue_task
+
+    db = init_db(tmp_path / "logs" / "platform.sqlite3")
+    tid = enqueue_task(db, "sync", "alice", "feat/x", src="main")
+    _sync_env(monkeypatch, tmp_path, "SUCCESS")
+    monkeypatch.setenv("BSA_TASK_ID", str(tid))
+    assert main(["sync", "main", "feat/x"]) == 0
+    conn = sqlite3.connect(str(tmp_path / "logs" / "platform.sqlite3"))
+    conn.row_factory = sqlite3.Row
+    rows = conn.execute("SELECT * FROM tasks").fetchall()
+    assert len(rows) == 1
+    assert rows[0]["id"] == tid
+    assert rows[0]["source"] == "web"
+    assert rows[0]["cycle_id"] == "cycle-2026-08-24"
+
+
+def test_sync_failed_cli_direct_registers_failed(monkeypatch, tmp_path):
+    import sqlite3
+
+    _sync_env(monkeypatch, tmp_path, "FAILED")
+    assert main(["sync", "main", "feat/x"]) == 1
+    conn = sqlite3.connect(str(tmp_path / "logs" / "platform.sqlite3"))
+    conn.row_factory = sqlite3.Row
+    row = conn.execute("SELECT * FROM tasks").fetchone()
+    assert row["state"] == "failed"
+    assert row["source"] == "cli"

@@ -1,0 +1,261 @@
+{% extends "base.html" %}
+{% block title %}详情{% endblock %}
+{% block content %}
+{% if view == "cycle" %}
+
+<div class="page-head">
+  <div>
+    <h1>周期概览</h1>
+    <p class="page-sub"><code class="mono">{{ cycle_id }}</code></p>
+  </div>
+  {% if payload %}
+  <div class="page-head-actions">
+    <span class="badge {{ payload.status | lower }}">周期 {{ payload.status | status_zh }}</span>
+    {% if all_branches %}
+      {% set _succ = all_branches | selectattr("status", "equalto", "SUCCESS") | list | length %}
+      {% set _part = all_branches | selectattr("status", "equalto", "PARTIAL") | list | length %}
+      {% set _fail = all_branches | selectattr("status", "equalto", "FAILED") | list | length %}
+      {% set _man = all_branches | selectattr("status", "equalto", "MANUAL") | list | length %}
+      <span class="muted">分支：成功 {{ _succ }} · 停批 {{ _part }} · 失败 {{ _fail }} · 待处理 {{ _man }}</span>
+    {% endif %}
+  </div>
+  {% endif %}
+</div>
+{% if running %}
+  <p class="callout pending">该周期进行中，报告尚未生成。</p>
+{% else %}
+<p class="breadcrumb"><a href="/">工作台</a><span class="muted"> / 周期概览</span></p>
+
+<section class="panel">
+<div class="panel-head"><h2>周期结果</h2><span class="panel-note">{{ cycle_id }}{% if payload %} · {{ payload.status | status_zh }}{% endif %}</span></div>
+  <div class="panel-body">
+    <div class="branch-hero-meta" style="margin-top:0">
+      <span><span class="k">源分支</span> {% if sources %}{{ sources | join("、") }}{% else %}—{% endif %}</span>
+      <span><span class="k">目标分支</span> {% if targets %}{{ targets | join("、") }}{% else %}—{% endif %}</span>
+      {% if topology_degraded %}<span class="muted">拓扑字段缺失，仅展示检出过 commit 的分支</span>{% endif %}
+      {% if payload and payload.get("scan_window") %}<span><span class="k">扫描窗口</span> {{ (payload["scan_window"] | first) or "—" }} → {{ (payload["scan_window"] | last) or "—" }}</span>{% endif %}
+    </div>
+
+    {% set d = destinations %}
+    <div class="eq-line" style="margin-top:16px">
+      <span class="eq-total">{{ d.detected }}</span>
+      <span class="eq-total-label">检测 commit</span>
+      <span class="eq-op">=</span>
+      <span class="eq-term"><span class="eq-dot synced"></span><span class="t-label">同步</span><span class="t-num synced">{{ d.synced }}</span></span>
+      <span class="eq-op">+</span>
+      <span class="eq-term"><span class="eq-dot skipped"></span><span class="t-label">跳过</span><span class="t-num skipped">{{ d.skipped }}</span></span>
+      <span class="eq-op">+</span>
+      <span class="eq-term"><span class="eq-dot review"></span><span class="t-label">待确认</span><span class="t-num review">{{ d.review }}</span></span>
+      <span class="eq-op">+</span>
+      <span class="eq-term"><span class="eq-dot other"></span><span class="t-label">未处理</span><span class="t-num other">{{ d.unhandled }}</span></span>
+    </div>
+
+    <div class="stat-grid">
+      <div class="stat-card synced"><div class="n">{{ d.synced }}</div><div class="l">同步</div><div class="sub">已应用到目标分支</div></div>
+      <div class="stat-card skipped"><div class="n">{{ d.skipped }}</div><div class="l">跳过</div><div class="sub">已包含 {{ decision_breakdown.AlreadyIncluded }} · 不适用 {{ decision_breakdown.OutOfScope }}</div></div>
+      <div class="stat-card review"><div class="n">{{ d.review }}</div><div class="l">待确认</div><div class="sub">需人工裁决</div></div>
+      <div class="stat-card other"><div class="n">{{ d.unhandled }}</div><div class="l">未处理</div><div class="sub">无下落 · 需排查</div></div>
+    </div>
+
+    {% if d.unhandled %}
+    <p class="muted" style="margin-top:12px">「未处理」= 检测到但既未同步、未判定跳过、也未待确认的 commit，需排查归因。</p>
+    {% elif not d.synced and not d.review and d.detected %}
+    <p class="muted" style="margin-top:12px">本周期检测到 {{ d.detected }} 个 commit，全部落入「已包含 / 不适用」，因此同步数为 0——这是正常结果，无需同步动作。</p>
+    {% endif %}
+  </div>
+</section>
+
+{% if cycle_failures %}
+<section class="panel">
+<div class="panel-head"><h2>周期失败原因</h2></div>
+  <div class="panel-body">
+    <ul class="evidence-list">
+      {% for r in cycle_failures %}<li>{{ r }}</li>{% endfor %}
+    </ul>
+  </div>
+</section>
+{% endif %}
+
+<section class="panel">
+<div class="panel-head"><h2>需人工处理</h2></div>
+  <div class="panel-body">
+{% if action_required %}
+  <ul class="todo-list">
+    {% for item in action_required %}
+    <li class="todo-item">
+      {% if item.error %}
+        <span class="badge failed">{{ item.node }} 节点错误</span> &mdash; {{ item.error }}
+      {% else %}
+        <span class="badge manual">{{ item.kind | kind_zh }}</span>
+        <a href="/cycle/{{ payload.cycle_id }}/commit/{{ item.sha }}?target={{ item.branch }}"><code class="mono">{{ item.sha }}</code></a>
+        <span class="todo-title">→ {{ item.branch }}</span>
+        {% if item.evidence %}<ul>{% for e in item.evidence %}<li class="muted">{{ e }}</li>{% endfor %}</ul>{% endif %}
+      {% endif %}
+    </li>
+    {% endfor %}
+  </ul>
+  {% else %}<p>本周期无需人工处理项。</p>{% endif %}
+  </div>
+</section>
+
+<section class="panel">
+<div class="panel-head"><h2>已成功同步</h2></div>
+  <div class="panel-body">
+{% if synced_branches %}
+  <ul class="todo-list">
+    {% for b in synced_branches %}
+    <li class="todo-item">
+      <span class="badge success">{{ b.status | status_zh }}</span>
+      <a href="/task/{{ payload.cycle_id }}/{{ b.target_branch }}" class="todo-title">{{ b.target_branch }}</a>
+      <span class="muted">{{ b.worktree_path }}</span>
+      {% if b.patch_path %}<a href="/cycle/{{ payload.cycle_id }}/target/{{ b.target_branch }}/patch">下载完整 patch</a>{% endif %}
+    </li>
+    {% endfor %}
+  </ul>
+  {% else %}<p>本周期无成功同步的目标分支。</p>{% endif %}
+  <p class="muted">全部目标：
+    {% for b in all_branches %}
+    <a href="/task/{{ payload.cycle_id }}/{{ b.target_branch }}">{{ b.target_branch }}</a>（{{ b.status | status_zh }}）&nbsp;
+    {% endfor %}
+  </p>
+  </div>
+</section>
+
+<section class="panel">
+<div class="panel-head"><h2>检测信息</h2></div>
+  <div class="panel-body">
+{% if sources %}
+  {% for src in sources %}
+  <div class="detect-group">
+    <div class="detect-group-head"><h3>{{ src }}</h3>
+      <span class="muted">{% if detected_by_source.get(src) %}{{ detected_by_source[src] | length }} 个 commit{% else %}0 个 commit{% if src in zero_detected_sources %}（本期无新 commit，正常）{% endif %}{% endif %}</span>
+    </div>
+    {% if detected_by_source.get(src) %}
+    <div class="table-wrap">
+    <table>
+      <thead><tr><th>commit</th><th>说明</th><th>改动文件</th></tr></thead>
+      <tbody>
+        {% for c in detected_by_source[src] %}
+        <tr>
+          <td><a href="/cycle/{{ payload.cycle_id }}/commit/{{ c.sha }}"><code class="mono">{{ c.sha[:10] }}</code></a></td>
+          <td class="commit-message" title="{{ c.message }}">{{ c.message }}</td>
+          <td class="num">{{ c.changed_files | length }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    </div>
+    {% endif %}
+  </div>
+  {% endfor %}
+{% elif detected_commits %}
+  <div class="table-wrap">
+  <table>
+    <thead><tr><th>commit</th><th>说明</th><th>来源分支</th><th>改动文件</th></tr></thead>
+    <tbody>
+      {% for c in detected_commits %}
+      <tr>
+        <td><a href="/cycle/{{ payload.cycle_id }}/commit/{{ c.sha }}"><code class="mono">{{ c.sha[:10] }}</code></a></td>
+        <td class="commit-message" title="{{ c.message }}">{{ c.message }}</td>
+        <td>{{ c.source_branch }}</td>
+        <td class="num">{{ c.changed_files | length }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  </div>
+{% else %}<p>本周期未检测到 commit。</p>{% endif %}
+  </div>
+</section>
+{% endif %}
+
+{% elif view == "commit" %}
+
+<p class="breadcrumb">
+  <a href="/cycle/{{ payload.cycle_id }}">周期概览</a>
+  {% if target %}<span class="muted"> / </span><a href="/task/{{ payload.cycle_id }}/{{ target }}">目标分支</a>{% endif %}
+  <span class="muted"> / commit {{ commit.sha[:10] }}</span>
+</p>
+<div class="branch-hero">
+  <div class="branch-hero-head">
+    <h1>commit</h1>
+    <code class="mono">{{ commit.sha }}</code>
+  </div>
+  <div class="branch-hero-meta">
+    <span><span class="k">作者</span> {{ commit.author }}</span>
+    <span><span class="k">时间</span> {{ commit.committed_at | localtime }}</span>
+    <span><span class="k">来源分支</span> {{ commit.source_branch }}</span>
+  </div>
+</div>
+{% if target %}
+<p class="muted"><a href="/task/{{ payload.cycle_id }}/{{ target }}">&larr; 返回目标分支</a></p>
+{% else %}
+<p class="muted"><a href="/cycle/{{ payload.cycle_id }}">&larr; 返回周期概览</a></p>
+{% endif %}
+
+<section class="panel">
+<div class="panel-head"><h2>基本信息</h2></div>
+  <div class="panel-body">
+<p class="commit-message">{{ commit.message }}</p>
+  <p class="muted">改动文件：{{ commit.changed_files | join(", ") }}</p>
+  </div>
+</section>
+
+<section class="panel">
+<div class="panel-head"><h2>结论</h2></div>
+  <div class="panel-body">
+{% if conclusions %}
+  <ul class="todo-list">
+    {% for t, concl in conclusions %}
+    <li class="todo-item">
+      <span class="todo-title">{{ t }}</span> →
+      <span class="badge">{{ concl.kind | kind_zh }}</span>
+      <span class="muted">（置信度 {{ concl.confidence }}）</span>
+      {% if concl.evidence %}<ul>{% for e in concl.evidence %}<li class="muted">{{ e }}</li>{% endfor %}</ul>{% endif %}
+    </li>
+    {% endfor %}
+  </ul>
+  {% else %}<p>无结论记录。</p>{% endif %}
+  </div>
+</section>
+
+<section class="panel">
+<div class="panel-head"><h2>处理结果</h2></div>
+  <div class="panel-body">
+{% if commit_results %}
+  {% for target, cr in commit_results %}
+    <div class="commit-result">
+      <span class="badge {{ cr.cherry_pick | lower }}">{{ cr.cherry_pick | status_zh }}</span>
+      <code class="mono">{{ target }}</code>
+      {% if cr.conflict_resolution %}
+        <span class="badge ok">冲突已解决</span>
+        <div class="muted">冲突文件：{{ cr.conflict_resolution.files | join(", ") }}</div>
+        {% if cr.conflict_resolution.agent_reason %}<div class="muted">智能体说明：{{ cr.conflict_resolution.agent_reason }}</div>{% endif %}
+      {% elif cr.cherry_pick == "CONFLICT" %}
+        <span class="badge failed">冲突解决失败</span>
+        {% if cr.resolution_error %}<div class="muted">原因：{{ cr.resolution_error }}</div>{% endif %}
+      {% endif %}
+      {% if cr.build %}
+        <div class="muted">编译：
+          {% for model, o in cr.build.items() %}{{ o.status }}{% if not loop.last %}、{% endif %}{% endfor %}
+        </div>
+      {% endif %}
+    </div>
+  {% endfor %}
+{% else %}<p>该 commit 无处理记录。</p>{% endif %}
+  </div>
+</section>
+
+<section class="panel">
+<div class="panel-head"><h2>diff</h2></div>
+  <div class="panel-body">
+{% if diff_preview %}
+    <pre class="diff-pre">{{ diff_preview }}</pre>
+    <p class="muted">{% if diff_truncated %}已截断至前 500 行。{% endif %}
+      <a href="/cycle/{{ payload.cycle_id }}/commit/{{ commit.sha }}/patch">下载完整 diff</a></p>
+  {% else %}<p>该 commit 无 diff 内容。</p>{% endif %}
+  </div>
+</section>
+
+{% endif %}
+{% endblock %}

@@ -1,10 +1,11 @@
 from __future__ import annotations
 
+import sqlite3
 from pathlib import Path
 
 from bsa.domain.models import CherryPickResult, Conclusion4
 from bsa.graph.nodes import GraphContext
-from bsa.graph.workflow import build_workflow, make_checkpointer, thread_config
+from bsa.graph.workflow import build_workflow, make_checkpointer, open_checkpointer, thread_config
 from bsa.rules import Classification
 from tests.test_graph_nodes import (
     DEVELOP,
@@ -19,11 +20,15 @@ from tests.test_graph_nodes import (
 TARGET2 = "br_v4.33_5200_CU_develop_release_p361_20260625"
 
 BRANCH_MD_TWO = f"""# 分支清单
+## 1 RCIOS代码库
+- 路径：rcios
 
-## 组网
-- {DEVELOP}
+### 1.1 4.34 主分支
 - {TARGET}
 - {TARGET2}
+
+### 1.2 4.34 业务分支
+- {DEVELOP}
 """
 
 
@@ -111,8 +116,47 @@ def cherry_picked(git: FakeGit) -> list[str]:
     return [args[0] for name, args in git.calls if name == "cherry_pick"]
 
 
+def test_baseline_failure_blocks_branch_no_cherry_pick(tmp_path):
+    write_branch_md(tmp_path)
+    ctx = batch_ctx(tmp_path, shas=["a1"])
+    ctx.runner = FakeRunner(success=False)
+
+    out = run(build_workflow(ctx), base_state())
+
+    branch = out["branch_results"][TARGET]
+    assert branch.status == "FAILED"
+    assert "baseline build failed" in (branch.stop_reason or "")
+    assert branch.baseline["RTL9617C"].status == "FAILED"
+    # 基线失败 → 不 cherry-pick、不生成 patch
+    assert cherry_picked(worktree_git_for(ctx, TARGET)) == []
+    assert branch.patch_path is None
+    assert out["status"] == "FAILED"
+
+
+def test_baseline_success_proceeds_to_cherry_pick(tmp_path):
+    write_branch_md(tmp_path)
+    ctx = batch_ctx(tmp_path, shas=["a1"])
+
+    out = run(build_workflow(ctx), base_state())
+
+    assert out["branch_results"][TARGET].baseline["RTL9617C"].status == "OK"
+    assert cherry_picked(worktree_git_for(ctx, TARGET)) == ["a1"]
+    assert out["branch_results"][TARGET].status == "SUCCESS"
+
+
 def test_thread_config_binds_cycle_id():
     assert thread_config("cycle-x") == {"configurable": {"thread_id": "cycle-x"}}
+
+
+def test_checkpointer_db_uses_wal(tmp_path):
+    # 平台投影并发读与周期写入撞锁 → checkpoint 库开启 WAL（任务 3）
+    db = tmp_path / "state.sqlite3"
+    with open_checkpointer(str(db)) as cp:
+        pass
+    conn = sqlite3.connect(str(db))
+    journal = conn.execute("PRAGMA journal_mode").fetchone()[0]
+    conn.close()
+    assert journal == "wal"
 
 
 def test_empty_check_routes_to_report(tmp_path):
@@ -130,7 +174,7 @@ def test_empty_check_routes_to_report(tmp_path):
     assert out["report"] is not None
     assert out["report"].summary["commits_detected"] == 1
     assert out["report"].summary["branches"] == []
-    assert out["status"] == "REPORTED"
+    assert out["status"] == "SUCCESS"
 
 
 def test_single_branch_success_patch_and_report(tmp_path):
@@ -139,7 +183,7 @@ def test_single_branch_success_patch_and_report(tmp_path):
 
     out = run(build_workflow(ctx), base_state())
 
-    assert out["status"] == "REPORTED"
+    assert out["status"] == "SUCCESS"
     assert out["report"] is not None
     branch = out["branch_results"][TARGET]
     assert branch.status == "SUCCESS"
@@ -148,9 +192,9 @@ def test_single_branch_success_patch_and_report(tmp_path):
     assert branch.commits[0].build["RTL9617C"].status == "OK"
 
 
-def test_empty_cherry_pick_still_builds(tmp_path):
-    # 真机测试: worktree 复用导致 cherry_pick 判 EMPTY（内容已应用），
-    # 但当前 worktree 是否编译通过从未验证。EMPTY 也必须走 build 验证。
+def test_empty_cherry_pick_skips_build(tmp_path):
+    # 不变量 #17：建立 worktree 时 baseline_build 已全量编译，EMPTY（内容已应用）
+    # 未引入改动，跳过编译直接下一个 commit，不产生 build 记录。
     write_branch_md(tmp_path)
     ctx = batch_ctx(tmp_path, shas=["a1"])
     wg = worktree_git_for(ctx, TARGET)
@@ -158,12 +202,13 @@ def test_empty_cherry_pick_still_builds(tmp_path):
 
     out = run(build_workflow(ctx), base_state())
 
-    assert out["status"] == "REPORTED"
+    assert out["status"] == "SUCCESS"
     branch = out["branch_results"][TARGET]
     assert branch.commits[0].cherry_pick == "EMPTY"
-    assert "RTL9617C" in branch.commits[0].build
-    assert branch.commits[0].build["RTL9617C"].status == "OK"
+    assert branch.commits[0].build == {}
     assert branch.patch_path is not None
+    # 全程只发生 baseline 编译，没有 commit 编译。
+    assert [c["model"] for c in ctx.runner.build_calls] == ["RTL9617C"]
 
 
 def test_multi_commit_order_per_branch(tmp_path):
@@ -183,8 +228,12 @@ def test_per_model_serial_loop(tmp_path):
 
     out = run(build_workflow(ctx), base_state())
 
+    # baseline（prepare 后）先串行两模型，commit build 再串行两模型。
     models = [call["model"] for call in ctx.runner.build_calls]
-    assert models == ["RTL9617C", "RTL9607F"]
+    assert models == ["RTL9617C", "RTL9607F", "RTL9617C", "RTL9607F"]
+    baseline = out["branch_results"][TARGET].baseline
+    assert baseline["RTL9617C"].status == "OK"
+    assert baseline["RTL9607F"].status == "OK"
     build = out["branch_results"][TARGET].commits[0].build
     assert build["RTL9617C"].status == "OK"
     assert build["RTL9607F"].status == "OK"
@@ -202,7 +251,7 @@ def test_cycle_rerun_prepare_reuses_existing_worktree(tmp_path):
 
     out = run(build_workflow(ctx), base_state())
 
-    assert out["status"] == "REPORTED"
+    assert out["status"] == "SUCCESS"
     assert out["branch_results"][TARGET].status == "SUCCESS"
     assert not any(name == "add_worktree" for name, args in ctx.git.calls)
 
@@ -399,7 +448,7 @@ def test_cherry_pick_failed_routes_to_report_not_failfast(tmp_path):
     out = run(build_workflow(ctx), base_state())
 
     assert ctx.llm.calls == []
-    assert out["status"] == "REPORTED"
+    assert out["status"] == "PARTIAL"
     assert out["branch_results"][TARGET].stop_reason is None
     assert out["branch_results"][TARGET].commits[0].cherry_pick == "FAILED"
 
@@ -408,7 +457,8 @@ def test_fix_build_fails_after_max_attempts_then_failfast(tmp_path):
     write_branch_md(tmp_path)
     ctx = batch_ctx(tmp_path, shas=["a1", "a2"])
     ctx.llm = FakeLLM(related=True)
-    ctx.runner = FakeRunner(success=False)
+    # baseline（第 1 次 build）成功；cherry-pick 后 commit build 失败，走 fix_build。
+    ctx.runner = FakeRunner(success_until=1)
 
     out = run(build_workflow(ctx), base_state())
 

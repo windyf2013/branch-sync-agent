@@ -5,6 +5,7 @@ from pathlib import Path
 
 from bsa.agents.sync_decision import SyncDecisionAgent
 from bsa.domain.models import CommitInfo, SyncDecision
+from bsa.rules.classify import compute_fingerprint
 
 
 def make_commit(**overrides: object) -> CommitInfo:
@@ -130,6 +131,66 @@ def test_human_override_takes_priority(tmp_path: Path) -> None:
     assert result[sha].is_bug_fix is True
     assert result[sha].reason == "manual review says bug"
     assert llm.calls == []
+
+
+def test_human_override_matches_by_fingerprint_after_rebase(tmp_path: Path) -> None:
+    """rebase 后 sha 漂移、内容不变 → fingerprint 仍命中人工覆盖（决策 5.1）。"""
+    path = tmp_path / "judgments.json"
+    message = "[BUG] fix null deref\n\nrefactor it"
+    fp = compute_fingerprint(message, "pid123")
+    path.write_text(
+        json.dumps(
+            {
+                f"fp:{fp}": {
+                    "is_bug_fix": False,
+                    "reason": "人工判定非 bug-fix，rebase 后仍命中",
+                    "recognition_source": "agent:not-bug-fix",
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    llm = FakeLLM()
+    agent = SyncDecisionAgent(llm, path)
+    # rebase 后新 sha，内容不变 → patch_id 仍 pid123
+    commit = make_commit(
+        sha="newsha0000000000000000000000000000000000", message=message, patch_id="pid123"
+    )
+
+    result = agent.run([commit])
+
+    assert result[commit.sha].is_bug_fix is False
+    assert result[commit.sha].reason == "人工判定非 bug-fix，rebase 后仍命中"
+    assert llm.calls == []
+
+
+def test_resolve_risks_matches_by_fingerprint_after_rebase(tmp_path: Path) -> None:
+    path = tmp_path / "judgments.json"
+    message = "[BUG] fix null deref\n\nrefactor it"
+    fp = compute_fingerprint(message, "pid123")
+    path.write_text(
+        json.dumps(
+            {
+                f"fp:{fp}": {
+                    "is_bug_fix": True,
+                    "reason": "manual",
+                    "recognition_source": "agent:bug-fix",
+                    "risk": "high",
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    llm = FakeLLM()
+    agent = SyncDecisionAgent(llm, path)
+    commit = make_commit(
+        sha="newsha0000000000000000000000000000000000", message=message, patch_id="pid123"
+    )
+
+    result = agent.resolve_risks([commit])
+
+    assert result == {commit.sha: "high"}
+    assert llm.severity_calls == []
 
 
 def test_human_edits_file_between_runs(tmp_path: Path) -> None:
@@ -324,6 +385,35 @@ def test_minimal_human_entry_defaults_source(tmp_path: Path) -> None:
     assert result[sha].recognition_source == "agent:bug-fix"
     assert result[sha].needs_agent is False
     assert llm.calls == []
+
+
+def test_run_risk_only_judgment_does_not_short_circuit_llm(tmp_path: Path) -> None:
+    # 只写 risk 的 judgment（无 is_bug_fix 键）不得被 Agent 层当非 bug-fix 短路；
+    # 交 LLM 判 is_bug_fix，仅把 entry 的 risk 当覆盖应用，不把 needs_agent 压 False。
+    sha = "add5e0000000000000000000000000000000000"
+    path = tmp_path / "judgments.json"
+    path.write_text(json.dumps({sha: {"risk": "high", "recognition_source": "manual-override"}}), encoding="utf-8")
+    llm = FakeLLM()  # 默认返回 is_bug_fix=True
+    agent = SyncDecisionAgent(llm, path)
+
+    result = agent.run([make_commit(sha=sha)])
+
+    assert llm.calls == [make_commit(sha=sha)]
+    assert result[sha].is_bug_fix is True
+    assert result[sha].risk == "high"
+
+
+def test_run_risk_only_judgment_preserves_rule_layer_risk(tmp_path: Path) -> None:
+    # 规则层 prior_risks 优先级仍最高，压过 entry 的 risk。
+    sha = "add5e0000000000000000000000000000000000"
+    path = tmp_path / "judgments.json"
+    path.write_text(json.dumps({sha: {"risk": "high", "recognition_source": "manual-override"}}), encoding="utf-8")
+    llm = FakeLLM()
+    agent = SyncDecisionAgent(llm, path)
+
+    result = agent.run([make_commit(sha=sha)], prior_risks={sha: "medium"})
+
+    assert result[sha].risk == "medium"
 
 
 def test_run_preserves_rule_layer_high_over_llm(tmp_path: Path) -> None:

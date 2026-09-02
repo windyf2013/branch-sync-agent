@@ -3,6 +3,16 @@ from typing import Any, Literal
 
 from pydantic import BaseModel
 
+ReviewCause = Literal[
+    "pending",
+    "severity_gate",
+    "fix_missing",
+    "function_renamed",
+    "similarity_gray",
+    "symbols_missing",
+    "unknown_branch_type",
+]
+
 
 class CommitInfo(BaseModel):
     sha: str
@@ -16,6 +26,7 @@ class CommitInfo(BaseModel):
     issue_ids: list[str]
     source_branch: str
     homologous_section: str
+    diff_stat: dict[str, int] | None = None
 
 
 class SyncDecision(BaseModel):
@@ -31,6 +42,8 @@ class Conclusion4(BaseModel):
     kind: Literal["NeedSync", "AlreadyIncluded", "ManualReview", "OutOfScope"]
     evidence: list[str]
     confidence: Literal["high", "medium", "low"]
+    # ManualReview 的结构化成因（纯标注，不改判定结果/优先级）；非 ManualReview 为 None。
+    cause: ReviewCause | None = None
 
 
 class ConflictResolution(BaseModel):
@@ -51,6 +64,7 @@ class BuildOutcome(BaseModel):
     errors: list[str]
     agent_attempts: int
     fix_diff: str | None
+    reason: str | None = None
 
 
 class CommitResult(BaseModel):
@@ -58,6 +72,9 @@ class CommitResult(BaseModel):
     cherry_pick: Literal["OK", "CONFLICT", "FAILED", "EMPTY"]
     conflict_resolution: ConflictResolution | None
     build: dict[str, BuildOutcome]
+    # 冲突解决失败原因（如冲突文件疑似二进制无法安全自动解决）；随 commit 落投影，
+    # 供目标详情/commit 详情透出，避免转人工原因只藏在周期级 action_required 里。
+    resolution_error: str | None = None
 
 
 class BranchResult(BaseModel):
@@ -67,6 +84,7 @@ class BranchResult(BaseModel):
     commits: list[CommitResult]
     patch_path: str | None
     stop_reason: str | None
+    baseline: dict[str, BuildOutcome] | None = None
 
 
 class ErrorRecord(BaseModel):

@@ -15,6 +15,7 @@ from bsa.git.service import GitService
 from bsa.graph.nodes import GraphContext
 from bsa.rules import (
     SafetyEnforcer,
+    load_build_rules,
     load_decision_rules,
     load_safety_rules,
 )
@@ -45,6 +46,7 @@ def build_graph_context(
     rules_dir = rules_dir or _bundled_rules_dir()
     safety = SafetyEnforcer(load_safety_rules(rules_dir / "safety_rules.yaml"))
     decision_rules = load_decision_rules(rules_dir / "decision_rules.yaml")
+    build_rules = load_build_rules(rules_dir / "build_rules.yaml")
 
     executor = WhitelistExecutor(SubprocessExecutor())
     git = GitService(executor=executor, repo_path=Path(settings.repo_path))
@@ -57,7 +59,10 @@ def build_graph_context(
     # 误拦 "git command not whitelisted: 'docker'"）。docker 由 BuildRunner
     # 独立管控，不属 git 白名单范畴。
     runner = BuildRunner(
-        executor=SubprocessExecutor(), settings=settings, cycle_id=cycle_id
+        executor=SubprocessExecutor(),
+        settings=settings,
+        cycle_id=cycle_id,
+        build_types=build_rules.build_types,
     )
     sync_decision_agent = SyncDecisionAgent(
         llm=llm,
@@ -87,5 +92,6 @@ def build_graph_context(
         build_agent=build_agent,
         safety=safety,
         decision_rules=decision_rules,
+        build_rules=build_rules,
         llm=llm,
     )

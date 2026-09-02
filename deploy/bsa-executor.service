@@ -1,0 +1,33 @@
+# bsa-executor.service — BSA 任务执行守护进程（用户级 systemd 服务）
+#
+# 负责：消费 tasks 表 queued 任务（sync/rerun/cycle）执行 V1 CLI，
+#       内置每日 0:00 周期调度器，启动对账（有进度→interrupted / 无进度→failed）。
+# Web 平台（bsa-web）是纯管理/UI 层，不 spawn CLI、不持有执行线程；
+# 平台重启不影响任务执行。
+#
+# 部署位置（用户级，Linger 开启后开机自启）：
+#   mkdir -p ~/.config/systemd/user
+#   cp deploy/bsa-executor.service ~/.config/systemd/user/
+#   systemctl --user daemon-reload
+#   systemctl --user enable --now bsa-executor
+# 注意：项目 .env 从 WorkingDirectory 读取，此服务必须与 bsa-web 使用同一目录。
+
+[Unit]
+Description=BSA 任务执行守护进程（V1 CLI executor）
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/projects/branch-sync-agent/.worktrees/feat-v2-web-platform
+Environment=PYTHONUNBUFFERED=1
+ExecStart=%h/projects/branch-sync-agent/.worktrees/feat-v2-web-platform/.venv/bin/python -m bsa_web.executor
+Restart=always
+RestartSec=5
+TimeoutStopSec=30
+KillSignal=SIGINT
+# KillMode=control-group（默认）：stop/restart 时同 cgroup 的子 CLI 一起终止，
+# executor 重启后启动对账把有进度的任务标 interrupted（可续跑），不误标失败。
+
+[Install]
+WantedBy=default.target

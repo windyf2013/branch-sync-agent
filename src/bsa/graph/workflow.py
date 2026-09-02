@@ -18,6 +18,8 @@ from bsa.graph.nodes import (
     GraphContext,
     _branch_results,
     _find_commit,
+    _target_models,
+    baseline_build,
     build,
     cherry_pick,
     detect_commits,
@@ -66,6 +68,9 @@ def open_checkpointer(conn_string: str) -> Iterator[SqliteSaver]:
     """
     conn = sqlite3.connect(conn_string, check_same_thread=False)
     try:
+        # WAL + busy_timeout: 平台投影并发读与周期写入不撞锁（任务 3）
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA busy_timeout=5000")
         yield _new_saver(conn)
     finally:
         conn.close()
@@ -83,6 +88,9 @@ def _next_target(state: dict) -> str | None:
     for target in state.get("batches") or {}:
         branch = (state.get("branch_results") or {}).get(target)
         if branch is None or branch.patch_path is None:
+            # 跳过已标记 FAILED 的分支（基线编译失败阻塞），避免重复选中死循环。
+            if branch is not None and branch.status == "FAILED":
+                continue
             return target
     return None
 
@@ -124,14 +132,14 @@ def _built_outcomes(state: dict) -> dict[str, BuildOutcome]:
 
 
 def _remaining_models(state: dict, ctx: GraphContext) -> bool:
-    models = ctx.safety.required_models()
+    models = _target_models(state, ctx)
     built = set(_built_outcomes(state))
     return any(model not in built for model in models)
 
 
 def _agent_attempts(state: dict, ctx: GraphContext) -> int:
     outcomes = _built_outcomes(state)
-    for model in reversed(ctx.safety.required_models()):
+    for model in reversed(_target_models(state, ctx)):
         if model in outcomes:
             return outcomes[model].agent_attempts
     return 0
@@ -272,6 +280,15 @@ def _route_after_next_branch(state: dict) -> str:
 def _route_after_prepare(state: dict) -> str:
     if state.get("status") == "FAILED":
         return _END_NODE
+    return "baseline_build"
+
+
+def _route_after_baseline(state: dict) -> str:
+    if state.get("status") == "FAILED":
+        return _END_NODE
+    if state.get("status") == "BASELINE_FAILED":
+        # 基线编译失败 → 分支阻塞（branch.status=FAILED），跳过该分支去下一分支。
+        return "next_branch"
     return "next_commit"
 
 
@@ -290,11 +307,9 @@ def _route_after_cherry_pick(state: dict) -> str:
     if status == "CHERRY_PICK_CONFLICT":
         return "resolve_conflict"
     if status == "CHERRY_PICK_EMPTY":
-        # EMPTY（空提交/内容已应用）仍需 build 验证当前 worktree 编译通过——
-        # patch 是交付物，无论 cherry-pick 新应用还是内容已存在，都要确认
-        # 目标分支能编译（真机测试: worktree 复用导致 EMPTY 跳过 build，
-        # 掩盖了"该 commit 在目标分支是否编译通过"从未验证的问题）。
-        return "build"
+        # EMPTY = 内容已应用（不变量 #17）：建立 worktree 时 baseline_build 已对
+        # 目标 tip 全量编译通过，EMPTY 未引入任何改动，跳过编译直接下一个 commit。
+        return "next_commit"
     if status == "CHERRY_PICK_FAILED":
         # 决策 18 node boundary: a non-conflict cherry-pick failure is an
         # infrastructure error → report path, NOT fail-fast (决策 32).
@@ -332,6 +347,9 @@ def _make_route_after_fix_build(ctx: GraphContext) -> Callable[[dict], str]:
             if _remaining_models(state, ctx):
                 return "build"
             return "next_commit"
+        # LLM 不可用 / 无法归因：立即停批，不空转重编译
+        if state.get("status") == "UNRESOLVABLE":
+            return "fail_fast"
         if _agent_attempts(state, ctx) >= ctx.settings.max_build_attempts:
             return "fail_fast"
         return "fix_build"
@@ -370,6 +388,7 @@ def build_workflow(
         "detect_commits": detect_commits,
         "sync_decision": sync_decision,
         "prepare_worktree": prepare_worktree,
+        "baseline_build": baseline_build,
         "cherry_pick": cherry_pick,
         "resolve_conflict": resolve_conflict,
         "build": build,
@@ -398,7 +417,16 @@ def build_workflow(
     graph.add_conditional_edges(
         "prepare_worktree",
         _route_after_prepare,
-        {"next_commit": "next_commit", _END_NODE: _END_NODE},
+        {"baseline_build": "baseline_build", _END_NODE: _END_NODE},
+    )
+    graph.add_conditional_edges(
+        "baseline_build",
+        _route_after_baseline,
+        {
+            "next_commit": "next_commit",
+            "next_branch": "next_branch",
+            _END_NODE: _END_NODE,
+        },
     )
     graph.add_conditional_edges(
         "next_commit",

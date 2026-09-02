@@ -40,7 +40,8 @@ cherry-pick 冲突由 Conflict Agent 安全解决。
 #### Scenario 每 commit 编译验证。
 - **当** cherry-pick 完成后
 - **则** 在目标分支 worktree 上编译（docker 容器挂载 worktree，exec 执行 RTL9617C_build.sh）
-- **且** 批次开头 clean 一次，commit 间增量编译；公共文件改动时降级全量编译（额外 clean）
+- **且** cherry-pick EMPTY（内容已应用）不引入改动，跳过编译（建立 worktree 时的基线全量编译已验证目标 tip）
+- **且** 基线编译（prepare 后）为唯一 clean 全量；commit 间按改动文件解析编译模块（build_rules.yaml 的 build_modules 路径前缀映射），解析不出（未命中 / 多模块）才回退非 clean 全量
 - **且** 按 required_models 顺序逐个型号编译，某型号失败即停该 commit
 - **且** 编译成功判定三查：产物存在且完整 + 日志成功标志 + 容器状态
 
@@ -78,3 +79,63 @@ cherry-pick 冲突由 Conflict Agent 安全解决。
 - **当** 某分支批次完成（或失败停止）
 - **则** 生成 `git format-patch <原tip>..<HEAD>`（含冲突解决修改）
 - **且** 每分支独立一份，命名含 cycle_id / 分支 / commit 范围
+
+### Requirement: 分支级同步 CLI
+
+提供单目标分支的同步命令，支持源+目标分支与指定 commit 两种输入。
+
+#### Scenario: 源+目标分支同步
+
+- **当** 调用 `bsa sync <src> <target>`
+- **则** 对目标分支执行完整链路：检测该源分支最近窗口 commit → 对目标重判结论 → 只同步 NeedSync
+- **且** 结果写入周期记录，可供平台投影读取
+
+#### Scenario: 指定 commit 直同步
+
+- **当** 调用 `bsa sync <target> --sha <sha>`
+- **则** 跳过决策直接对该 commit 执行同步链路（cherry-pick→build→patch）
+- **且** 仍受白名单、编译验证与审计闸门约束，不因跳过决策而绕过安全闸门
+
+### Requirement: 分支级重跑 CLI
+
+提供单目标分支重跑命令，支持保留现场与重建两种语义。
+
+#### Scenario: 保留现场续跑
+
+- **当** 调用 `bsa rerun <target>` 且该分支存在当前周期活 worktree
+- **则** 按 git 真实状态重入：未完成 cherry-pick 继续、已应用跳过，全量 build 验证后更新 patch
+- **且** 现场有未提交修改时拦截并提示（防 Agent 自身残留混入）
+
+#### Scenario: 重建重同步
+
+- **当** 调用 `bsa rerun <target> --fresh`
+- **则** 基于当前远端重建现场并先重判结论：若该 commit 已被合入（AlreadyIncluded/OutOfScope）则停止并提示
+- **且** 重判后仍需同步时才执行同步链路，不产空 patch
+
+#### Scenario: 重跑单一线程 id（P2-3）
+
+- **当** 调用 `bsa rerun <target>`
+- **则** retained 重跑生成**一个** rerun 线程 id，任务登记（register_start）与实际
+  checkpoint 线程一致
+- **且** fresh 重跑生成**一个** manual cycle id，登记与重建现场一致
+
+### Requirement: 超期即弃
+
+超过当前周期的分支现场不再提供续做与推送，仅支持重新同步。
+
+#### Scenario: 超期分支处理
+
+- **当** 某分支属于上一周期或更早
+- **则** 其现场仅可只读查看（patch/日志），不提供续做/推送入口
+- **且** 处理方式为基于当前远端重新同步（`bsa rerun --fresh`），不存在旧现场重建/重放机制
+
+### Requirement: manual-scan 登记任务
+
+manual-scan 与每日周期统一进 tasks 表，cycle_id 一致。
+
+#### Scenario: manual-scan 登记（P2-7）
+
+- **当** 调用 `bsa manual-scan --since/--until`（或 `bsa run-cycle --since/--until`）
+- **则** 引擎登记 kind=cycle 任务（source=cli）
+- **且** 登记的 cycle_id 与 `run_cycle` 实际使用的 scan-* 周期 id 同源一致
+- **且** 周期终态按 fold 规则折叠到 tasks.state

@@ -25,4 +25,5 @@ class CommandExecutor(Protocol):
         cwd: str | Path | None = None,
         timeout_sec: int = 300,
         env: dict[str, str] | None = None,
+        stream_to: str | Path | None = None,
     ) -> CompletedProcess: ...

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import importlib.resources
 import re
 from collections.abc import Mapping
@@ -147,30 +148,53 @@ _RULES = _compile_classify_rules(_RULES_DATA)
 _SEVERITY_RULES = _compile_severity_rules(_RULES_DATA)
 
 
+def compute_fingerprint(message: str, patch_id: str | None) -> str:
+    """语义身份 fingerprint（决策 5.1）：sha256(subject + body + patch_id)。
+
+    rebase/cherry-pick 不改内容 → patch-id 稳定、subject/body 不变 → fingerprint
+    稳定；内容改动 → fingerprint 变化（人工覆盖自动失效，不静默错用）。
+    """
+    subject, _, body = message.partition("\n")
+    raw = f"{subject}\n{body}\n{patch_id or ''}"
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
 def lookup_agent_judgment(
     sha: str,
     judgments: Mapping[str, Any] | None,
+    fingerprint: str | None = None,
 ) -> dict[str, Any] | None:
-    """Match full SHA or any judgment key that is a prefix of sha (min 7 chars)."""
-    if not judgments or not sha:
+    """Match full SHA or any judgment key that is a prefix of sha (min 7 chars).
+
+    ``fingerprint`` 提供语义身份匹配：judgments 中 ``fp:<fingerprint>`` 键在 sha
+    未命中时匹配（内容不变 rebase 后 sha 漂移仍命中）。
+    """
+    if not judgments:
         return None
-    sha_l = sha.lower()
-    if sha_l in judgments and isinstance(judgments[sha_l], dict):
-        return judgments[sha_l]
-    if sha in judgments and isinstance(judgments[sha], dict):
-        return judgments[sha]
-    best_key = ""
-    best_val: dict[str, Any] | None = None
-    for key, value in judgments.items():
-        if not isinstance(key, str) or not isinstance(value, dict):
-            continue
-        key_l = key.lower().strip()
-        if len(key_l) < 7:
-            continue
-        if sha_l.startswith(key_l) and len(key_l) > len(best_key):
-            best_key = key_l
-            best_val = value
-    return best_val
+    if sha:
+        sha_l = sha.lower()
+        if sha_l in judgments and isinstance(judgments[sha_l], dict):
+            return judgments[sha_l]
+        if sha in judgments and isinstance(judgments[sha], dict):
+            return judgments[sha]
+        best_key = ""
+        best_val: dict[str, Any] | None = None
+        for key, value in judgments.items():
+            if not isinstance(key, str) or not isinstance(value, dict):
+                continue
+            key_l = key.lower().strip()
+            if len(key_l) < 7:
+                continue
+            if sha_l.startswith(key_l) and len(key_l) > len(best_key):
+                best_key = key_l
+                best_val = value
+        if best_val is not None:
+            return best_val
+    if fingerprint:
+        fp_key = f"fp:{fingerprint}"
+        if fp_key in judgments and isinstance(judgments[fp_key], dict):
+            return judgments[fp_key]
+    return None
 
 
 def _extract_issue_ids(
@@ -207,6 +231,7 @@ def classify_commit(
     patch_text: str,
     *,
     sha: str | None = None,
+    patch_id: str | None = None,
     agent_judgments: Mapping[str, Any] | None = None,
 ) -> Classification:
     rules = _RULES
@@ -214,9 +239,12 @@ def classify_commit(
     cherry_match = rules.cherry_pick_re.search(message)
     cherry_pick_from = cherry_match.group(1) if cherry_match else None
     issue_ids = _extract_issue_ids(message, rules.issue_id_re, rules.issue_prefixes)
-    judgment = lookup_agent_judgment(sha or "", agent_judgments)
-    if judgment is not None:
+    fp = compute_fingerprint(message, patch_id) if patch_id else None
+    judgment = lookup_agent_judgment(sha or "", agent_judgments, fingerprint=fp)
+    if judgment is not None and "is_bug_fix" in judgment:
         # 决策 6: 人工判定最高优先级，先于所有机器规则。
+        # 只写 risk 的 judgment（无 is_bug_fix 键）不得覆盖 is_bug_fix——
+        # 继续走机器规则/LLM，避免把「键缺失」误判成「非 bug-fix」。
         is_bug = bool(judgment.get("is_bug_fix"))
         reason = str(judgment.get("reason") or "").strip() or "Claude 主 Agent 判定结果。"
         return Classification(

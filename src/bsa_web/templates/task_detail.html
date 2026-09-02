@@ -1,0 +1,222 @@
+{% extends "base.html" %}
+{% block title %}任务 {{ target }}{% endblock %}
+{% block content %}
+<p class="breadcrumb">
+  <a href="/">工作台</a><span class="muted"> / </span><a href="/cycle/{{ cycle_id }}">周期概览</a><span class="muted"> / 目标分支</span>
+</p>
+<!-- 分支头 -->
+<div class="branch-hero">
+  <div class="branch-hero-head">
+    <h1>{{ target }}</h1>
+    <span class="badge {{ status | lower }}">{{ status | status_zh }}</span>
+    {% if branch_abandoned %}<span class="badge abandoned">已放弃</span>{% endif %}
+  </div>
+  {% if failure_reasons %}
+  <div class="op-error">
+    <span>失败原因：</span>
+    <ul class="evidence-list" style="flex:1;margin:0;padding:0">
+      {% for r in failure_reasons %}<li>{{ r }}</li>{% endfor %}
+    </ul>
+  </div>
+  {% elif task_error %}
+  <p class="op-error">任务失败：{{ task_error }}</p>
+  {% endif %}
+  <div class="branch-hero-meta">
+    <span><span class="k">周期</span> <code class="mono">{{ cycle_id }}</code></span>
+    {% if branch.worktree_path %}<span><span class="k">工作树</span> <code class="mono">{{ branch.worktree_path }}</code></span>{% endif %}
+    {% if branch.patch_path %}<span><span class="k">补丁</span> <a href="/cycle/{{ cycle_id }}/target/{{ target }}/patch">下载完整补丁</a></span>{% endif %}
+  </div>
+  <div class="branch-hero-ops">
+  {% if branch_abandoned %}
+    {% if user.role == "operator" %}
+    <button type="button" data-restore-cycle="{{ cycle_id }}" data-restore-target="{{ target }}" data-restore-sha="">恢复</button>
+    <span class="restore-result"></span>
+    {% else %}
+    <span class="muted">该分支已放弃（仅操作者可恢复）。</span>
+    {% endif %}
+  {% elif show_resume %}
+    <span class="badge interrupted">已中断</span> <span class="muted">执行被中断（executor 重启），现场已保留，可续跑。</span>
+    {% if user.role == "operator" %}
+    <form method="post" action="/rerun" class="inline-form">
+      <input type="hidden" name="_csrf" value="{{ csrf }}">
+      <input type="hidden" name="target" value="{{ target }}">
+      <input type="hidden" name="cycle" value="{{ cycle_id }}">
+      <button type="submit" class="btn-primary">续跑（保留现场）</button>
+    </form>
+    {% else %}
+    <span class="muted">该分支需续跑，仅操作者可操作。</span>
+    {% endif %}
+  {% elif show_push %}
+    {% if user.role == "operator" %}
+    <button type="button" data-push-target="{{ target }}" data-push-cycle="{{ cycle_id }}" class="btn-primary">推送</button>
+    <span data-push-result="{{ target }}"></span>
+    {% else %}
+    <span class="muted">该分支可推送，仅操作者可执行。</span>
+    {% endif %}
+  {% elif status in ("FAILED", "PARTIAL", "MANUAL") %}
+    {% if user.role == "operator" %}
+      {% if show_webssh %}
+      <a class="btn" href="/ssh/task/{{ cycle_id }}/{{ target }}">WebSSH 在线处理</a>
+      {% endif %}
+      <form method="post" action="/rerun" class="inline-form" id="rerun-form">
+        <input type="hidden" name="_csrf" value="{{ csrf }}">
+        <input type="hidden" name="target" value="{{ target }}">
+        <label class="inline"><input type="checkbox" name="fresh" value="on"> 重建重同步（--fresh）</label>
+        <button type="submit" class="btn-outline">重跑</button>
+      </form>
+    {% else %}
+    <span class="muted">该分支需人工处理（{{ status | status_zh }}），仅操作者可操作。</span>
+    {% endif %}
+  {% else %}
+    <span class="muted">当前状态（{{ status | status_zh }}）无可执行操作。</span>
+  {% endif %}
+
+  {% if not branch_abandoned and user.role == "operator" %}
+  <span class="ops-sep"></span>
+  <button type="button" class="btn-danger" data-abandon-cycle="{{ cycle_id }}" data-abandon-target="{{ target }}" data-abandon-sha="">放弃</button>
+  <span class="abandon-result"></span>
+  {% endif %}
+  </div>
+</div>
+
+{% include "_target_detail.html" %}
+
+{% if review_items %}
+<section class="panel">
+  <div class="panel-head"><h2>人工项（{{ target }}）</h2><span class="panel-note">需人工裁决：确认继续 / 改判定</span></div>
+  <div class="panel-body">
+    {% for item in review_items %}
+    <div class="review-card">
+      <div class="review-card-head">
+        <span class="badge manual">{{ item.kind | kind_zh }}</span>
+        <code class="mono review-sha">{{ item.sha }}</code>
+        {% if item.reason %}<span class="review-reason">{{ item.reason }}</span>{% endif %}
+        {% if item.override_stale %}
+        <span class="badge warn" title="该 commit 内容已变化，此前的改判定不再匹配，请重新判定">⚠️ 覆盖已失效</span>
+        {% if user.role == "operator" %}
+        <button type="button" data-override-clear="{{ item.sha }}">清除覆盖</button>
+        <span class="override-clear-result"></span>
+        {% endif %}
+        {% endif %}
+      </div>
+      {% if item.evidence %}
+      <ul class="evidence-list">{% for e in item.evidence %}<li>{{ e }}</li>{% endfor %}</ul>
+      {% endif %}
+      {% if user.role == "operator" %}
+      <div class="review-actions">
+        <div class="review-action-main">
+          <button type="button" data-confirm-target="{{ target }}" data-confirm-sha="{{ item.sha }}" class="btn-primary">确认继续</button>
+          <span class="confirm-hint">将发起一条独立手动同步任务（单个 commit 直同步），不在原周期内收敛</span>
+          <span class="confirm-result"></span>
+        </div>
+        {% if item.cause == "pending" %}
+        <div class="review-action-fields">
+          <label class="inline"><input type="checkbox" data-override-bugfix="{{ item.sha }}"> 标记 bug fix</label>
+          <button type="button" data-override-sha="{{ item.sha }}">改判定</button>
+          <span class="override-result"></span>
+        </div>
+        {% elif item.cause == "severity_gate" or item.cause == "fix_missing" %}
+        <div class="review-action-fields">
+          <label>风险
+            <select data-override-risk="{{ item.sha }}">
+              <option value="">不改</option>
+              <option value="low">low</option>
+              <option value="medium">medium</option>
+              <option value="high">high</option>
+            </select>
+          </label>
+          <button type="button" data-override-sha="{{ item.sha }}">改判定</button>
+          <span class="override-result"></span>
+        </div>
+        {% endif %}
+      </div>
+      {% endif %}
+    </div>
+    {% endfor %}
+  </div>
+</section>
+<script>
+(function () {
+  var csrf = "{{ csrf }}";
+
+  document.querySelectorAll("[data-confirm-target]").forEach(function (btn) {
+    btn.addEventListener("click", function () {
+      var target = btn.getAttribute("data-confirm-target");
+      var sha = btn.getAttribute("data-confirm-sha");
+      var result = btn.closest(".review-card").querySelector(".confirm-result");
+      btn.disabled = true;
+      result.textContent = "确认中…";
+      fetch("/api/confirm", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ _csrf: csrf, target: target, sha: sha }),
+      }).then(function (r) {
+        return r.json().then(function (json) { return { ok: r.ok, json: json }; });
+      }).then(function (res) {
+        if (res.ok && res.json && res.json.task_id) {
+          window.location.href = "/tasks/" + res.json.task_id;
+        } else {
+          btn.disabled = false;
+          result.textContent = (res.json && res.json.detail) || "确认失败";
+        }
+      });
+    });
+  });
+
+  document.querySelectorAll("[data-override-sha]").forEach(function (btn) {
+    btn.addEventListener("click", function () {
+      var sha = btn.getAttribute("data-override-sha");
+      var result = btn.closest(".review-card").querySelector(".override-result");
+      var body = { _csrf: csrf, sha: sha };
+      var riskEl = document.querySelector('[data-override-risk="' + sha + '"]');
+      var bugfixEl = document.querySelector('[data-override-bugfix="' + sha + '"]');
+      if (riskEl && riskEl.value) { body.risk = riskEl.value; }
+      if (bugfixEl && bugfixEl.checked) { body.is_bug_fix = true; }
+      btn.disabled = true;
+      result.textContent = "提交中…";
+      fetch("/api/override", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      }).then(function (r) {
+        return r.json().then(function (json) { return { ok: r.ok, json: json }; });
+      }).then(function (res) {
+        btn.disabled = false;
+        result.textContent = res.ok ? (res.json.message || "已改判定") : ((res.json && res.json.detail) || "改判定失败");
+        if (res.ok && document.getElementById("rerun-form")) {
+          result.innerHTML = (res.json.message || "已改判定") + ' <a href="#rerun-form">立即重跑该分支</a>';
+        }
+      });
+    });
+  });
+
+  document.querySelectorAll("[data-override-clear]").forEach(function (btn) {
+    btn.addEventListener("click", function () {
+      var sha = btn.getAttribute("data-override-clear");
+      var result = btn.closest(".review-card").querySelector(".override-clear-result");
+      btn.disabled = true;
+      if (result) result.textContent = "提交中…";
+      fetch("/api/override", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ _csrf: csrf, sha: sha, clear: true }),
+      }).then(function (r) {
+        return r.json().then(function (json) { return { ok: r.ok, json: json }; });
+      }).then(function (res) {
+        btn.disabled = false;
+        if (result) result.textContent = res.ok ? (res.json.message || "已清除") : ((res.json && res.json.detail) || "清除失败");
+        if (res.ok) { window.location.reload(); }
+      });
+    });
+  });
+})();
+</script>
+{% endif %}
+
+{% include "_push_confirm.html" %}
+{% if branch_abandoned %}
+{% include "_restore_js.html" %}
+{% else %}
+{% include "_abandon_js.html" %}
+{% endif %}
+{% endblock %}

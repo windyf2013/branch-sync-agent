@@ -78,6 +78,21 @@ class TestSubprocessExecutor:
         assert result.stdout.strip() == "hello"
         assert result.stderr == ""
 
+    def test_run_stream_to_writes_output_live(self, tmp_path):
+        import sys
+
+        out = tmp_path / "out.log"
+        SubprocessExecutor().run(
+            [
+                sys.executable,
+                "-c",
+                "import sys; print('first'); sys.stdout.flush(); print('second')",
+            ],
+            stream_to=str(out),
+        )
+        text = out.read_text(encoding="utf-8", errors="replace")
+        assert "first" in text and "second" in text
+
     def test_nonzero_returncode_does_not_raise(self):
         result = SubprocessExecutor().run(["sh", "-c", "exit 3"])
         assert result.returncode == 3

@@ -21,7 +21,10 @@ class TaskState(TypedDict):
     detected_commits: list[CommitInfo]
     classifications: dict[str, SyncDecision]
     decisions: dict[str, dict[str, Conclusion4]]
+    sources: list[str]
+    targets: list[str]
     batches: dict[str, list[str]]
+    build_models: dict[str, list[str]]
     current_target: str | None
     current_commit: str | None
     branch_results: dict[str, BranchResult]

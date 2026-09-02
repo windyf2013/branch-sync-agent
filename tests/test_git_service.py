@@ -121,6 +121,7 @@ class TestCommitsInWindow:
         assert executor.calls[0][0] == [
             "log",
             "--reverse",
+            "--first-parent",
             "--since=2026-01-01",
             "--until=2026-01-02",
             "--format=%H",
@@ -150,7 +151,17 @@ class TestChangedFiles:
     def test_parses_file_names(self, tmp_path):
         executor = FakeExecutor([ok("parentsha"), ok("a.c\nb.h\n\n")])
         assert GitService(executor, tmp_path).changed_files("abc") == ["a.c", "b.h"]
-        assert executor.calls[1][0] == ["diff-tree", "--no-commit-id", "--name-only", "-r", "abc"]
+        assert executor.calls[1][0] == [
+            "diff-tree", "--no-commit-id", "--name-only", "-r", "parentsha", "abc"
+        ]
+
+    def test_merge_commit_uses_first_parent(self, tmp_path):
+        # merge commit 的 %P 是多个父，取首个作 diff 基准，避免 git show 合流 diff 为空。
+        executor = FakeExecutor([ok("p1 p2"), ok("a.c\nb.h\n\n")])
+        assert GitService(executor, tmp_path).changed_files("merge") == ["a.c", "b.h"]
+        assert executor.calls[1][0] == [
+            "diff-tree", "--no-commit-id", "--name-only", "-r", "p1", "merge"
+        ]
 
     def test_truncates_at_500_files(self, tmp_path):
         names = "\n".join(f"f{i}.c" for i in range(501))
@@ -165,10 +176,22 @@ class TestChangedFiles:
 
 
 class TestCommitPatch:
-    def test_returns_show_output(self, tmp_path):
+    def test_returns_first_parent_diff_tree_output(self, tmp_path):
+        # commit_patch 与 patch_id 统一走第一父聚合 diff（changed_files 同源），
+        # 取代 git show（对 merge 恒空）。
         executor = FakeExecutor([ok("parentsha"), ok("1\t0\tf.c"), ok("+foo\n-bar\n")])
         assert GitService(executor, tmp_path).commit_patch("abc") == "+foo\n-bar\n"
-        assert executor.calls[2][0] == ["show", "--pretty=format:", "abc"]
+        assert executor.calls[2][0] == [
+            "diff-tree", "--no-commit-id", "-p", "-r", "parentsha", "abc",
+        ]
+
+    def test_merge_commit_patch_non_empty(self, tmp_path):
+        # merge commit（%P 两个父）走第一父聚合 diff，非空；git show 对 merge 恒空。
+        executor = FakeExecutor([ok("p1 p2"), ok("1\t0\tf.c"), ok("+foo\n-bar\n")])
+        assert GitService(executor, tmp_path).commit_patch("merge") == "+foo\n-bar\n"
+        assert executor.calls[2][0] == [
+            "diff-tree", "--no-commit-id", "-p", "-r", "p1", "merge",
+        ]
 
     def test_truncates_at_max_chars(self, tmp_path):
         executor = FakeExecutor([ok("parentsha"), ok("1\t0\tf.c"), ok("x" * 150)])
@@ -195,10 +218,28 @@ class TestPatchId:
         result = GitService(executor, tmp_path).patch_id("abc")
         assert result == FIXTURE_PATCH_ID
 
+    def test_patch_id_uses_first_parent_diff_tree(self, tmp_path):
+        executor = FakeExecutor([ok("parentsha"), ok("2\t3\tfiles"), ok(FIXTURE_DIFF)])
+        GitService(executor, tmp_path).patch_id("abc")
+        assert executor.calls[2][0] == [
+            "diff-tree", "--no-commit-id", "-p", "-r", "parentsha", "abc",
+        ]
+
     def test_binary_commit_patch_id(self, tmp_path):
         executor = FakeExecutor([ok("parentsha"), ok("1\t0\timg.bin"), ok(BINARY_DIFF)])
         result = GitService(executor, tmp_path).patch_id("abc")
         assert result == BINARY_PATCH_ID
+
+    def test_merge_patch_id_not_constant(self, tmp_path):
+        # 两个不同 merge 内容不同 → patch_id 互异，不再所有 merge 同一恒空值
+        # （git show 对 merge 恒空，_stable_patch_id("") 对所有 merge 同一值）。
+        exec1 = FakeExecutor([ok("p1 p2"), ok("2\t3\tfiles"), ok(FIXTURE_DIFF)])
+        exec2 = FakeExecutor([ok("p1 p2"), ok("1\t0\timg.bin"), ok(BINARY_DIFF)])
+        id1 = GitService(exec1, tmp_path).patch_id("m1")
+        id2 = GitService(exec2, tmp_path).patch_id("m2")
+        assert id1 == FIXTURE_PATCH_ID
+        assert id2 == BINARY_PATCH_ID
+        assert id1 != id2
 
     def test_root_commit_is_none(self, tmp_path):
         executor = FakeExecutor([ok("")])
@@ -208,6 +249,33 @@ class TestPatchId:
         numstat = "\n".join(f"1\t0\tf{i}.c" for i in range(501))
         executor = FakeExecutor([ok("parentsha"), ok(numstat)])
         assert GitService(executor, tmp_path).patch_id("abc") is None
+
+
+class TestDiffStat:
+    def test_aggregates_numstat(self, tmp_path):
+        executor = FakeExecutor([ok("parentsha"), ok("10\t2\tf.c\n3\t0\tg.h\n")])
+        result = GitService(executor, tmp_path).diff_stat("abc")
+        assert result == {"files": 2, "insertions": 13, "deletions": 2}
+        assert executor.calls[1][0] == [
+            "diff-tree", "--no-commit-id", "--numstat", "-r", "parentsha", "abc",
+        ]
+
+    def test_binary_files_counted_no_insertions(self, tmp_path):
+        executor = FakeExecutor([ok("parentsha"), ok("-\t-\timg.bin\n")])
+        result = GitService(executor, tmp_path).diff_stat("abc")
+        assert result == {"files": 1, "insertions": 0, "deletions": 0}
+
+    def test_merge_uses_first_parent(self, tmp_path):
+        executor = FakeExecutor([ok("p1 p2"), ok("5\t5\tf.c\n")])
+        result = GitService(executor, tmp_path).diff_stat("merge")
+        assert result == {"files": 1, "insertions": 5, "deletions": 5}
+        assert executor.calls[1][0] == [
+            "diff-tree", "--no-commit-id", "--numstat", "-r", "p1", "merge",
+        ]
+
+    def test_root_commit_is_none(self, tmp_path):
+        executor = FakeExecutor([ok("")])
+        assert GitService(executor, tmp_path).diff_stat("root") is None
 
 
 class TestFileOps:

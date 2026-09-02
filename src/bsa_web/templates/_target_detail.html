@@ -1,0 +1,195 @@
+{% if branch.stop_reason or (branch.status != "SUCCESS" and (payload.get("action_required") or [])) %}
+<section class="panel">
+  <div class="panel-head"><h2>失败原因 / 待处理</h2></div>
+  <div class="panel-body">
+    {% if branch.stop_reason %}<p class="muted">停止原因：{{ branch.stop_reason }}</p>{% endif %}
+    {% if branch.status != "SUCCESS" %}
+    <ul class="evidence-list">
+      {% for item in payload.get("action_required") or [] %}
+        {% if item.node and (not item.branch or item.branch == target) %}
+        <li><span class="badge failed">节点失败</span> {{ item.node }}：{{ item.error }}</li>
+        {% elif item.kind == "ManualReview" and item.branch == target %}
+        <li><span class="badge manual">{{ item.kind | kind_zh }}</span> {{ item.sha }}{% if item.evidence %}（{{ item.evidence | join("；") }}）{% endif %}</li>
+        {% endif %}
+      {% endfor %}
+    </ul>
+    {% endif %}
+  </div>
+</section>
+{% endif %}
+
+{% if branch.baseline %}
+<section class="panel">
+  <div class="panel-head"><h2>基线编译</h2><span class="panel-note">目标分支 tip 的 clean 全编译（任何 cherry-pick 之前）</span></div>
+  <div class="panel-body">
+  {% for model, o in branch.baseline.items() %}
+    <div class="build-outcome">
+      <span class="badge {{ o.status | lower }}">{{ o.status | status_zh }}</span>
+      <strong>{{ o.model_label or model }}</strong>
+      {% if o.status == "FAILED" %}
+        {% if o.error_lines %}
+        <details class="build-error" open>
+          <summary>错误定位（{{ o.error_lines | length }} 条）</summary>
+          <ul>
+            {% for err in o.error_lines %}
+            <li class="muted"><code>{{ err }}</code></li>
+            {% endfor %}
+          </ul>
+        </details>
+        {% elif o.errors %}
+        <details class="build-error">
+          <summary>最终错误（{{ o.errors | length }} 条，截断展示）</summary>
+          <ul>
+            {% for err in o.errors[:5] %}
+            <li class="muted"><code>{{ err[:300] }}</code></li>
+            {% endfor %}
+          </ul>
+        </details>
+        {% endif %}
+        {% if o.log_preview %}
+        <details class="build-log">
+          <summary>build 日志尾部{% if o.log_truncated %}（截断至 100 行）{% endif %}</summary>
+          <pre class="build-log-tail">{{ o.log_preview }}</pre>
+        </details>
+        {% endif %}
+        {% if o.log_path %}
+          <a href="/cycle/{{ payload.cycle_id }}/target/{{ target }}/baseline/{{ model }}/log">下载完整日志</a>
+        {% endif %}
+      {% endif %}
+    </div>
+  {% endfor %}
+  </div>
+</section>
+{% endif %}
+
+<section class="panel">
+  <div class="panel-head"><h2>commit 处理明细</h2><span class="panel-note">点击行展开冲突 / build 详情</span></div>
+  <div class="panel-body">
+  {% if branch.commits %}
+  <div class="table-wrap">
+  <table>
+    <thead><tr><th></th><th>commit</th><th>cherry-pick</th><th>冲突处理</th><th>build 矩阵</th></tr></thead>
+    <tbody>
+      {% for cr in branch.commits %}
+      <tr class="commit-row" data-sha="{{ cr.sha }}">
+        <td class="row-toggle"><button type="button" class="row-toggle-btn" aria-label="展开">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="m9 18 6-6-6-6"/></svg>
+        </button></td>
+        <td><a href="/cycle/{{ payload.cycle_id }}/commit/{{ cr.sha }}?target={{ target }}" class="branch-link"><code class="mono">{{ cr.sha[:10] }}</code></a></td>
+        <td><span class="badge {{ cr.cherry_pick | lower }}">{{ cr.cherry_pick | status_zh }}</span></td>
+        <td>
+          {% if cr.conflict_resolution %}
+            <span class="badge ok">已解决</span>
+            <div class="muted">冲突文件：{{ cr.conflict_resolution.files | join(", ") }}</div>
+            {% if cr.conflict_resolution.agent_reason %}<div class="muted">智能体说明：{{ cr.conflict_resolution.agent_reason }}</div>{% endif %}
+          {% elif cr.cherry_pick == "CONFLICT" %}
+            <span class="badge failed">冲突解决失败</span>
+            {% if cr.resolution_error %}<div class="muted">原因：{{ cr.resolution_error }}</div>{% endif %}
+          {% else %}<span class="muted">无</span>{% endif %}
+        </td>
+        <td>
+          {% for model, o in cr.build.items() %}
+          <div class="build-outcome">
+            <span class="badge {{ o.status | lower }}">{{ o.status | status_zh }}</span>
+            <strong>{{ o.model_label or model }}</strong>
+            {% if o.agent_attempts %}<span class="muted">（修复 {{ o.agent_attempts }} 次）</span>{% endif %}
+          </div>
+          {% endfor %}
+          {% if not cr.build %}<span class="muted">无 build 记录</span>{% endif %}
+        </td>
+      </tr>
+      <tr class="commit-detail" data-sha="{{ cr.sha }}" hidden>
+        <td colspan="5">
+          <div class="commit-detail-body">
+          {% if cr.conflict_resolution and cr.conflict_resolution.diff %}
+            <div class="llm-diff">
+              <div class="llm-diff-title">冲突解决 diff（智能体产出）</div>
+              <pre class="diff-pre">{{ cr.conflict_resolution.diff }}</pre>
+            </div>
+          {% endif %}
+          {% for model, o in cr.build.items() %}
+            {% if o.status == "FAILED" %}
+              <div class="llm-diff">
+                <div class="llm-diff-title">{{ o.model_label or model }} 编译失败</div>
+                {% if o.reason %}<div class="muted">归因：{{ o.reason }}</div>{% endif %}
+                {% if o.fix_diff %}
+                  <div class="muted">智能体修复 diff（{{ o.agent_attempts }} 轮）：</div>
+                  <pre class="diff-pre">{{ o.fix_diff }}</pre>
+                {% endif %}
+                {% if o.error_lines %}
+                <details class="build-error" open>
+                  <summary>错误定位（{{ o.error_lines | length }} 条）</summary>
+                  <ul>
+                    {% for err in o.error_lines %}
+                    <li class="muted"><code>{{ err }}</code></li>
+                    {% endfor %}
+                  </ul>
+                </details>
+                {% elif o.errors %}
+                <details class="build-error">
+                  <summary>最终错误（{{ o.errors | length }} 条，截断展示）</summary>
+                  <ul>
+                    {% for err in o.errors[:5] %}
+                    <li class="muted"><code>{{ err[:300] }}</code></li>
+                    {% endfor %}
+                  </ul>
+                </details>
+                {% endif %}
+                {% if o.log_preview %}
+                <details class="build-log">
+                  <summary>build 日志尾部{% if o.log_truncated %}（截断至 100 行）{% endif %}</summary>
+                  <pre class="build-log-tail">{{ o.log_preview }}</pre>
+                </details>
+                {% endif %}
+                {% if o.log_path %}
+                  <a href="/cycle/{{ payload.cycle_id }}/target/{{ target }}/commit/{{ cr.sha }}/build/{{ model }}/log">下载完整日志</a>
+                {% endif %}
+              </div>
+            {% endif %}
+          {% endfor %}
+          {% if not cr.conflict_resolution and cr.cherry_pick != "CONFLICT" and not cr.build %}
+            <span class="muted">无展开详情。</span>
+          {% endif %}
+          </div>
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  </div>
+  <script>
+  (function () {
+    // 行内展开/收起（chevron 旋转动画）
+    document.querySelectorAll(".row-toggle-btn").forEach(function (btn) {
+      btn.addEventListener("click", function () {
+        var row = btn.closest(".commit-row");
+        var detail = document.querySelector('.commit-detail[data-sha="' + row.getAttribute("data-sha") + '"]');
+        var open = detail.hidden;
+        detail.hidden = !open;
+        btn.classList.toggle("open", open);
+      });
+    });
+
+    // diff 语法着色：+ / - / @@ / diff --git 行
+    document.querySelectorAll(".diff-pre").forEach(function (pre) {
+      var text = pre.textContent;
+      var lines = text.split("\n");
+      var out = [];
+      for (var i = 0; i < lines.length; i++) {
+        var line = lines[i];
+        var cls = "";
+        if (/^diff\s+--git/.test(line)) cls = "d-file";
+        else if (/^@@/.test(line)) cls = "d-hunk";
+        else if (/^\+/.test(line)) cls = "d-add";
+        else if (/^-/.test(line)) cls = "d-del";
+        out.push('<span class="' + (cls ? cls : 'd-ctx') + '">' +
+          line.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;") +
+          "</span>");
+      }
+      pre.innerHTML = out.join("\n");
+    });
+  })();
+  </script>
+  {% else %}<p>该目标分支无 commit 记录。</p>{% endif %}
+  </div>
+</section>

@@ -213,3 +213,143 @@ def test_real_git_next_cherry_pick_succeeds_after_continue(tmp_path):
     )
     text = patch.read_text(encoding="utf-8")
     assert "+source" in text and "+second" in text
+
+
+def _build_gbk_conflict_repo(root: Path) -> tuple[Path, str, bytes]:
+    """Real repo where the conflicting file carries GBK 中文注释 bytes."""
+    repo = root / "repo"
+    repo.mkdir()
+
+    def run(*args: str) -> subprocess.CompletedProcess:
+        return subprocess.run(
+            ["git", *args], cwd=repo, check=True, capture_output=True, text=True
+        )
+
+    run("init", "-q", "-b", "master")
+    run("config", "user.email", "bsa@test.local")
+    run("config", "user.name", "BSA Test")
+    gbk = "/* 中文注释 */".encode("gbk")
+
+    def write_cell(content: bytes) -> None:
+        (repo / "cell_lib.c").write_bytes(content)
+        run("add", ".")
+        run("commit", "-q", "-m", "cell change")
+
+    write_cell(b"int x;\n" + gbk + b"\nint y;\n")
+    run("checkout", "-q", "-b", "develop")
+    write_cell(b"int x;\n" + gbk + b"\nint y = 2;\n")
+    src_sha = run("rev-parse", "HEAD").stdout.strip()
+    run("checkout", "-q", "master")
+    run("checkout", "-q", "-b", "release")
+    write_cell(b"int x;\n" + gbk + b"\nint y = 3;\n")
+    origin = root / "origin.git"
+    run("clone", "-q", "--bare", str(repo), str(origin))
+    run("remote", "add", "origin", str(origin))
+    run("fetch", "-q", "origin")
+    run("push", "-q", "origin", "master", "develop", "release")
+    run("checkout", "-q", "master")
+    return repo, src_sha, gbk
+
+
+def _replace_conflict_block(current: str) -> str:
+    """替换冲突标记块为源侧内容，保留块外（含 GBK 注释）的所有行。"""
+    lines = current.splitlines()
+    start = next(
+        (i for i, line in enumerate(lines) if line.startswith("<<<<<<<")), None
+    )
+    eq = next((i for i, line in enumerate(lines) if line.startswith("=======")), None)
+    end = next(
+        (i for i, line in enumerate(lines) if line.startswith(">>>>>>>")), None
+    )
+    if start is None or eq is None or end is None or not (start < eq < end):
+        return current
+    source = lines[eq + 1 : end]
+    body = lines[:start] + source + lines[end + 1 :]
+    return "\n".join(body) + ("\n" if current.endswith("\n") else "")
+
+
+class GBKSourceResolver:
+    """Deterministic resolver: keep source side only inside the conflict block."""
+
+    def solve_conflict(self, ctx):
+        diff = ""
+        for rel in ctx.conflict_files:
+            current = ctx.conflict_markers.get(rel, "")
+            diff += build_resolution_diff(rel, current, _replace_conflict_block(current))
+        return ConflictResolution(
+            files=list(ctx.conflict_files), diff=diff, agent_reason="keep source side in block"
+        )
+
+
+def test_real_git_gbk_conflict_resolves_to_utf8(tmp_path):
+    """真实 git：GBK 中文注释 + 代码行冲突，LLM 解决后非 UTF-8 内容统一转 UTF-8 合入。"""
+    repo, src_sha, gbk = _build_gbk_conflict_repo(tmp_path)
+
+    executor = WhitelistExecutor(SubprocessExecutor())
+    main_git = GitService(executor=executor, repo_path=repo)
+    safety = SafetyEnforcer(
+        SafetyRules(
+            forbidden_paths=[], required_models=[], forbidden_branches=[], max_single_edit_lines=200
+        )
+    )
+    settings = make_settings(tmp_path, repo_path=str(repo))
+    ctx = GraphContext(
+        settings=settings,
+        executor=executor,
+        git=main_git,
+        runner=SimpleNamespace(),
+        sync_decision_agent=SimpleNamespace(),
+        conflict_agent=ConflictAgent(
+            GBKSourceResolver(), git=main_git, safety=safety, max_attempts=3
+        ),
+        build_agent=SimpleNamespace(),
+        safety=safety,
+        decision_rules=DecisionRules(classify={}, conclude=ConcludeThresholds(), branch_mapping={}),
+    )
+
+    resolved_ref, _ = main_git.branch_tip("release")
+    wt_path = Path(settings.worktree_root) / "release-cycle-20260101"
+    main_git.add_worktree(resolved_ref, wt_path)
+    wg = GitService(executor=executor, repo_path=wt_path)
+    ctx.worktree_gits[str(wt_path)] = wg
+
+    conflict = wg.cherry_pick(src_sha)
+    assert conflict.status == "CONFLICT"
+
+    state = base_state(
+        current_target="release",
+        current_commit=src_sha,
+        detected_commits=[_commit_info(src_sha)],
+        branch_results={
+            "release": BranchResult(
+                target_branch="release",
+                worktree_path=str(wt_path),
+                status="PARTIAL",
+                commits=[
+                    CommitResult(
+                        sha=src_sha,
+                        cherry_pick="CONFLICT",
+                        conflict_resolution=None,
+                        build={},
+                    )
+                ],
+                patch_path=None,
+                stop_reason=None,
+            )
+        },
+    )
+
+    update = resolve_conflict(state, ctx)
+
+    assert update["status"] == "RESOLVED"
+    data = (wt_path / "cell_lib.c").read_bytes()
+    assert b"<<<<<<<" not in data
+    # 非 UTF-8 源文件（GBK 中文注释）解决后统一转 UTF-8 合入。
+    assert data == b"int x;\n" + "/* 中文注释 */".encode("utf-8") + b"\nint y = 2;\n"
+
+    sequencer = subprocess.run(
+        ["git", "-C", str(wt_path), "rev-parse", "--verify", "--quiet", "CHERRY_PICK_HEAD"],
+        capture_output=True,
+        text=True,
+    )
+    assert sequencer.returncode != 0, "sequencer must be cleared after cherry-pick --continue"

@@ -56,6 +56,9 @@ conclude:
     - develop
     - release
     - fix
+  ineligible_target_types:
+    - feature
+    - personal
 severity:
   # 决策 41 发布线严重性门控：规则层命中 high 标记/核心路径 → high；
   # 未命中 → 交 LLM 兜底（classify_severity 返回 unknown）。low/medium 仅由 LLM 输出。

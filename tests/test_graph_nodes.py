@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
@@ -21,8 +22,11 @@ from bsa.domain.models import (
 from bsa.executor.exceptions import InfrastructureError
 from bsa.graph.nodes import (
     GraphContext,
+    _action_required,
     _derive_window,
+    _load_matrix,
     _to_analysis,
+    baseline_build,
     build,
     cherry_pick,
     default_window,
@@ -36,6 +40,7 @@ from bsa.graph.nodes import (
     sync_decision,
 )
 from bsa.rules import (
+    BuildRules,
     Classification,
     ConcludeThresholds,
     DecisionRules,
@@ -47,10 +52,14 @@ DEVELOP = "br_v4.33_5200_CU_develop_20260518"
 TARGET = "br_v4.33_5200_CU_develop_release_p360_20260625"
 
 BRANCH_MD = f"""# 分支清单
+## 1 RCIOS代码库
+- 路径：rcios
 
-## 组网
-- {DEVELOP}
+### 1.1 4.34 主分支
 - {TARGET}
+
+### 1.2 4.34 业务分支
+- {DEVELOP}
 """
 
 SOURCE_FIX_TEXT = """#include <stdio.h>
@@ -85,10 +94,38 @@ TARGET_OLD_TEXT = """static int demo_check(const char *name, size_t len)
 """
 
 
+OTHER_TARGET = "br_v4.33_5200B_develop_20260702"
+OTHER_DEVELOP = "br_v4.33_5200B_develop_fttr_20260811"
+
+# 完整清单：无「主分支/业务分支」标注 → build_matrix 产出零条边。
+# 它只服务手动同步的型号解析与平台下拉，cron 绝不应该读它。
+FULL_BRANCH_MD = f"""# 分支清单
+## 1 RCIOS代码库
+- 路径：rcios
+
+### 1.1 组网产品分支
+- {OTHER_TARGET}
+- {OTHER_DEVELOP}
+
+### 1.2 4.34 产品主线
+- {TARGET}
+- {DEVELOP}
+"""
+
+
 def write_branch_md(tmp_path: Path) -> Path:
     path = tmp_path / "branch.md"
     path.write_text(BRANCH_MD, encoding="utf-8")
     return path
+
+
+def write_split_branch_files(tmp_path: Path) -> tuple[Path, Path]:
+    """完整清单 branch.md（无标注）+ cron 专用 branch-cron.md（带标注）。"""
+    full = tmp_path / "branch.md"
+    full.write_text(FULL_BRANCH_MD, encoding="utf-8")
+    cron = tmp_path / "branch-cron.md"
+    cron.write_text(BRANCH_MD, encoding="utf-8")
+    return full, cron
 
 
 def make_settings(tmp_path: Path, **overrides: object):
@@ -121,6 +158,7 @@ class FakeGit:
         self.changed: dict[str, list[str]] = {}
         self.patches: dict[str, str] = {}
         self.patch_ids: dict[str, str] = {}
+        self.diff_stats: dict[str, dict[str, int]] = {}
         self.is_ancestor_results: dict[tuple[str, str], bool] = {}
         self.file_exists_results: dict[tuple[str, str], bool] = {}
         self.cherry_pick_result: CherryPickResult | None = None
@@ -129,6 +167,7 @@ class FakeGit:
         self.format_patch_result: Path | None = None
         self.file_texts: dict[tuple[str, str], str] = {}
         self.metadata_results: dict[str, tuple[str, str, str]] = {}
+        self.status_result: str = ""
 
     def _record(self, name: str, args: tuple) -> None:
         self.calls.append((name, args))
@@ -161,6 +200,10 @@ class FakeGit:
     def patch_id(self, sha: str) -> str | None:
         self._record("patch_id", (sha,))
         return self.patch_ids.get(sha)
+
+    def diff_stat(self, sha: str) -> dict[str, int] | None:
+        self._record("diff_stat", (sha,))
+        return self.diff_stats.get(sha)
 
     def is_ancestor(self, sha: str, ref: str) -> bool:
         self._record("is_ancestor", (sha, ref))
@@ -197,6 +240,10 @@ class FakeGit:
     def cherry_pick_continue(self) -> None:
         self.cherry_pick_continue_calls += 1
 
+    def status(self) -> str:
+        self._record("status", ())
+        return self.status_result
+
     def format_patch(self, base: str, head: str, out_dir: Path, prefix: str) -> Path:
         self._record("format_patch", (base, head, out_dir, prefix))
         return self.format_patch_result or (out_dir / prefix)
@@ -208,7 +255,15 @@ class FakeClassify:
         self.results: dict[str, Classification] = {}
 
     def __call__(
-        self, message, changed_files, symbols, patch_text, *, sha=None, agent_judgments=None
+        self,
+        message,
+        changed_files,
+        symbols,
+        patch_text,
+        *,
+        sha=None,
+        patch_id=None,
+        agent_judgments=None,
     ):
         self.calls.append(sha)
         return self.results.get(
@@ -267,11 +322,18 @@ class FakeSyncDecisionAgent:
 
 
 class FakeRunner:
-    def __init__(self, success: bool = True) -> None:
+    def __init__(self, success: bool = True, *, success_until: int | None = None) -> None:
         self.success = success
+        self.success_until = success_until
         self.build_calls: list[dict] = []
 
+    def _succeeded(self, prior_calls: int) -> bool:
+        if self.success_until is None:
+            return self.success
+        return prior_calls < self.success_until
+
     def build_commit(self, worktree, model, *, clean, module=None, log_path=None):
+        prior_calls = len(self.build_calls)
         self.build_calls.append(
             {
                 "worktree": worktree,
@@ -281,12 +343,13 @@ class FakeRunner:
                 "log_path": log_path,
             }
         )
+        ok = self._succeeded(prior_calls)
         return BuildResult(
             model=model,
-            returncode=0 if self.success else 1,
+            returncode=0 if ok else 1,
             log_path=log_path or Path("build.log"),
-            succeeded=self.success,
-            errors=[] if self.success else ["compile error"],
+            succeeded=ok,
+            errors=[] if ok else ["compile error"],
         )
 
     def is_success(self, result: BuildResult) -> bool:
@@ -331,8 +394,8 @@ class FakeBuildAgent:
             category=category, reason="fixed", files_to_fix=[]
         )
 
-    def fix(self, commit, errors, model, *, git=None, target_branch=None):
-        self.calls.append((commit, errors, model, git, target_branch))
+    def fix(self, commit, errors, model, *, git=None, target_branch=None, module=None):
+        self.calls.append((commit, errors, model, git, target_branch, module))
         return self.attribution
 
 
@@ -592,7 +655,7 @@ def test_detect_commits_populates_commits_and_classifications(tmp_path):
     assert [c.sha for c in update["detected_commits"]] == ["a1", "a2"]
     first = update["detected_commits"][0]
     assert first.source_branch == DEVELOP
-    assert first.homologous_section == "组网"
+    assert first.homologous_section == "4.34"
     assert first.issue_ids == ["CQ1"]
     assert first.patch_id == "pid1"
     assert update["classifications"]["a1"].is_bug_fix is True
@@ -600,6 +663,99 @@ def test_detect_commits_populates_commits_and_classifications(tmp_path):
     assert update["classifications"]["a2"].needs_agent is True
     assert update["branch_md_version"]
     assert ctx.matrix is not None
+    # 完整拓扑（含零检出源）作为独立字段落盘投影：sources/targets 全集而非检出去重。
+    assert update["sources"] == [DEVELOP]
+    assert update["targets"] == [TARGET]
+
+
+def test_detect_commits_reads_cron_branch_file_not_full_inventory(tmp_path):
+    """cron 拓扑来自 CRON_BRANCH_FILE；完整清单里的分支不进 cron 扫描面。"""
+    _, cron = write_split_branch_files(tmp_path)
+    ctx = make_ctx(tmp_path, settings_overrides={"cron_branch_file": str(cron)})
+    git = ctx.git
+    git.window_shas = {f"origin/{DEVELOP}": ["a1"]}
+    git.changed = {"a1": ["plat/demo.c"]}
+    git.patches = {"a1": "+p1"}
+    git.patch_ids = {"a1": "pid1"}
+
+    update = detect_commits(base_state(), ctx)
+
+    assert [hs.section for hs in ctx.matrix] == ["4.34"]
+    assert [b.name for hs in ctx.matrix for b in hs.sources] == [DEVELOP]
+    # 完整清单里的分支既不是源也不是目标
+    scanned = [args[0] for name, args in git.calls if name == "branch_tip"]
+    assert OTHER_DEVELOP not in scanned
+    assert [c.sha for c in update["detected_commits"]] == ["a1"]
+
+
+def test_detect_commits_branch_md_version_hashes_cron_file(tmp_path):
+    """版本号标识 cron 拓扑来源：改完整清单不应让 cron 周期版本漂移。"""
+    full, cron = write_split_branch_files(tmp_path)
+    ctx = make_ctx(tmp_path, settings_overrides={"cron_branch_file": str(cron)})
+    before = detect_commits(base_state(), ctx)["branch_md_version"]
+
+    full.write_text(FULL_BRANCH_MD + "\n- br_v4.33_extra_develop_20260901\n", encoding="utf-8")
+    ctx.matrix = None
+    after = detect_commits(base_state(), ctx)["branch_md_version"]
+
+    assert before == after
+
+
+def test_detect_commits_empty_matrix_records_error_not_silent_noop(tmp_path):
+    """零同步边必须响亮报错：漏配 CRON_BRANCH_FILE 会让 cron 静默空跑。"""
+    path = tmp_path / "branch.md"
+    path.write_text(FULL_BRANCH_MD, encoding="utf-8")
+    ctx = make_ctx(tmp_path)
+
+    update = detect_commits(base_state(), ctx)
+
+    assert update["detected_commits"] == []
+    errors = update["errors"]
+    assert "branch_matrix" in errors
+    assert "CRON_BRANCH_FILE" in errors["branch_matrix"].error
+
+
+def test_empty_matrix_makes_cycle_fail_not_silent_success(tmp_path):
+    """空扫描面必须收敛成 FAILED 周期 + action_required，而不是"零 commit 的成功"。"""
+    path = tmp_path / "branch.md"
+    path.write_text(FULL_BRANCH_MD, encoding="utf-8")
+    ctx = make_ctx(tmp_path)
+
+    detected = detect_commits(base_state(), ctx)
+    final = report(base_state(**{"errors": detected["errors"]}), ctx)
+
+    assert final["status"] == "FAILED"
+    nodes_flagged = [a.get("node") for a in final["report"].action_required]
+    assert "branch_matrix" in nodes_flagged
+
+
+def test_detect_commits_non_empty_matrix_records_no_matrix_error(tmp_path):
+    write_branch_md(tmp_path)
+    ctx = make_ctx(tmp_path)
+
+    update = detect_commits(base_state(), ctx)
+
+    assert "branch_matrix" not in (update.get("errors") or {})
+
+
+def test_load_matrix_falls_back_to_branch_file_when_cron_unset(tmp_path):
+    """未配置 CRON_BRANCH_FILE 时回退 branch_file（老部署零改动兼容）。"""
+    write_branch_md(tmp_path)
+    ctx = make_ctx(tmp_path)
+
+    matrix = _load_matrix(ctx)
+
+    assert [hs.section for hs in matrix] == ["4.34"]
+    assert [b.name for hs in matrix for b in hs.sources] == [DEVELOP]
+
+
+def test_load_matrix_reads_cron_branch_file_when_set(tmp_path):
+    _, cron = write_split_branch_files(tmp_path)
+    ctx = make_ctx(tmp_path, settings_overrides={"cron_branch_file": str(cron)})
+
+    matrix = _load_matrix(ctx)
+
+    assert [hs.section for hs in matrix] == ["4.34"]
 
 
 # --- sync_decision ---
@@ -655,6 +811,35 @@ def test_detect_commits_leaves_risk_none_when_severity_unknown(tmp_path):
     assert update["classifications"]["a1"].risk is None
 
 
+def test_detect_commits_applies_judgments_override_to_machine_classified(tmp_path):
+    # G9：人工覆盖（judgments.json）必须贯通全量 commit 判定，含机器已判定 [BUG] 的 commit。
+    write_branch_md(tmp_path)
+    ctx = make_ctx(tmp_path)
+    from bsa.rules import classify_commit
+
+    ctx.classify = classify_commit  # 真实 classifier，honor judgments
+    git = ctx.git
+    sha = "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef"
+    git.window_shas = {f"origin/{DEVELOP}": [sha]}
+    git.changed = {sha: ["plat/demo.c"]}
+    git.patches = {sha: "+x"}
+    git.patch_ids = {sha: "pid1"}
+    git.metadata_results = {
+        sha: ("dev", "2026-01-01T10:00:00+08:00", "[BUG] CQ999 fix null deref")
+    }
+    log_dir = Path(ctx.settings.log_dir)
+    log_dir.mkdir(parents=True, exist_ok=True)
+    (log_dir / "judgments.json").write_text(
+        json.dumps({sha: {"is_bug_fix": False, "reason": "人工判定非 bug-fix"}}),
+        encoding="utf-8",
+    )
+
+    update = detect_commits(base_state(), ctx)
+
+    assert update["classifications"][sha].is_bug_fix is False
+    assert update["classifications"][sha].needs_agent is False
+
+
 def test_sync_decision_resolves_pending_and_builds_batches(tmp_path):
     write_branch_md(tmp_path)
     ctx = make_ctx(tmp_path)
@@ -701,7 +886,36 @@ def test_sync_decision_resolves_pending_and_builds_batches(tmp_path):
     assert update["classifications"]["a2"].needs_agent is False
     assert update["decisions"]["a1"][TARGET].kind == "NeedSync"
     assert update["decisions"]["a2"][TARGET].kind == "AlreadyIncluded"
-    assert update["batches"] == {TARGET: ["a1"]}
+
+
+def test_sync_decision_ledger_short_circuits_already_included(tmp_path):
+    # 台账短路：目标分支已同步过该 patch-id → 直接 AlreadyIncluded，跳过快照+conclude。
+    write_branch_md(tmp_path)
+    ctx = make_ctx(tmp_path)
+    from bsa.ledger import record_synced
+
+    log_dir = Path(ctx.settings.log_dir)
+    log_dir.mkdir(parents=True, exist_ok=True)
+    record_synced(log_dir, "pid-a1", TARGET, "a1")
+    c1 = commit("a1")
+    state = base_state(
+        detected_commits=[c1],
+        classifications={
+            "a1": SyncDecision(
+                sha="a1",
+                is_bug_fix=True,
+                reason=None,
+                recognition_source="machine:[BUG]",
+                needs_agent=False,
+            )
+        },
+    )
+
+    update = sync_decision(state, ctx)
+
+    assert ctx.conclude.calls == []  # 未调用 conclude（跳过快照/相似度判定）
+    assert update["decisions"]["a1"][TARGET].kind == "AlreadyIncluded"
+    assert update["batches"] == {}  # 已含 → 不进批次
     assert update["status"] == "DECIDED"
 
 
@@ -977,6 +1191,28 @@ def test_prepare_worktree_reuses_existing_worktree(tmp_path):
     assert ctx.worktree_path == worktree_path
 
 
+def test_prepare_worktree_preserves_existing_branch_progress(tmp_path):
+    # resume 幂等：复用已建好的 worktree 时，不能清空已算好的 baseline/commits。
+    ctx = make_ctx(tmp_path)
+    git = ctx.git
+    git.tips = {TARGET: ("origin/" + TARGET, "tip1")}
+    worktree_path = Path(ctx.settings.worktree_root) / f"{TARGET}-cycle-20260101"
+    worktree_path.mkdir(parents=True)
+    gitdir = worktree_path / ".gitdir"
+    gitdir.mkdir()
+    (worktree_path / ".git").write_text(f"gitdir: {gitdir}\n", encoding="utf-8")
+    prior = branch_result(TARGET, commits=[commit_result("a1")])
+    prior.worktree_path = str(worktree_path)
+    prior.baseline = {"RTL9617C": failed_outcome()}
+    state = base_state(current_target=TARGET, branch_results={TARGET: prior})
+
+    update = prepare_worktree(state, ctx)
+
+    kept = update["branch_results"][TARGET]
+    assert kept.baseline is not None
+    assert kept.commits == [commit_result("a1")]
+
+
 def test_prepare_worktree_rebuilds_invalid_existing_worktree(tmp_path):
     # 残缺 worktree（.git 指向不存在的 gitdir）→ 删除重建（真机测试:
     # 残留目录复用后 cherry_pick 报 "not a git repository"）
@@ -1092,10 +1328,124 @@ def test_resolve_conflict_fail_fast(tmp_path):
     assert wg.cherry_pick_continue_calls == 0
 
 
+def test_resolve_conflict_records_last_reason_into_errors(tmp_path):
+    # 非 UTF-8 冲突：ConflictAgent 返回 None 并记录 last_reason → 节点写入 state.errors
+    ctx = make_ctx(tmp_path)
+    wg = FakeGit()
+    wg.unmerged_files_result = ["plat/demo.c"]
+    ctx.worktree_gits[str(Path("/wt"))] = wg
+    ctx.conflict_agent.resolution = None
+    ctx.conflict_agent.last_reason = (
+        "冲突文件 plat/demo.c 编码无法识别（非 UTF-8/GBK 文本），"
+        "无法安全自动解决，转人工处理"
+    )
+    state = base_state(
+        current_target=TARGET,
+        current_commit="a1",
+        detected_commits=[commit("a1")],
+        branch_results={
+            TARGET: branch_result(
+                TARGET,
+                commits=[commit_result("a1", cherry_pick_status="CONFLICT")],
+            )
+        },
+    )
+
+    update = resolve_conflict(state, ctx)
+
+    assert update["status"] == "RESOLUTION_FAILED"
+    assert "resolve_conflict" in update["errors"]
+    assert "UTF-8" in update["errors"]["resolve_conflict"].error
+    # 转人工原因同时落到 commit 级 resolution_error，供详情页透出
+    assert "UTF-8" in update["branch_results"][TARGET].commits[0].resolution_error
+
+
+# --- baseline_build ---
+
+
+def test_baseline_build_success_records_baseline(tmp_path):
+    ctx = make_ctx(tmp_path)
+    ctx.runner = FakeRunner(success=True)
+    ctx.worktree_path = Path("/wt")
+    ctx.safety = FakeSafety(models=("RTL9617C",))
+    state = base_state(
+        current_target=TARGET,
+        build_models={TARGET: ["RTL9617C"]},
+        branch_results={TARGET: branch_result(TARGET)},
+    )
+
+    update = baseline_build(state, ctx)
+
+    assert ctx.runner.build_calls[0]["clean"] is True
+    assert ctx.runner.build_calls[0]["worktree"] == Path("/wt")
+    assert ctx.runner.build_calls[0]["model"] == "RTL9617C"
+    branch = update["branch_results"][TARGET]
+    assert branch.baseline["RTL9617C"].status == "OK"
+    assert update["status"] == "BASELINE_OK"
+
+
+def test_baseline_build_failure_marks_branch_failed(tmp_path):
+    ctx = make_ctx(tmp_path)
+    ctx.runner = FakeRunner(success=False)
+    ctx.worktree_path = Path("/wt")
+    ctx.safety = FakeSafety(models=("RTL9617C",))
+    state = base_state(
+        current_target=TARGET,
+        build_models={TARGET: ["RTL9617C"]},
+        branch_results={TARGET: branch_result(TARGET)},
+    )
+
+    update = baseline_build(state, ctx)
+
+    branch = update["branch_results"][TARGET]
+    assert branch.status == "FAILED"
+    assert branch.baseline["RTL9617C"].status == "FAILED"
+    assert "baseline build failed" in (branch.stop_reason or "")
+    assert update["status"] == "BASELINE_FAILED"
+
+
+def test_baseline_build_idempotent_skips_rebuild(tmp_path):
+    ctx = make_ctx(tmp_path)
+    ctx.runner = FakeRunner(success=True)
+    ctx.worktree_path = Path("/wt")
+    ctx.safety = FakeSafety(models=("RTL9617C",))
+    prior = branch_result(TARGET)
+    prior.baseline = {"RTL9617C": failed_outcome()}
+    state = base_state(
+        current_target=TARGET,
+        build_models={TARGET: ["RTL9617C"]},
+        branch_results={TARGET: prior},
+    )
+
+    update = baseline_build(state, ctx)
+
+    assert ctx.runner.build_calls == []
+    assert update["status"] == "BASELINE_OK"
+
+
+def test_baseline_build_multiple_models_serial(tmp_path):
+    ctx = make_ctx(tmp_path)
+    ctx.runner = FakeRunner(success=True)
+    ctx.worktree_path = Path("/wt")
+    ctx.safety = FakeSafety(models=("RTL9617C", "2600"))
+    state = base_state(
+        current_target=TARGET,
+        build_models={TARGET: ["RTL9617C", "2600"]},
+        branch_results={TARGET: branch_result(TARGET)},
+    )
+
+    update = baseline_build(state, ctx)
+
+    assert [c["model"] for c in ctx.runner.build_calls] == ["RTL9617C", "2600"]
+    branch = update["branch_results"][TARGET]
+    assert branch.baseline["RTL9617C"].status == "OK"
+    assert branch.baseline["2600"].status == "OK"
+
+
 # --- build ---
 
 
-def test_build_success_records_outcome_and_clean_first_in_batch(tmp_path):
+def test_build_success_records_outcome_and_incremental(tmp_path):
     ctx = make_ctx(tmp_path)
     ctx.runner = FakeRunner(success=True)
     ctx.worktree_path = Path("/wt")
@@ -1115,7 +1465,8 @@ def test_build_success_records_outcome_and_clean_first_in_batch(tmp_path):
     update = build(state, ctx)
 
     call = ctx.runner.build_calls[0]
-    assert call["clean"] is True
+    # 基线编译已在 prepare 后全量验证，批次首个 commit 也走增量编译（决策 V2）。
+    assert call["clean"] is False
     assert call["worktree"] == Path("/wt")
     assert call["model"] == "RTL9617C"
     assert call["log_path"] == (
@@ -1126,11 +1477,47 @@ def test_build_success_records_outcome_and_clean_first_in_batch(tmp_path):
     assert update["status"] == "BUILD_OK"
 
 
+def _build_rules_with_modules() -> BuildRules:
+    return BuildRules(
+        build_types={},
+        build_models_by_section={},
+        build_modules={
+            "datapath/": "datapath",
+            "plat/": "plat",
+            "component/wlan/": "component wlan",
+        },
+    )
+
+
+def test_build_public_file_module_scoped_when_mapped(tmp_path):
+    # 全模块化：改动文件命中 build_modules 前缀 → 模块编译；不再因 public_dirs 强制 clean。
+    ctx = make_ctx(tmp_path)
+    ctx.build_rules = _build_rules_with_modules()
+    ctx.runner = FakeRunner(success=True)
+    ctx.worktree_path = Path("/wt")
+    state = base_state(
+        current_target=TARGET,
+        current_commit="a1",
+        detected_commits=[commit("a1", changed_files=["plat/demo.c"])],
+        batches={TARGET: ["a1"]},
+        branch_results={
+            TARGET: branch_result(
+                TARGET,
+                commits=[commit_result("a1")],
+            )
+        },
+    )
+
+    build(state, ctx)
+
+    assert ctx.runner.build_calls[0]["clean"] is False
+    assert ctx.runner.build_calls[0]["module"] == "plat"
+
+
 def test_build_incremental_when_not_first_in_batch(tmp_path):
     ctx = make_ctx(tmp_path)
     ctx.runner = FakeRunner(success=True)
     ctx.worktree_path = Path("/wt")
-    ctx.is_public_file = lambda path: False
     state = base_state(
         current_target=TARGET,
         current_commit="a2",
@@ -1149,15 +1536,16 @@ def test_build_incremental_when_not_first_in_batch(tmp_path):
     assert ctx.runner.build_calls[0]["clean"] is False
 
 
-def test_build_clean_for_public_file(tmp_path):
+def test_build_unmapped_file_falls_back_full(tmp_path):
+    # 改动文件未命中任何 build_modules 前缀（如 component/dhcp.c 无独立脚本）→ 回退全量。
     ctx = make_ctx(tmp_path)
+    ctx.build_rules = _build_rules_with_modules()
     ctx.runner = FakeRunner(success=True)
     ctx.worktree_path = Path("/wt")
-    ctx.is_public_file = lambda path: path == "plat/public.c"
     state = base_state(
         current_target=TARGET,
         current_commit="a2",
-        detected_commits=[commit("a2", changed_files=["plat/public.c"])],
+        detected_commits=[commit("a2", changed_files=["component/dhcp.c"])],
         batches={TARGET: ["a1", "a2"]},
         branch_results={
             TARGET: branch_result(
@@ -1169,7 +1557,8 @@ def test_build_clean_for_public_file(tmp_path):
 
     build(state, ctx)
 
-    assert ctx.runner.build_calls[0]["clean"] is True
+    assert ctx.runner.build_calls[0]["clean"] is False
+    assert ctx.runner.build_calls[0]["module"] is None
 
 
 def test_build_failed_status(tmp_path):
@@ -1272,6 +1661,7 @@ def test_fix_build_persists_agent_fix_diff(tmp_path):
 
     outcome = update["branch_results"][TARGET].commits[0].build["RTL9617C"]
     assert outcome.fix_diff == "@@ -1 +1 @@"
+    assert outcome.reason == "fixed"
 
 
 def test_fix_build_still_failed_after_attempts(tmp_path):
@@ -1303,6 +1693,43 @@ def test_fix_build_still_failed_after_attempts(tmp_path):
     assert outcome.status == "FAILED"
     assert outcome.agent_attempts == 1
     assert update["status"] == "BUILD_FAILED"
+
+
+def test_fix_build_unresolvable_no_rebuild_no_attempt_bump(tmp_path):
+    """LLM 不可用（unresolvable）→ 不重编译、agent_attempts 不虚增、路由 UNRESOLVABLE。"""
+    ctx = make_ctx(tmp_path)
+    ctx.build_agent = FakeBuildAgent(category="unresolvable")
+    ctx.runner = FakeRunner(success=False)
+    ctx.worktree_path = Path("/wt")
+    wg = FakeGit()
+    ctx.worktree_gits[str(Path("/wt"))] = wg
+    state = base_state(
+        current_target=TARGET,
+        current_commit="a1",
+        detected_commits=[commit("a1")],
+        branch_results={
+            TARGET: branch_result(
+                TARGET,
+                commits=[
+                    CommitResult(
+                        sha="a1",
+                        cherry_pick="OK",
+                        conflict_resolution=None,
+                        build={"RTL9617C": failed_outcome()},
+                    )
+                ],
+            )
+        },
+    )
+
+    update = fix_build(state, ctx)
+
+    outcome = update["branch_results"][TARGET].commits[0].build["RTL9617C"]
+    assert outcome.status == "FAILED"
+    assert outcome.agent_attempts == 0  # 未进入修复循环，不虚增
+    assert outcome.reason == "fixed"  # FakeBuildAgent 的 reason
+    assert update["status"] == "UNRESOLVABLE"
+    # 未触发第二次 build_commit（runner.build_commit 只被 baseline/首次 build 调用，fix_build 不重编）
 
 
 # --- generate_patch ---
@@ -1441,7 +1868,87 @@ def test_report_assembles_basic_report(tmp_path):
     assert rep.summary["commits_detected"] == 1
     assert len(rep.action_required) == 1
     assert rep.action_required[0]["sha"] == "a1"
-    assert update["status"] == "REPORTED"
+    assert update["status"] == "PARTIAL"
+
+
+def test_action_required_marks_stale_override(tmp_path):
+    """覆盖已因内容变化失效（fingerprint 不匹配）→ review_item 附带 override_stale。"""
+    ctx = make_ctx(tmp_path)
+    from bsa.rules.classify import compute_fingerprint
+
+    sha = "a1"
+    c = commit("a1", message="[BUG] fix null deref\n\nrefactor it", patch_id="pid-a1")
+    # 覆盖写入时基于旧内容（不同的 message → 不同 fingerprint）
+    stale_fp = compute_fingerprint("[BUG] fix null deref OLD\n\nrefactor it", "pid-a1")
+    log_dir = Path(ctx.settings.log_dir)
+    log_dir.mkdir(parents=True, exist_ok=True)
+    (log_dir / "judgments.json").write_text(
+        json.dumps(
+            {
+                sha: {
+                    "is_bug_fix": False,
+                    "recognition_source": "manual-override",
+                    "reason": "人工判定",
+                },
+                f"fp:{stale_fp}": {
+                    "is_bug_fix": False,
+                    "recognition_source": "manual-override",
+                    "reason": "人工判定",
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    state = base_state(
+        detected_commits=[c],
+        decisions={
+            sha: {TARGET: Conclusion4(kind="ManualReview", evidence=["z"], confidence="low")}
+        },
+    )
+
+    actions = _action_required(state, log_dir=ctx.settings.log_dir)
+
+    assert actions[0]["sha"] == sha
+    assert actions[0]["override_stale"] is True
+
+
+def test_action_required_no_stale_when_override_matches(tmp_path):
+    """覆盖 fingerprint 仍匹配 → 不标失效。"""
+    ctx = make_ctx(tmp_path)
+    from bsa.rules.classify import compute_fingerprint
+
+    sha = "a1"
+    c = commit("a1", message="[BUG] fix null deref\n\nrefactor it", patch_id="pid-a1")
+    fp = compute_fingerprint(c.message, c.patch_id)
+    log_dir = Path(ctx.settings.log_dir)
+    log_dir.mkdir(parents=True, exist_ok=True)
+    (log_dir / "judgments.json").write_text(
+        json.dumps(
+            {
+                sha: {
+                    "is_bug_fix": False,
+                    "recognition_source": "manual-override",
+                    "reason": "人工判定",
+                },
+                f"fp:{fp}": {
+                    "is_bug_fix": False,
+                    "recognition_source": "manual-override",
+                    "reason": "人工判定",
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    state = base_state(
+        detected_commits=[c],
+        decisions={
+            sha: {TARGET: Conclusion4(kind="ManualReview", evidence=["z"], confidence="low")}
+        },
+    )
+
+    actions = _action_required(state, log_dir=ctx.settings.log_dir)
+
+    assert actions[0]["override_stale"] is False
 
 
 def test_report_includes_errors_in_action_required(tmp_path):
@@ -1451,3 +1958,108 @@ def test_report_includes_errors_in_action_required(tmp_path):
     )
     update = report(state, ctx)
     assert update["report"].action_required[0]["node"] == "detect_commits"
+
+
+# --- report: 周期终态可区分（P0-2/G10） ---
+
+
+def test_report_terminal_status_all_success(tmp_path):
+    ctx = make_ctx(tmp_path)
+    state = base_state(
+        branch_results={
+            TARGET: BranchResult(
+                target_branch=TARGET,
+                worktree_path="/wt",
+                status="SUCCESS",
+                commits=[commit_result("a1")],
+                patch_path=None,
+                stop_reason=None,
+            )
+        }
+    )
+    update = report(state, ctx)
+    assert update["status"] == "SUCCESS"
+
+
+def test_report_terminal_status_partial(tmp_path):
+    ctx = make_ctx(tmp_path)
+    state = base_state(branch_results={TARGET: branch_result(TARGET)})
+    update = report(state, ctx)
+    assert update["status"] == "PARTIAL"
+
+
+def test_report_terminal_status_failed_on_branch_failure(tmp_path):
+    ctx = make_ctx(tmp_path)
+    state = base_state(
+        branch_results={
+            TARGET: BranchResult(
+                target_branch=TARGET,
+                worktree_path="/wt",
+                status="FAILED",
+                commits=[commit_result("a1", cherry_pick_status="FAILED")],
+                patch_path=None,
+                stop_reason=None,
+            )
+        }
+    )
+    update = report(state, ctx)
+    assert update["status"] == "FAILED"
+
+
+def test_report_terminal_status_failed_on_node_error(tmp_path):
+    ctx = make_ctx(tmp_path)
+    state = base_state(
+        errors={"detect_commits": ErrorRecord(node="detect_commits", error="boom", ts="t")}
+    )
+    update = report(state, ctx)
+    assert update["status"] == "FAILED"
+
+
+# --- GraphContext 注入 decision_rules.conclude 目标类型（P2 治理） ---
+
+
+def test_graph_context_injects_conclude_target_types(tmp_path):
+    from bsa.rules.conclude import TargetSnapshot, conclude_pair
+
+    settings = make_settings(tmp_path)
+    ctx = GraphContext(
+        settings=settings,
+        executor=SimpleNamespace(),
+        git=FakeGit(),
+        runner=FakeRunner(),
+        sync_decision_agent=FakeSyncDecisionAgent(),
+        conflict_agent=FakeConflictAgent(),
+        build_agent=FakeBuildAgent(),
+        safety=FakeSafety(),
+        decision_rules=DecisionRules(
+            classify={},
+            conclude=ConcludeThresholds(
+                need_sync_target_types=["release"],
+                ineligible_target_types=["feature", "personal"],
+            ),
+            branch_mapping={},
+        ),
+    )
+    # 未显式传 conclude → __post_init__ 绑定为注入目标类型的 partial，不再是裸函数。
+    assert ctx.conclude is not conclude_pair
+
+    analysis = _to_analysis(
+        commit("a1"),
+        SyncDecision(
+            sha="a1",
+            is_bug_fix=True,
+            reason=None,
+            recognition_source="machine:[BUG]",
+            needs_agent=False,
+        ),
+        {},
+    )
+    snapshot = TargetSnapshot(
+        branch_name="br_v4_LineA_develop_b_20260101",
+        branch_type="develop",
+        fix_clearly_missing=True,
+        files_on_target={"plat/demo.c"},
+        symbols_on_target={},
+    )
+    conclusion = ctx.conclude(analysis, snapshot, similarity_high=0.90, similarity_low=0.50)
+    assert conclusion.kind == "OutOfScope"

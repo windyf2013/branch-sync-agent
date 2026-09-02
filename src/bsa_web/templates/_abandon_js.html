@@ -1,0 +1,33 @@
+<script>
+(function () {
+  var csrf = "{{ csrf }}";
+  document.querySelectorAll("[data-abandon-target]").forEach(function (btn) {
+    btn.addEventListener("click", function () {
+      var cycleId = btn.getAttribute("data-abandon-cycle");
+      var target = btn.getAttribute("data-abandon-target");
+      var sha = btn.getAttribute("data-abandon-sha") || null;
+      if (!window.confirm("确认放弃 " + target + "？放弃后从可推送/待办移除，可在任务详情页恢复。")) {
+        return;
+      }
+      var result = btn.parentElement.querySelector(".abandon-result");
+      result.textContent = "放弃中…";
+      fetch("/api/abandon", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ _csrf: csrf, cycle_id: cycleId, target: target, sha: sha }),
+      }).then(function (r) {
+        return r.json().then(function (json) {
+          return { ok: r.ok, json: json };
+        });
+      }).then(function (res) {
+        if (res.ok) {
+          result.textContent = (res.json && res.json.cancelled) ? "已放弃并取消任务" : "已放弃";
+          window.location.reload();
+        } else {
+          result.textContent = (res.json && res.json.detail) || "放弃失败";
+        }
+      });
+    });
+  });
+})();
+</script>

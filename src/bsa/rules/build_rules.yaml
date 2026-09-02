@@ -1,0 +1,75 @@
+# 编译型号（产品线 → 型号列表）。型号 id → (build 脚本, 产品参数)。
+# 分支所属产品线 = 分支文件 section（人工标注）。产品线未配置时任务报错停止，
+# 不做静默兜底（避免用错编译脚本）。
+#
+# 两条路径解析出的 section 值不同，共用本文件：
+#   cron   —— section = cron 分支文件的产品键（如 "4.34"），来自同源矩阵；
+#   手动   —— section = 完整清单 branch.md 的章节全称（如 "1.1 组网产品分支"）。
+# 匹配为双向子串（容忍 "1.1 " 编号前缀）。
+#
+# 约束：build_models_by_section 的任意两个 key 不得互为子串，且不得同时被同一个
+# section 命中——否则 resolve_build_models 报错停止（决不按书写顺序猜）。
+# 反例：同时存在「4.34 主分支」与「4.34产品主线分支」时，cron 产品键 "4.34"
+# 会同时命中两者。
+build_types:
+  # FTTR-B 系列
+  "2600m":
+    script: "RTL9617C_build_ci.sh"
+    product: "2600m"
+  # RTL9617C 系列 5200-B
+  "5200":
+    script: "RTL9617C_build.sh"
+    product: "5200"
+  # X86 系列 5200-D
+  # "5200B":
+  #   script: "X86.sh"
+  #   product: "5200B"
+  # "RTL9617C 系列 政企网关":
+  "2600":
+    script: "RTL9617C_build_ct.sh"
+    product: "2600"
+
+build_models_by_section:
+  # --- cron 专用分支文件（spec/branch-cron.md）的产品键 ---
+  "4.34 主分支":
+    - "2600m"
+
+  # --- 完整清单 branch.md 的章节 ---
+  "组网产品分支":
+    - "5200"
+  #  - "5200B"
+
+  "FTTR-B产品分支":
+    - "2600m"
+
+  "政企网关产品分支":
+    - "2600"
+
+# 编译模块映射：改动文件路径前缀 → 编译脚本模块参数（追加在 ./<script> <product> 之后）。
+# 参数对应 build/make_rcios.sh 的 $2（datapath/plat/plugin/component/image）与 $3
+# （component 的二级子模块名）。多 token 用空格连接，由 runner 逐段 quote 成 argv。
+# 解析规则：所有改动文件须命中且命中同一 token，否则回退全量编译（不做静默猜模块）。
+# 未配置的前缀（如 component/cwmp_dm、component/web 无独立 make_component_* 脚本）
+# 命中即回退全量。
+build_modules:
+  "datapath/": "datapath"
+  "plat/": "plat"
+  "plugin/": "plugin"
+  "component/ac/": "component ac"
+  "component/capwap/": "component capwap"
+  "component/cell/": "component cell"
+  "component/dpiengine/": "component dpiengine"
+  "component/netconf/": "component netconf"
+  "component/netopeer/": "component netopeer"
+  "component/openvpn/": "component openvpn"
+  "component/ovs/": "component ovs"
+  "component/ponolt/": "component ponolt"
+  "component/portal/": "component portal"
+  "component/rcgmp/": "component rcgmp"
+  "component/switch/": "component switch"
+  "component/usm/": "component usm"
+  "component/voice/": "component voice"
+  "component/wlan/": "component wlan"
+  "component/xpon/": "component xpon"
+  "component/zabbix/": "component zabbix"
+  "component/mosquitto/": "component mqtt"

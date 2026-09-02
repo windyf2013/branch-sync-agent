@@ -1,0 +1,93 @@
+{% extends "base.html" %}
+{% block title %}历史报告{% endblock %}
+{% block content %}
+<div class="page-head">
+  <div>
+    <h1>历史报告</h1>
+    <p class="page-sub">超期归档任务（手动同步与 cron 周期）</p>
+  </div>
+</div>
+
+<section class="panel">
+<div class="panel-head"><h2>周期任务</h2><span class="panel-note">{{ cycle_tasks | length }} 个</span></div>
+  <div class="panel-body">
+{% if cycle_tasks %}
+  <div class="table-wrap">
+  <table>
+    <thead>
+      <tr>
+        <th>周期</th>
+        <th>检测 → 去向</th>
+        <th>状态</th>
+        <th>完成时间</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for t in cycle_tasks %}
+      <tr>
+        <td><a href="{{ t.detail_url }}"><code class="mono">{{ t.cycle_id }}</code></a></td>
+        <td>
+          {% set d = t.destinations %}
+          {% if d.detected %}
+          <div class="eq-line">
+            <span class="t-num eq-total">{{ d.detected }}</span>
+            <span class="eq-op">=</span>
+            {% if d.synced %}<span class="eq-term"><span class="eq-dot synced"></span><span class="t-num synced">{{ d.synced }}</span></span>{% endif %}
+            {% if d.skipped %}<span class="eq-op">+</span><span class="eq-term"><span class="eq-dot skipped"></span><span class="t-num skipped">{{ d.skipped }}</span></span>{% endif %}
+            {% if d.review %}<span class="eq-op">+</span><span class="eq-term"><span class="eq-dot review"></span><span class="t-num review">{{ d.review }}</span></span>{% endif %}
+            {% if d.unhandled %}<span class="eq-op">+</span><span class="eq-term"><span class="eq-dot other"></span><span class="t-num other">{{ d.unhandled }}</span></span>{% endif %}
+          </div>
+          <span class="cell-sub">同步 {{ d.synced }} · 跳过 {{ d.skipped }} · 待确认 {{ d.review }} · 未处理 {{ d.unhandled }}</span>
+          {% else %}
+          <span class="muted">—</span>
+          {% endif %}
+        </td>
+        <td><span class="badge {{ t.state | lower }}">{{ t.badge }}</span></td>
+        <td><span class="muted">{% if t.finished_at %}{{ t.finished_at | localtime }}{% endif %}</span></td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  </div>
+  {% else %}
+    <div class="empty-state"><span class="empty-ico"><svg viewBox="0 0 24 24" width="26" height="26" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 9h18"/><path d="M9 13h6"/></svg></span>暂无周期任务。</div>
+  {% endif %}
+  </div>
+</section>
+
+<section class="panel">
+<div class="panel-head"><h2>同步 / 重跑任务</h2><span class="panel-note">{{ sync_tasks | length }} 个</span></div>
+  <div class="panel-body">
+{% if sync_tasks %}
+  <div class="table-wrap">
+  <table>
+    <thead>
+      <tr>
+        <th>目标分支</th>
+        <th>源分支</th>
+        <th>状态</th>
+        <th>commit 数</th>
+        <th>发起人</th>
+        <th>完成时间</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for t in sync_tasks %}
+      <tr>
+        <td><a href="{{ t.detail_url }}"><code class="mono">{{ t.target or ("#" ~ t.task_id) }}</code></a></td>
+        <td><span class="muted">{{ t.src or "—" }}</span></td>
+        <td><span class="badge {{ t.state | lower }}">{{ t.badge }}</span></td>
+        <td class="num">{{ t.commits or "—" }}</td>
+        <td><span class="muted">{{ t.user or "—" }}</span></td>
+        <td><span class="muted">{% if t.finished_at %}{{ t.finished_at | localtime }}{% endif %}</span></td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  </div>
+  {% else %}
+    <div class="empty-state"><span class="empty-ico"><svg viewBox="0 0 24 24" width="26" height="26" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg></span>暂无同步任务。</div>
+  {% endif %}
+  </div>
+</section>
+{% endblock %}

@@ -182,6 +182,28 @@ class TestNoModelsField:
         assert "required_models" not in Settings.model_fields
 
 
+class TestCronBranchFile:
+    """cron 专用分支文件：未配置时回退 branch_file（老部署零改动兼容）。"""
+
+    def test_defaults_to_empty(self, monkeypatch):
+        s = make(monkeypatch, valid_env())
+        assert s.cron_branch_file == ""
+
+    def test_resolved_falls_back_to_branch_file(self, monkeypatch):
+        s = make(monkeypatch, valid_env())
+        assert s.cron_branch_file_resolved == "/srv/rcios/branch.md"
+
+    def test_resolved_prefers_explicit_cron_file(self, monkeypatch):
+        env = valid_env()
+        env["CRON_BRANCH_FILE"] = "/srv/rcios/branch-cron.md"
+        s = make(monkeypatch, env)
+        assert s.cron_branch_file_resolved == "/srv/rcios/branch-cron.md"
+        assert s.branch_file == "/srv/rcios/branch.md"
+
+    def test_resolved_is_not_a_settings_field(self):
+        assert "cron_branch_file_resolved" not in Settings.model_fields
+
+
 class TestLoadSettings:
     def test_returns_settings_instance(self, monkeypatch):
         s = make(monkeypatch, valid_env())

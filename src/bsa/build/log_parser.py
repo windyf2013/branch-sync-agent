@@ -1,6 +1,17 @@
 import re
 
 _ERROR_LINE = re.compile(r"\berror:", re.IGNORECASE)
+# 硬失败行：不满足 ``error:`` 但必然致命的证据。刻意排除 ``fatal: not a git
+# repository``（内核构建里长期存在的噪声，构建会继续）。只收构建系统自己的
+# 失败声明与 git 身份缺失这两类确定终止编译的行；不匹配 ``make ***``——
+# ``make clean`` 阶段对尚未 clone 的组件会打 ``make[1]: *** ... No such file
+# or directory. Stop.`` 这类可忽略噪声。
+_HARD_ERROR_LINE = re.compile(
+    r"fatal: unable to auto-detect email"
+    r"|(?:author|committer) identity unknown"
+    r"|\bplat make failed\b",
+    re.IGNORECASE,
+)
 _ROOTFS_MARKER = "Make rootfs success"
 _MAX_KEEP_ERRORS = 500
 _TAIL_KEEP_ERRORS = 100
@@ -17,14 +28,17 @@ def extract_errors(
 
     Only ``error:`` / ``Error:`` lines are failure evidence; ``fatal:`` /
     ``warning:`` / ``note:`` lines are long-standing noise and are never
-    treated as failures. Each returned item is one block: the error line plus
-    ``context_lines`` of context before and after it. Total output is capped
-    at ``max_chars``; when more than 500 errors exist the first 500 and the
-    last 100 are kept.
+    treated as failures. ``_HARD_ERROR_LINE`` (git 身份缺失、make 顶层失败)
+    是例外：这些行不含 ``error:`` 却必然终止编译。Each returned item is one
+    block: the error line plus ``context_lines`` of context before and after
+    it. Total output is capped at ``max_chars``; when more than 500 errors
+    exist the first 500 and the last 100 are kept.
     """
     lines = log.splitlines()
     error_idx = [
-        i for i, line in enumerate(lines) if _ERROR_LINE.search(line) is not None
+        i
+        for i, line in enumerate(lines)
+        if _ERROR_LINE.search(line) is not None or _HARD_ERROR_LINE.search(line) is not None
     ]
     if len(error_idx) > _MAX_KEEP_ERRORS:
         error_idx = error_idx[:_MAX_KEEP_ERRORS] + error_idx[-_TAIL_KEEP_ERRORS:]

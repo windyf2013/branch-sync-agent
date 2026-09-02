@@ -1,0 +1,600 @@
+{% extends "base.html" %}
+{% block content %}
+{% macro cycle_summary_row() %}
+<tr class="task-row-cycle-summary" data-kind="cycle" data-section="">
+  <td>
+    <span class="cell-primary"><span class="badge neutral">周期</span>
+      <a href="/cycle/{{ current_cycle_id }}" class="branch-link">{{ current_cycle_id }}</a></span>
+    <span class="cell-sub">系统</span>
+  </td>
+  <td><span class="badge {{ cycle_status | lower }}">{{ cycle_status_label }}</span></td>
+  <td class="num sync-skip"><span class="sync-num">同步 {{ cycle_synced }}</span> · <span class="skip-num">跳过 {{ cycle_skipped }}</span></td>
+  <td class="muted">本周期无可同步任务
+    {% if payload.sources %}· 源分支：{{ payload.sources | join("、") }}{% endif %}
+    {% if payload.targets %}· 目标分支：{{ payload.targets | join("、") }}{% endif %}
+    · 检测 {{ cycle_detected }} · 待确认 {{ review_pending | length }}</td>
+  <td><a class="btn btn-outline" href="/cycle/{{ current_cycle_id }}">查看周期概览</a></td>
+</tr>
+{% endmacro %}
+{% macro branch_select(name, label, id=None) %}
+<label>{{ label }}
+  {% if branch_options %}
+  <select name="{{ name }}"{% if id %} id="{{ id }}"{% endif %} required>
+    <option value="" disabled selected>选择{{ label }}</option>
+    {% for b in branch_options %}<option value="{{ b }}">{{ b }}</option>{% endfor %}
+  </select>
+  {% else %}
+  <input type="text" name="{{ name }}"{% if id %} id="{{ id }}"{% endif %} required>
+  {% endif %}
+</label>
+{% endmacro %}
+
+{% if op_error %}
+  <p class="op-error">{{ op_error }}</p>
+{% endif %}
+
+<div class="page-head">
+  <div>
+    <h1>工作台</h1>
+    <p class="page-sub">今日待办与任务实时状态</p>
+  </div>
+  <div class="page-head-actions">
+    <a class="btn" href="{{ request.url.path }}?{{ request.url.query }}">↻ 刷新</a>
+    {% if user.role == "operator" %}
+    <button type="button" id="open-sync" class="btn-primary">＋ 发起同步</button>
+    {% else %}
+    <span class="push-result-muted">仅操作者可发起同步</span>
+    {% endif %}
+  </div>
+</div>
+
+<!-- 当前周期上下文 -->
+<section class="panel period-bar period-bar-prominent">
+  <div class="period-bar-left">
+    <div class="period-bar-status">
+      <span class="context-label">当前周期</span>
+      {% if agent_status == "running" %}
+        <span class="badge running period-badge-lg">进行中</span>
+      {% elif agent_status == "failed" %}
+        <span class="badge failed period-badge-lg">失败</span>
+      {% elif agent_status == "unavailable" %}
+        <span class="badge failed period-badge-lg">数据不可用</span>
+      {% elif agent_status == "done" %}
+        <span class="badge success period-badge-lg">完成{% if review_pending %}<span class="period-review-badge"> · {{ review_pending | length }} 待人工</span>{% endif %}</span>
+      {% else %}
+        <span class="badge neutral period-badge-lg">暂无周期</span>
+      {% endif %}
+      {% if current_cycle_id or running_cycle_id %}
+        <code class="mono period-chip period-chip-lg">{{ current_cycle_id or running_cycle_id }}</code>
+      {% endif %}
+    </div>
+    <div class="period-bar-stats">
+      {% if payload and payload.get("scan_window") %}
+        <span class="context-item">窗口 {{ (payload["scan_window"] | first) or "—" }} → {{ (payload["scan_window"] | last) or "—" }}</span>
+      {% endif %}
+      {% if cycle_detected is defined %}
+        <span class="context-item period-stat">
+          <span class="period-stat-num sync-num">{{ cycle_detected }}</span> 检测
+          <span class="period-stat-num sync-num">{{ cycle_synced }}</span> 同步
+          <span class="period-stat-num skip-num">{{ cycle_skipped }}</span> 跳过
+          <span class="period-stat-num review-num">{{ review_pending | length }}</span> 待确认
+        </span>
+      {% endif %}
+      {% if (agent_status == "done" or agent_status == "failed") and current_cycle_id %}
+        <span class="context-item"><a href="/cycle/{{ current_cycle_id }}">查看周期概览 →</a></span>
+      {% endif %}
+    </div>
+  </div>
+  <div class="period-bar-right">
+    {% if cycle_task %}
+      <span class="context-item">周期任务 {{ cycle_task.cycle_id }} · 来源 {{ cycle_task.source }}</span>
+      {% if cycle_task.state in ("queued", "running") %}
+        <span class="context-item"><a href="/tasks/{{ cycle_task.id }}">进度</a></span>
+      {% endif %}
+      {% if cycle_task.state == "interrupted" %}
+        <span class="badge interrupted">已中断 · 现场已保留</span>
+        {% if user.role == "operator" %}
+        <button type="button" id="cycle-resume" data-resume-cycle="{{ cycle_task.cycle_id }}">续跑</button>
+        <span id="cycle-resume-result"></span>
+        {% endif %}
+      {% endif %}
+    {% endif %}
+  </div>
+</section>
+
+<!-- KPI 总览（恒显 5 卡） -->
+<div class="kpi-grid">
+  {% if push_pending and current_cycle_id %}
+  <a class="kpi {% if push_pending %}kpi-ok{% endif %}" href="/cycle/{{ current_cycle_id }}" style="text-decoration:none">
+  {% else %}
+  <div class="kpi {% if push_pending %}kpi-ok{% endif %}">
+  {% endif %}
+    <div class="kpi-top">
+      <span class="kpi-icon">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19V5"/><path d="m5 12 7-7 7 7"/></svg>
+      </span>
+      <span class="label">可推送</span>
+    </div>
+    <span class="value{% if not push_pending %} kpi-zero{% endif %}">{{ push_pending | length }}</span>
+    <div class="sub">本周期</div>
+  {% if push_pending and current_cycle_id %}
+  </a>
+  {% else %}
+  </div>
+  {% endif %}
+  {% if review_pending and current_cycle_id %}
+  <a class="kpi {% if review_pending %}kpi-review{% endif %}" data-kpi-review-link href="/cycle/{{ current_cycle_id }}" style="text-decoration:none">
+  {% else %}
+  <div class="kpi {% if review_pending %}kpi-review{% endif %}">
+  {% endif %}
+    <div class="kpi-top">
+      <span class="kpi-icon">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7z"/><circle cx="12" cy="12" r="3"/></svg>
+      </span>
+      <span class="label">待确认</span>
+    </div>
+    <span class="value{% if not review_pending %} kpi-zero{% endif %}">{{ review_pending | length }}</span>
+    <div class="sub">本周期</div>
+  {% if review_pending and current_cycle_id %}
+  </a>
+  {% else %}
+  </div>
+  {% endif %}
+  {% if rerun_pending and current_cycle_id %}
+  <a class="kpi {% if rerun_pending %}kpi-need{% endif %}" href="/cycle/{{ current_cycle_id }}" style="text-decoration:none">
+  {% else %}
+  <div class="kpi {% if rerun_pending %}kpi-need{% endif %}">
+  {% endif %}
+    <div class="kpi-top">
+      <span class="kpi-icon">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/></svg>
+      </span>
+      <span class="label">待重跑</span>
+    </div>
+    <span class="value{% if not rerun_pending %} kpi-zero{% endif %}">{{ rerun_pending | length }}</span>
+    <div class="sub">本周期</div>
+  {% if rerun_pending and current_cycle_id %}
+  </a>
+  {% else %}
+  </div>
+  {% endif %}
+  <div class="kpi {% if active_manual %}kpi-pending{% endif %}">
+    <div class="kpi-top">
+      <span class="kpi-icon">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2a10 10 0 1 0 10 10"/><path d="M22 2 12 12"/></svg>
+      </span>
+      <span class="label">进行中</span>
+    </div>
+    <span class="value{% if not active_manual %} kpi-zero{% endif %}">{{ active_manual }}</span>
+    <div class="sub">实时</div>
+  </div>
+  <a class="kpi acc {% if done_count %}kpi-ok{% else %}kpi-neutral{% endif %}" href="/history" style="text-decoration:none">
+    <div class="kpi-top">
+      <span class="kpi-icon">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg>
+      </span>
+      <span class="label">累计完成</span>
+    </div>
+    <span class="value{% if not done_count %} kpi-zero{% endif %}">{{ done_count }}</span>
+    <div class="sub">历史累计</div>
+  </a>
+</div>
+
+{% if payload or agent_status == "running" or standalone_manual %}
+<!-- 任务表（满宽，自动 + 手动 + 待确认） -->
+<section class="panel">
+  <div class="panel-head">
+    <h2>任务</h2>
+    <div class="panel-head-tools">
+      {% if section_options %}
+      <select id="task-section-filter" class="filter-select">
+        <option value="">全部产品线</option>
+        {% for s in section_options %}<option value="{{ s }}">{{ s }}</option>{% endfor %}
+      </select>
+      {% endif %}
+      <select id="task-kind-filter" class="filter-select">
+        <option value="">全部类型</option>
+        <option value="cycle">自动任务</option>
+        <option value="manual">手动任务</option>
+      </select>
+    </div>
+  </div>
+  <div class="panel-body">
+    {% if agent_status == "running" and not auto_tasks %}
+      <p class="callout pending">当前周期执行中，完成后自动刷新展示分支任务。</p>
+    {% elif auto_tasks or standalone_manual %}
+      <div class="table-wrap">
+      <table class="task-table">
+        <thead><tr><th>目标分支</th><th>状态</th><th>处理情况</th><th>失败原因</th><th>操作</th></tr></thead>
+        <tbody>
+          {% if not auto_tasks and payload and current_cycle_id %}{{ cycle_summary_row() }}{% endif %}
+          {% for t in auto_tasks %}
+          <tr class="task-row-auto" data-section="{{ t.section }}" data-kind="cycle">
+            <td>
+              <span class="cell-primary"><span class="badge neutral">周期</span> <a href="/task/{{ t.cycle_id }}/{{ t.target }}" class="branch-link">{{ t.target }}</a></span>
+              <span class="cell-sub">系统</span>
+            </td>
+            <td><span class="badge {{ t.status | lower }}">{{ t.badge }}</span>
+              {% if t.abandoned %}<span class="badge abandoned">已放弃</span>{% endif %}
+            </td>
+            <td class="num sync-skip"><span class="sync-num">同步 {{ t.synced }}</span> · <span class="skip-num">跳过 {{ t.skipped }}</span></td>
+            <td class="cell-reason{% if not t.reason %} empty{% endif %}">{{ t.reason or "—" }}</td>
+            <td>
+              {% if t.abandoned %}
+                {% if user.role == "operator" %}
+                <button type="button" data-restore-cycle="{{ current_cycle_id }}" data-restore-target="{{ t.target }}" data-restore-sha="">恢复</button>
+                <span class="restore-result"></span>
+                {% endif %}
+              {% elif t.status == "SUCCESS" %}
+                {% if user.role == "operator" %}
+                <button type="button" data-push-target="{{ t.target }}" data-push-cycle="{{ t.cycle_id }}">推送</button>
+                <span data-push-result="{{ t.target }}"></span>
+                {% else %}
+                <span class="push-result-muted">（可推送，仅操作者）</span>
+                {% endif %}
+              {% else %}
+                <a class="btn btn-outline" href="/task/{{ t.cycle_id }}/{{ t.target }}">详情</a>
+              {% endif %}
+            </td>
+          </tr>
+          {% for c in t.children %}
+          <tr class="task-row-sub" data-section="{{ t.section }}" data-kind="manual" data-parent="cycle">
+            <td class="sub-cell">
+              <span class="cell-primary"><span class="sub-indent">↳</span><span class="badge review">重跑</span>
+              {% if c.state in ("queued", "running") %}
+              <a href="/tasks/{{ c.task_id }}" class="branch-link">{{ c.target }}</a>
+              {% elif c.cycle_id %}
+              <a href="/task/{{ c.cycle_id }}/{{ c.target }}" class="branch-link">{{ c.target }}</a>
+              {% else %}
+              <a href="/tasks/{{ c.task_id }}" class="branch-link">{{ c.target }}</a>
+              {% endif %}
+              {% if c.task_id %}<span class="muted">#{{ c.task_id }}</span>{% endif %}</span>
+              <span class="cell-sub">{{ c.user or "—" }}{% if c.created_at %} · {{ c.created_at | localtime }}{% endif %}</span>
+            </td>
+            <td><span class="badge {{ c.status | lower }}">{{ c.badge }}</span></td>
+            <td class="num"><span class="muted">commits</span> {{ c.commits or "—" }}</td>
+            <td class="cell-reason{% if not c.reason %} empty{% endif %}">{{ c.reason or "—" }}</td>
+            <td>
+              {% if c.state in ("queued", "running") %}
+              <a class="btn btn-outline" href="/tasks/{{ c.task_id }}">进度</a>
+              {% elif c.cycle_id %}
+              <a class="btn btn-outline" href="/task/{{ c.cycle_id }}/{{ c.target }}">详情</a>
+              {% endif %}
+            </td>
+          </tr>
+          {% endfor %}
+          {% endfor %}
+          {% for t in standalone_manual %}
+          <tr class="task-row-manual" data-section="{{ t.section }}" data-kind="manual">
+            <td>
+              <span class="cell-primary"><span class="badge {{ 'review' if t.kind == 'rerun' else 'scope' }}">{{ "重跑" if t.kind == "rerun" else "同步" }}{% if t.fresh %}·重建{% endif %}</span>
+              {% if t.state in ("queued", "running") %}
+              <a href="/tasks/{{ t.task_id }}" class="branch-link">{{ t.target }}</a>
+              {% elif t.cycle_id %}
+              <a href="/task/{{ t.cycle_id }}/{{ t.target }}" class="branch-link">{{ t.target }}</a>
+              {% else %}
+              <a href="/tasks/{{ t.task_id }}" class="branch-link">{{ t.target }}</a>
+              {% endif %}
+              {% if t.task_id %}<span class="muted">#{{ t.task_id }}</span>{% endif %}</span>
+              <span class="cell-sub">{{ t.user or "—" }}{% if t.created_at %} · {{ t.created_at | localtime }}{% endif %}</span>
+            </td>
+            <td><span class="badge {{ t.status | lower }}">{{ t.badge }}</span></td>
+            <td class="num"><span class="muted">commits</span> {{ t.commits or "—" }}</td>
+            <td class="cell-reason{% if not t.reason %} empty{% endif %}">{{ t.reason or "—" }}</td>
+            <td>
+              {% if t.state in ("queued", "running") %}
+              <a class="btn btn-outline" href="/tasks/{{ t.task_id }}">进度</a>
+              {% elif t.cycle_id %}
+              <a class="btn btn-outline" href="/task/{{ t.cycle_id }}/{{ t.target }}">详情</a>
+              {% endif %}
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+      </div>
+      <script>
+      (function () {
+        var sectionSel = document.getElementById("task-section-filter");
+        var kindSel = document.getElementById("task-kind-filter");
+        if (!sectionSel && !kindSel) return;
+        function apply() {
+          var sec = sectionSel ? sectionSel.value : "";
+          var kind = kindSel ? kindSel.value : "";
+          document.querySelectorAll(".task-table tbody tr").forEach(function (tr) {
+            var isSub = tr.classList.contains("task-row-sub");
+            var okSec = !sec || tr.getAttribute("data-section") === sec;
+            var okKind = true;
+            if (kind) {
+              if (isSub) {
+                // 子行跟随"手动任务"筛选；选中自动任务时隐藏子行
+                okKind = kind === "manual";
+              } else {
+                okKind = tr.getAttribute("data-kind") === kind;
+              }
+            }
+            tr.hidden = !(okSec && okKind);
+          });
+        }
+        if (sectionSel) sectionSel.addEventListener("change", apply);
+        if (kindSel) kindSel.addEventListener("change", apply);
+      })();
+      </script>
+    {% elif payload %}
+      <div class="table-wrap">
+      <table class="task-table">
+        <thead><tr><th>目标分支</th><th>状态</th><th>处理情况</th><th>失败原因</th><th>操作</th></tr></thead>
+        <tbody>
+          {% if current_cycle_id %}{{ cycle_summary_row() }}{% endif %}
+        </tbody>
+      </table>
+      </div>
+    {% else %}
+      <p class="muted">当前无任务记录。</p>
+    {% endif %}
+  </div>
+</section>
+{% endif %}
+
+{% if abandoned_items %}
+<section class="panel">
+  <div class="panel-head"><h2>已放弃</h2><span class="panel-note">可恢复重新进入待办</span></div>
+  <div class="panel-body">
+    <ul class="todo-list">
+      {% for item in abandoned_items %}
+      <li class="todo-item">
+        <span class="badge abandoned">已放弃</span>
+        <span class="todo-title">{{ item.target }}{% if item.sha %}（{{ item.sha }}）{% else %}（整分支）{% endif %}</span>
+        {% if user.role == "operator" %}
+        <button type="button" data-restore-cycle="{{ current_cycle_id }}" data-restore-target="{{ item.target }}" data-restore-sha="{{ item.sha or '' }}">恢复</button>
+        <span class="restore-result"></span>
+        {% endif %}
+      </li>
+      {% endfor %}
+    </ul>
+  </div>
+</section>
+{% endif %}
+
+{% include "_restore_js.html" %}
+{% include "_push_confirm.html" %}
+
+<!-- 发起同步弹窗（可缩放，最大近全屏） -->
+{% if user.role == "operator" %}
+<dialog id="sync-modal" class="modal-resizable">
+  <form method="dialog"><button class="dialog-close" aria-label="关闭">×</button></form>
+  <h3>发起同步</h3>
+  <div class="dialog-body">
+    {% if not branch_options %}
+      <p class="muted">未加载到 RCIOS 分支列表（检查 BRANCH_FILE），请手动输入分支名。</p>
+    {% endif %}
+    <form id="new-sync" class="guided-sync">
+      <div class="form-row">
+        {{ branch_select("sync-src", "源分支", id="sync-src") }}
+        {{ branch_select("sync-target", "目标分支", id="sync-target") }}
+      </div>
+      <div id="sync-commits" class="sync-commits">
+        <p class="muted">选择源分支后加载候选 commit…</p>
+      </div>
+      <p class="muted"><span id="sync-count">未选择 commit</span></p>
+      <div class="dialog-actions">
+        <button type="button" id="sync-submit" class="btn-primary" disabled>同步所选 commit</button>
+        <span id="sync-status"></span>
+      </div>
+    </form>
+  </div>
+  <div class="modal-resize-handle" title="拖拽调整大小"></div>
+</dialog>
+<script>
+(function () {
+  var csrf = "{{ csrf }}";
+  var srcEl = document.getElementById("sync-src");
+  var targetEl = document.getElementById("sync-target");
+  var container = document.getElementById("sync-commits");
+  var countEl = document.getElementById("sync-count");
+  var submitBtn = document.getElementById("sync-submit");
+  var statusEl = document.getElementById("sync-status");
+  var modal = document.getElementById("sync-modal");
+
+  var openBtn = document.getElementById("open-sync");
+  if (openBtn) openBtn.addEventListener("click", function () { modal.showModal(); });
+
+  var handle = modal.querySelector(".modal-resize-handle");
+  handle.addEventListener("mousedown", function (e) {
+    e.preventDefault();
+    var startX = e.clientX, startY = e.clientY;
+    var startW = modal.offsetWidth, startH = modal.offsetHeight;
+    function onMove(ev) {
+      var w = Math.max(480, startW + (ev.clientX - startX));
+      var h = Math.max(360, startH + (ev.clientY - startY));
+      modal.style.width = Math.min(w, window.innerWidth - 40) + "px";
+      modal.style.height = Math.min(h, window.innerHeight - 40) + "px";
+    }
+    function onUp() {
+      document.removeEventListener("mousemove", onMove);
+      document.removeEventListener("mouseup", onUp);
+    }
+    document.addEventListener("mousemove", onMove);
+    document.addEventListener("mouseup", onUp);
+  });
+
+  var commits = [];
+  var selected = {};
+  // 本周期已判定的 commit（sha → 某目标的四态结论），用于选源分支时预标记
+  var decisions = {{ decisions_json | default("{}") | safe }};
+
+  function decisionHint(sha) {
+    // 任一目标分支上已有的四态判定；只作提示，最终判定仍由引擎执行
+    var perTarget = decisions[sha];
+    if (!perTarget) return null;
+    var kinds = { NeedSync: "待同步", AlreadyIncluded: "已包含", OutOfScope: "不适用", ManualReview: "待人工" };
+    for (var k in kinds) {
+      for (var t in perTarget) {
+        if (perTarget[t] && perTarget[t].kind === k) return kinds[k];
+      }
+    }
+    return null;
+  }
+
+  function toLocal(iso) {
+    if (!iso) return "";
+    var d = new Date(iso);
+    if (isNaN(d.getTime())) return iso;
+    var p = function (n) { return (n < 10 ? "0" : "") + n; };
+    return d.getFullYear() + "-" + p(d.getMonth() + 1) + "-" + p(d.getDate()) +
+      " " + p(d.getHours()) + ":" + p(d.getMinutes()) + ":" + p(d.getSeconds());
+  }
+
+  function updateCount() {
+    var n = Object.keys(selected).length;
+    countEl.textContent = n ? "已选择 " + n + " 个 commit" : "未选择 commit";
+    submitBtn.disabled = n === 0;
+  }
+
+  function renderCommits() {
+    container.replaceChildren();
+    commits.forEach(function (c) {
+      var label = document.createElement("label");
+      label.className = "commit-item";
+      var checkbox = document.createElement("input");
+      checkbox.type = "checkbox";
+      checkbox.value = c.sha;
+      var span = document.createElement("span");
+      span.textContent = (c.sha || "").slice(0, 8) + " " + (c.message || "") +
+        (c.committed_at ? "（" + toLocal(c.committed_at) + "）" : "");
+      label.appendChild(checkbox);
+      label.appendChild(span);
+      var hint = decisionHint(c.sha);
+      if (hint) {
+        var badge = document.createElement("span");
+        badge.className = "badge scope";
+        badge.style.marginLeft = "auto";
+        badge.style.flexShrink = "0";
+        badge.textContent = hint;
+        label.appendChild(badge);
+      }
+      label.addEventListener("change", function () {
+        if (checkbox.checked) {
+          selected[c.sha] = true;
+        } else {
+          delete selected[c.sha];
+        }
+        updateCount();
+      });
+      container.appendChild(label);
+    });
+    updateCount();
+  }
+
+  function showHint(text) {
+    container.replaceChildren();
+    var p = document.createElement("p");
+    p.textContent = text;
+    container.appendChild(p);
+  }
+
+  function loadCommits() {
+    var src = srcEl.value;
+    if (!src) {
+      commits = [];
+      selected = {};
+      updateCount();
+      return;
+    }
+    commits = [];
+    selected = {};
+    showHint("加载中…");
+    updateCount();
+    var controller = new AbortController();
+    var timer = setTimeout(function () { controller.abort(); }, 30000);
+    fetch("/api/commits?src=" + encodeURIComponent(src) + "&limit=50", {
+      headers: { "Accept": "application/json" },
+      signal: controller.signal,
+    }).then(function (r) {
+      clearTimeout(timer);
+      if (!r.ok) {
+        throw new Error("http " + r.status);
+      }
+      return r.json();
+    }).then(function (list) {
+      commits = list || [];
+      if (commits.length) {
+        renderCommits();
+      } else {
+        showHint("无候选 commit");
+      }
+    }).catch(function () {
+      clearTimeout(timer);
+      showHint("候选 commit 加载失败");
+    });
+  }
+
+  srcEl.addEventListener("change", loadCommits);
+  srcEl.addEventListener("input", loadCommits);
+
+  document.getElementById("new-sync").addEventListener("submit", function (e) {
+    e.preventDefault();
+  });
+
+  submitBtn.addEventListener("click", function () {
+    var shas = Object.keys(selected);
+    var src = srcEl.value;
+    var target = targetEl.value;
+    if (!shas.length || !src || !target) {
+      return;
+    }
+    submitBtn.disabled = true;
+    statusEl.textContent = "提交中…";
+    fetch("/api/sync", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ _csrf: csrf, src: src, target: target, shas: shas }),
+    }).then(function (r) {
+      return r.json().then(function (json) {
+        return { ok: r.ok, json: json };
+      });
+    }).then(function (res) {
+      if (res.ok && res.json && res.json.task_id) {
+        window.location.href = "/tasks/" + res.json.task_id;
+      } else {
+        statusEl.textContent = (res.json && res.json.detail) || "提交失败";
+        submitBtn.disabled = false;
+      }
+    }).catch(function () {
+      statusEl.textContent = "提交失败";
+      submitBtn.disabled = false;
+    });
+  });
+})();
+</script>
+{% endif %}
+
+<script>
+(function () {
+  var btn = document.getElementById("cycle-resume");
+  if (!btn) return;
+  btn.addEventListener("click", function () {
+    btn.disabled = true;
+    var result = document.getElementById("cycle-resume-result");
+    if (result) result.textContent = "提交中…";
+    fetch("/api/cycle/resume", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ _csrf: "{{ csrf }}", cycle_id: btn.getAttribute("data-resume-cycle") }),
+    }).then(function (r) { return r.json().then(function (j) { return { ok: r.ok, json: j }; }); })
+      .then(function (res) {
+        if (res.ok && res.json && res.json.task_id) {
+          window.location.reload();
+        } else {
+          btn.disabled = false;
+          if (result) result.textContent = (res.json && res.json.detail) || "续跑失败";
+        }
+      })
+      .catch(function () {
+        btn.disabled = false;
+        if (result) result.textContent = "续跑失败";
+      });
+  });
+})();
+</script>
+{% endblock %}

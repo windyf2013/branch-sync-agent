@@ -182,11 +182,88 @@ def test_classify_agent_judgment_not_bug_fix():
     assert result.recognition_source == "agent:not-bug-fix"
 
 
+def test_classify_judgment_missing_is_bug_fix_key_not_false():
+    # 只写 risk 的 judgment（无 is_bug_fix 键）不得被误判为 not-bug-fix，
+    # 继续走机器规则 → pending（needs_agent=True），交 LLM 判 is_bug_fix。
+    result = classify_commit(
+        "fix",
+        ["plat/demo/demo.c"],
+        ["demo_check"],
+        "+    if (NULL == ptr)\n+    {\n+        return -1;\n+    }\n",
+        sha="abc1234567890",
+        agent_judgments={"abc1234567890": {"risk": "high"}},
+    )
+    assert result.is_bug_fix is False
+    assert result.recognition_source == "pending:claude-agent"
+    assert result.needs_agent is True
+
+
+def test_classify_judgment_explicit_false_still_applies():
+    # 显式 is_bug_fix=false 仍生效（区别于键缺失）。
+    result = classify_commit(
+        "fix",
+        ["plat/demo/demo.c"],
+        ["demo_check"],
+        "+    if (NULL == ptr)\n+    {\n+        return -1;\n+    }\n",
+        sha="abc1234567890",
+        agent_judgments={"abc1234567890": {"is_bug_fix": False}},
+    )
+    assert result.is_bug_fix is False
+    assert result.recognition_source == "agent:not-bug-fix"
+    assert result.needs_agent is False
+
+
 def test_classify_lookup_agent_judgment_prefix():
     from bsa.rules.classify import lookup_agent_judgment
 
     judgments = {"abcdef1": {"is_bug_fix": True, "reason": "x"}}
     assert lookup_agent_judgment("abcdef1234567890", judgments)["is_bug_fix"] is True
+
+
+def test_compute_fingerprint_stable_and_content_sensitive():
+    from bsa.rules.classify import compute_fingerprint
+
+    fp1 = compute_fingerprint("[BUG] fix null deref\n\nrefactor it", "pid123")
+    fp2 = compute_fingerprint("[BUG] fix null deref\n\nrefactor it", "pid123")
+    # 同内容同 patch-id → 稳定
+    assert fp1 == fp2
+    # 内容变了 → 指纹变（人工覆盖自动失效）
+    fp3 = compute_fingerprint("[BUG] fix null deref changed\n\nrefactor it", "pid123")
+    assert fp1 != fp3
+
+
+def test_classify_lookup_agent_judgment_by_fingerprint():
+    from bsa.rules.classify import compute_fingerprint, lookup_agent_judgment
+
+    message = "[BUG] fix null deref\n\nrefactor it"
+    fp = compute_fingerprint(message, "pid123")
+    judgments = {f"fp:{fp}": {"is_bug_fix": False, "reason": "人工判定非 bug-fix"}}
+
+    # sha 未命中 → fingerprint 匹配生效
+    result = lookup_agent_judgment("deadbeefdeadbeefdeadbeefdeadbeefdeadbeef", judgments, fingerprint=fp)
+    assert result is not None
+    assert result["is_bug_fix"] is False
+
+
+def test_classify_fingerprint_matches_across_rebase_sha_change():
+    """rebase 改变 sha 但内容不变 → fingerprint 仍命中人工覆盖。"""
+    from bsa.rules.classify import classify_commit, compute_fingerprint
+
+    message = "[BUG] fix null deref\n\nrefactor it"
+    fp = compute_fingerprint(message, "pid123")
+    result = classify_commit(
+        message,
+        ["plat/dhcp/dhcp.c"],
+        [],
+        "+if (NULL == cfg) return -1;",
+        sha="newsha000000000000000000000000000000000000",
+        patch_id="pid123",
+        agent_judgments={
+            f"fp:{fp}": {"is_bug_fix": False, "reason": "人工判定非 bug-fix，rebase 后仍命中"}
+        },
+    )
+    assert result.is_bug_fix is False
+    assert result.recognition_source == "agent:not-bug-fix"
 
 
 def test_classify_agent_judgment_overrides_machine_marker():
@@ -452,6 +529,44 @@ def test_conclude_default_thresholds():
     assert conclusion.kind == "AlreadyIncluded"
     conclusion = conclude_pair(_analysis(), _target(file_similarity=0.80))
     assert conclusion.kind == "ManualReview"
+
+
+# --- conclude: 目标类型由规则单一驱动（P2 治理） ---
+
+
+def test_conclude_custom_need_sync_target_types():
+    # 决策 2/27 目标类型数据驱动：need_sync 不含 develop 时，develop 目标不再 NeedSync。
+    source = _analysis()
+    target = _target(branch_type="develop", branch_name="br_v4_LineA_develop_b_20260101")
+    conclusion = conclude_pair(
+        source,
+        target,
+        similarity_high=0.90,
+        similarity_low=0.50,
+        need_sync_target_types=["release", "fix"],
+        ineligible_target_types=["feature", "personal"],
+    )
+    assert conclusion.kind == "OutOfScope"
+
+
+def test_conclude_custom_ineligible_target_types():
+    # ineligible 不含 feature 时，feature 目标不再被硬编码 OutOfScope（可进入后续判定）。
+    source = _analysis()
+    target = _target(branch_type="feature", branch_name="br_v4_LineA_feature_20260101")
+    conclusion = conclude_pair(
+        source,
+        target,
+        similarity_high=0.90,
+        similarity_low=0.50,
+        need_sync_target_types=["develop", "release", "fix", "feature"],
+        ineligible_target_types=["personal"],
+    )
+    assert conclusion.kind != "OutOfScope"
+
+
+def test_load_decision_rules_ineligible_target_types():
+    rules = load_decision_rules(DECISION_RULES_PATH)
+    assert rules.conclude.ineligible_target_types == ["feature", "personal"]
 
 
 # --- conclude: 发布线严重性门控（决策 41） ---
@@ -842,11 +957,17 @@ def test_parse_branch_md_sections():
 
 
 SAMPLE_MD = """# 所有待审核分支
-## 1.1 组网产品分支
-- br_v4.33_5200_CU_develop_20260518
-- br_v4.33_5200_CU_develop_release_p360_20260625
-- br_v4.33_5200_CU_develop_feature_quantum_20260625
-- br_v4.33_5200_CU_develop_personal_yuhui_20260625
+## 1 RCIOS代码库
+- 路径：rcios
+
+### 1.1 4.34 主分支
+- br_v4.34_develop_20260130
+
+### 1.2 4.34 业务分支
+- br_v4.34_develop_fttr_20260811
+- br_v4.34_develop_fttr_release_p360_20260625
+- br_v4.34_develop_fttr_feature_quantum_20260625
+- br_v4.34_develop_fttr_personal_yuhui_20260625
 """
 
 
@@ -856,10 +977,10 @@ def test_build_matrix_sources_all_eligible():
     assert isinstance(sets, list) and sets
     assert isinstance(sets[0], HomologousSet)
     s = sets[0]
-    assert s.section == "1.1 组网产品分支"
+    assert s.section == "4.34"
     assert [b.name for b in s.sources] == [
-        "br_v4.33_5200_CU_develop_20260518",
-        "br_v4.33_5200_CU_develop_release_p360_20260625",
+        "br_v4.34_develop_fttr_20260811",
+        "br_v4.34_develop_fttr_release_p360_20260625",
     ]
     assert s.sources[0].branch_type == "develop"
 
@@ -868,18 +989,19 @@ def test_build_matrix_all_eligible_branches_are_targets():
     doc = parse_branch_md(SAMPLE_MD)
     s = build_matrix(doc)[0]
     targets = {b.name for b in s.need_sync_targets}
-    assert "br_v4.33_5200_CU_develop_20260518" in targets
-    assert "br_v4.33_5200_CU_develop_release_p360_20260625" in targets
-    assert "br_v4.33_5200_CU_develop_feature_quantum_20260625" not in targets
-    assert "br_v4.33_5200_CU_develop_personal_yuhui_20260625" not in targets
+    assert targets == {"br_v4.34_develop_20260130"}
+    assert "br_v4.34_develop_fttr_20260811" not in targets
+    assert "br_v4.34_develop_fttr_release_p360_20260625" not in targets
+    assert "br_v4.34_develop_fttr_feature_quantum_20260625" not in targets
+    assert "br_v4.34_develop_fttr_personal_yuhui_20260625" not in targets
 
 
 def test_build_matrix_feature_personal_excluded_everywhere():
     doc = parse_branch_md(SAMPLE_MD)
     s = build_matrix(doc)[0]
     names = {b.name for b in s.sources + s.need_sync_targets}
-    assert "br_v4.33_5200_CU_develop_feature_quantum_20260625" not in names
-    assert "br_v4.33_5200_CU_develop_personal_yuhui_20260625" not in names
+    assert "br_v4.34_develop_fttr_feature_quantum_20260625" not in names
+    assert "br_v4.34_develop_fttr_personal_yuhui_20260625" not in names
 
 
 def test_build_matrix_develop_is_target():
@@ -888,53 +1010,135 @@ def test_build_matrix_develop_is_target():
     assert any(b.branch_type == "develop" for b in s.need_sync_targets)
 
 
-def test_build_matrix_fix_is_source_and_target():
-    text = """# title
-## LineA
+def test_build_matrix_business_develop_and_release_are_sources():
+    """业务 section 内的 develop/release/fix 分支全部是源（不区分类型）。"""
+    text = """# 所有待审核分支
+## 1 RCIOS代码库
+- 路径：rcios
+
+### 1.1 4.34 主分支
+- br_v4.34_develop_20260316
+
+### 1.2 4.34 业务分支
 - br_v4.34_develop_FTTR_20260316
 - br_v4.34_develop_FTTR_release_p360_20260401
 - br_v4.34_develop_FTTR_release_p360_fix_20260501
 """
     s = build_matrix(parse_branch_md(text))[0]
     source_names = {b.name for b in s.sources}
-    target_names = {b.name for b in s.need_sync_targets}
     assert "br_v4.34_develop_FTTR_20260316" in source_names
     assert "br_v4.34_develop_FTTR_release_p360_20260401" in source_names
     assert "br_v4.34_develop_FTTR_release_p360_fix_20260501" in source_names
-    assert target_names == source_names
+    assert {b.name for b in s.need_sync_targets} == {"br_v4.34_develop_20260316"}
 
 
-def test_build_matrix_no_prefix_lineage():
-    text = """# title
-## LineA
+def test_build_matrix_business_to_main_ignores_branch_prefix_lineage():
+    """定向不靠分支名前缀血缘；业务/主 section 标题配对即可。"""
+    text = """# 所有待审核分支
+## 1 RCIOS代码库
+- 路径：rcios
+
+### 1.1 4.34 主分支
 - br_v4_LineA_develop_20260101
+
+### 1.2 4.34 业务分支
 - br_v4_LineB_develop_release_20260101
 """
     s = build_matrix(parse_branch_md(text))[0]
-    names = {b.name for b in s.sources}
-    assert names == {"br_v4_LineA_develop_20260101", "br_v4_LineB_develop_release_20260101"}
-    assert {b.name for b in s.need_sync_targets} == names
+    source_names = {b.name for b in s.sources}
+    assert source_names == {"br_v4_LineB_develop_release_20260101"}
+    assert {b.name for b in s.need_sync_targets} == {"br_v4_LineA_develop_20260101"}
 
 
-def test_build_matrix_cross_section_isolation():
-    text = """# title
-## ProductA
+def test_build_matrix_cross_product_isolation():
+    """不同产品线（4.34 / 4.35）的同步边互相隔离，不跨产品配对。"""
+    text = """# 所有待审核分支
+## 1 RCIOS代码库
+- 路径：rcios
+
+### 1.1 4.34 主分支
 - br_v4_ProductA_develop_20260101
+
+### 1.2 4.34 业务分支
 - br_v4_ProductA_develop_release_20260101
-## ProductB
+
+### 2.1 4.35 主分支
 - br_v4_ProductB_develop_20260101
+
+### 2.2 4.35 业务分支
 - br_v4_ProductB_develop_release_20260101
 """
     sets = build_matrix(parse_branch_md(text))
     assert len(sets) == 2
-    assert sets[0].section == "ProductA"
-    assert sets[1].section == "ProductB"
-    targets_a = {b.name for b in sets[0].need_sync_targets}
-    targets_b = {b.name for b in sets[1].need_sync_targets}
-    assert "br_v4_ProductA_develop_release_20260101" in targets_a
-    assert "br_v4_ProductB_develop_release_20260101" in targets_b
-    assert "br_v4_ProductB_develop_release_20260101" not in targets_a
-    assert "br_v4_ProductA_develop_release_20260101" not in targets_b
+    by_section = {s.section: s for s in sets}
+    assert set(by_section) == {"4.34", "4.35"}
+    targets_434 = {b.name for b in by_section["4.34"].need_sync_targets}
+    targets_435 = {b.name for b in by_section["4.35"].need_sync_targets}
+    assert targets_434 == {"br_v4_ProductA_develop_20260101"}
+    assert targets_435 == {"br_v4_ProductB_develop_20260101"}
+    assert "br_v4_ProductB_develop_20260101" not in targets_434
+    assert "br_v4_ProductA_develop_20260101" not in targets_435
+
+
+def test_build_matrix_business_to_main_directed():
+    """业务分支 section 只当源，主分支 section 只当目标，业务→主单向。
+
+    现状全互联（同 section 互灌）在 ≥3 分支时产生回声重检与平方级无效工作；
+    写死语义：标题含"主分支"=目标，含"业务分支"=源，业务之间互不同步。
+    """
+    text = """# 所有待审核分支
+## 1 RCIOS代码库
+- 路径：rcios
+
+### 1.1 4.34 主分支
+- br_v4.34_develop_20260130
+
+### 1.2 4.34 业务分支
+- br_v4.34_develop_fttr_20260811
+- br_v4.34_MSG_develop_20260805
+"""
+    sets = build_matrix(parse_branch_md(text))
+    assert len(sets) == 1
+    s = sets[0]
+    source_names = {b.name for b in s.sources}
+    target_names = {b.name for b in s.need_sync_targets}
+    assert source_names == {
+        "br_v4.34_develop_fttr_20260811",
+        "br_v4.34_MSG_develop_20260805",
+    }
+    assert target_names == {"br_v4.34_develop_20260130"}
+
+
+def test_build_matrix_main_section_branches_are_targets_not_sources():
+    """主分支 section 的分支只当目标，不作为任何分支的源。"""
+    text = """# 所有待审核分支
+## 1 RCIOS代码库
+- 路径：rcios
+
+### 1.1 4.35 主分支
+- br_v4.35_develop_20260101
+
+### 1.2 4.35 业务分支
+- br_v4.35_develop_fttr_20260201
+"""
+    s = build_matrix(parse_branch_md(text))[0]
+    source_names = {b.name for b in s.sources}
+    assert "br_v4.35_develop_20260101" not in source_names
+    assert "br_v4.35_develop_fttr_20260201" in source_names
+
+
+def test_build_matrix_unmarked_section_produces_no_edges():
+    """无"主分支"/"业务分支"标注的 section 不产出同步边（不默认全互联）。"""
+    text = """# 所有待审核分支
+## 1 RCIOS代码库
+- 路径：rcios
+
+### 1.1 未标注分支
+- br_v4_plain_develop_20260101
+- br_v4_plain_release_20260201
+"""
+    sets = build_matrix(parse_branch_md(text))
+    assert sets == []
 
 
 def test_duplicate_branch_reported_and_used_once():
@@ -949,8 +1153,75 @@ def test_duplicate_branch_reported_and_used_once():
     assert len(doc.duplicates) == 1
     assert doc.duplicates[0]["name"] == "br_v4_dup_develop_release_20260101"
     assert doc.duplicates[0]["count"] == 2
-    sets = build_matrix(doc)
-    names_a = {b.name for b in sets[0].sources + sets[0].need_sync_targets}
-    names_b = {b.name for b in sets[1].sources + sets[1].need_sync_targets}
-    assert "br_v4_dup_develop_release_20260101" in names_a
-    assert "br_v4_dup_develop_release_20260101" not in names_b
+    # 无"主分支"/"业务分支"标注的 section 不产出同步边（新语义）。
+    assert build_matrix(doc) == []
+
+
+# --- conclude: ManualReview 结构化成因 cause（纯标注，不改判定结果） ---
+
+
+def test_cause_function_renamed():
+    source = _analysis()
+    target = _target(function_renamed=True, fix_clearly_missing=True)
+    conclusion = conclude_pair(source, target, similarity_high=0.90, similarity_low=0.50)
+    assert conclusion.kind == "ManualReview"
+    assert conclusion.cause == "function_renamed"
+
+
+def test_cause_similarity_gray():
+    source = _analysis()
+    target = _target(file_similarity=0.70)
+    conclusion = conclude_pair(source, target, similarity_high=0.90, similarity_low=0.50)
+    assert conclusion.kind == "ManualReview"
+    assert conclusion.cause == "similarity_gray"
+
+
+def test_cause_severity_gate():
+    source = _analysis(risk="low")
+    target = _target(branch_type="fix", branch_name="br_v4_LineA_fix_20260201")
+    conclusion = conclude_pair(source, target, similarity_high=0.90, similarity_low=0.50)
+    assert conclusion.kind == "ManualReview"
+    assert conclusion.cause == "severity_gate"
+
+
+def test_cause_symbols_missing():
+    source = _analysis(symbols=["demo_check", "other_fn"])
+    target = _target(
+        symbols_on_target={"demo_check": True, "other_fn": False},
+        fix_clearly_missing=True,
+    )
+    conclusion = conclude_pair(source, target, similarity_high=0.90, similarity_low=0.50)
+    assert conclusion.kind == "ManualReview"
+    assert conclusion.cause == "symbols_missing"
+
+
+def test_cause_pending():
+    source = _analysis(risk="high", needs_agent=True)
+    target = _target(fix_clearly_missing=True)
+    conclusion = conclude_pair(source, target, similarity_high=0.90, similarity_low=0.50)
+    assert conclusion.kind == "ManualReview"
+    assert conclusion.cause == "pending"
+
+
+def test_cause_fix_missing():
+    # risk 非 high 且 fix_clearly_missing=False → 修复是否缺失无法判定。
+    source = _analysis(risk="medium")
+    target = _target(fix_clearly_missing=False)
+    conclusion = conclude_pair(source, target, similarity_high=0.90, similarity_low=0.50)
+    assert conclusion.kind == "ManualReview"
+    assert conclusion.cause == "fix_missing"
+
+
+def test_cause_none_for_non_manual_review():
+    # NeedSync / AlreadyIncluded / OutOfScope 的 cause 均为 None。
+    need_sync = conclude_pair(_analysis(), _target(fix_clearly_missing=True))
+    assert need_sync.kind == "NeedSync"
+    assert need_sync.cause is None
+
+    included = conclude_pair(_analysis(sha="abcdef1234567890"), _target(has_source_sha=True))
+    assert included.kind == "AlreadyIncluded"
+    assert included.cause is None
+
+    out_of_scope = conclude_pair(_analysis(), _target(in_same_homologous_set=False))
+    assert out_of_scope.kind == "OutOfScope"
+    assert out_of_scope.cause is None

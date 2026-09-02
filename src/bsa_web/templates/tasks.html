@@ -1,0 +1,104 @@
+{% extends "base.html" %}
+{% block content %}
+<p class="muted breadcrumb"><a href="/">&larr; 返回工作台</a></p>
+<div class="branch-hero task-status-hero">
+  <div class="branch-hero-head">
+    <h1>任务 #{{ task_id }}</h1>
+    {% set _state_badge = {'queued':'pending','running':'running','succeeded':'success','failed':'failed','interrupted':'interrupted'}.get(task.state, '') %}
+    <span class="badge {{ _state_badge }}">{{ state_label }}</span>
+  </div>
+  <div class="branch-hero-meta">
+    <span><span class="k">类型</span> {{ "同步" if task.kind == "sync" else "重跑" }}</span>
+    <span><span class="k">目标分支</span> {{ task.target }}</span>
+    {% if task.src %}<span><span class="k">源分支</span> {{ task.src }}</span>{% endif %}
+    {% if commit_count %}<span class="k">commit 数：{{ commit_count }}</span>{% endif %}
+    <span><span class="k">发起人</span> {{ task.user }}</span>
+    <span><span class="k">创建</span> {{ task.created_at | localtime }}</span>
+    {% if task.started_at %}<span><span class="k">开始</span> {{ task.started_at | localtime }}</span>{% endif %}
+    {% if task.finished_at %}<span><span class="k">结束</span> {{ task.finished_at | localtime }}</span>{% endif %}
+    <span><span class="k">cycle</span> <code class="mono">{{ task.cycle_id or "—" }}</code></span>
+  </div>
+</div>
+
+<section class="panel">
+<div class="panel-head"><h2>执行进度</h2></div>
+  <div class="panel-body">
+  {% if task.state in ("queued", "running") %}
+    <div class="progress-track"><div class="progress-fill {% if task.state == 'running' %}progress-running{% endif %}"></div></div>
+    <p class="callout pending">
+      {{ "排队中，等待执行…" if task.state == "queued" else "执行中…" }}
+      <a href="/tasks/{{ task_id }}">刷新</a> 查看最新状态。
+    </p>
+    <p><a href="/" class="btn btn-outline">返回工作台</a></p>
+  {% else %}
+    <p><a href="/" class="btn btn-outline">返回工作台</a></p>
+  {% endif %}
+  {% if task.error %}<p class="op-error">错误：{{ task.error }}</p>{% endif %}
+  </div>
+</section>
+
+{% if steps %}
+<section class="panel">
+<div class="panel-head"><h2>步骤进度</h2></div>
+  <div class="panel-body">
+  <ol class="step-list">
+  {% for s in steps %}
+    {% set _failed = s.status and ('FAIL' in s.status or s.status == 'MANUAL') %}
+    <li class="step-item{% if s.running %} step-running{% elif _failed %} step-failed{% endif %}">
+      <span class="step-name">
+        {{ s.step }}{% if s.model %} <span class="step-model">{{ s.model }}</span>{% endif %}
+        {% if s.sha %}<code class="step-sha">{{ s.sha[:8] }}</code>{% endif %}
+      </span>
+      {% if s.running %}
+        <span class="badge running">进行中</span>
+      {% elif s.duration_ms is not none %}
+        <span class="step-duration">{{ (s.duration_ms / 1000) | round(1) }}s</span>
+        <span class="badge {% if _failed %}failed{% else %}success{% endif %}">{{ s.status }}</span>
+      {% endif %}
+      {% if s.log_preview %}
+        {% if s.running %}
+        <pre class="task-log-tail step-live-log">{{ s.log_preview }}{% if s.log_truncated %}&hellip;（已截断，随刷新更新）{% endif %}</pre>
+        {% else %}
+        <details class="step-log"><summary>查看日志</summary>
+        <pre class="task-log-tail">{{ s.log_preview }}{% if s.log_truncated %}&hellip;（已截断）{% endif %}</pre>
+        </details>
+        {% endif %}
+      {% endif %}
+    </li>
+  {% endfor %}
+  </ol>
+  </div>
+</section>
+{% endif %}
+
+{% if log_tail %}
+<section class="panel">
+<div class="panel-head"><h2>实时输出（自动刷新）</h2></div>
+  <div class="panel-body">
+  <pre class="task-log-tail">{{ log_tail }}</pre>
+  </div>
+</section>
+{% endif %}
+
+{% if detail_url %}
+<section class="panel">
+<div class="panel-head"><h2>完成后</h2></div>
+  <div class="panel-body">
+  <p><a href="{{ detail_url }}" class="btn btn-outline">查看任务详情（推送 / WebSSH / 重跑 / 放弃）&rarr;</a></p>
+  </div>
+</section>
+{% endif %}
+{% if task.state in ("queued", "running") %}
+<script>
+setTimeout(function () { window.location.reload(); }, 10000);
+</script>
+<style>
+.progress-running { width: 60%; }
+</style>
+{% elif detail_url %}
+<script>
+// 任务已完成且投影就绪 → 自动进入详情页（避免手动点击时投影未就绪误 404）
+window.location.href = "{{ detail_url }}";
+</script>
+{% endif %}
+{% endblock %}

@@ -263,6 +263,17 @@ class TestCommitResult:
         r = CommitResult(**valid_commit_result())
         assert r.conflict_resolution is None
 
+    def test_resolution_error_defaults_to_none(self):
+        r = CommitResult(**valid_commit_result())
+        assert r.resolution_error is None
+
+    def test_resolution_error_carries_manual_reason(self):
+        data = valid_commit_result()
+        data["cherry_pick"] = "CONFLICT"
+        data["resolution_error"] = "冲突文件 x 疑似二进制"
+        r = CommitResult(**data)
+        assert r.resolution_error == "冲突文件 x 疑似二进制"
+
     def test_required_fields(self):
         for field in ["sha", "cherry_pick", "build"]:
             data = valid_commit_result()

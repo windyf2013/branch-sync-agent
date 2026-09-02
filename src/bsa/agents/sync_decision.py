@@ -7,7 +7,7 @@ from typing import Any, Literal
 from bsa.agents.base import LLMClient
 from bsa.domain.models import CommitInfo, SyncDecision
 from bsa.executor.exceptions import InfrastructureError
-from bsa.rules.classify import lookup_agent_judgment
+from bsa.rules.classify import compute_fingerprint, lookup_agent_judgment
 
 _PENDING_SOURCE = "pending:claude-agent"
 _AGENT_BUG_FIX_SOURCE = "agent:bug-fix"
@@ -38,13 +38,34 @@ class SyncDecisionAgent:
         decisions: dict[str, SyncDecision] = {}
         for commit in pending:
             rule_risk = (prior_risks or {}).get(commit.sha)
-            entry = lookup_agent_judgment(commit.sha, judgments)
-            if entry is not None:
+            fp = compute_fingerprint(commit.message, commit.patch_id) if commit.patch_id else None
+            entry = lookup_agent_judgment(commit.sha, judgments, fingerprint=fp)
+            # 只写 risk 的 judgment（无 is_bug_fix 键）不得短路 LLM——
+            # 交 LLM 判 is_bug_fix，仅把 entry 的 risk 当覆盖应用。
+            if entry is not None and "is_bug_fix" in entry:
                 decision = self._from_entry(commit.sha, entry)
                 if rule_risk is not None and decision.risk != rule_risk:
                     decision = decision.model_copy(update={"risk": rule_risk})
                     judgments[commit.sha]["risk"] = rule_risk
                 decisions[commit.sha] = decision
+                continue
+            if entry is not None:
+                # 键缺失：LLM 判 is_bug_fix，risk 优先用规则层 prior_risks，
+                # 否则用 entry 的 risk 覆盖（不影响 is_bug_fix 判定）。
+                entry_risk = _coerce_risk(entry.get("risk"))
+                decision = self._llm.judge_bug_fix(commit)
+                if rule_risk is not None:
+                    decision = decision.model_copy(update={"risk": rule_risk})
+                elif entry_risk is not None:
+                    decision = decision.model_copy(update={"risk": entry_risk})
+                decisions[commit.sha] = decision
+                if not decision.needs_agent:
+                    judgments[commit.sha] = {
+                        "is_bug_fix": decision.is_bug_fix,
+                        "reason": decision.reason,
+                        "recognition_source": decision.recognition_source,
+                        "risk": decision.risk,
+                    }
                 continue
             decision = self._llm.judge_bug_fix(commit)
             if rule_risk is not None and decision.risk != rule_risk:
@@ -65,7 +86,8 @@ class SyncDecisionAgent:
         judgments = self._load()
         out: dict[str, str | None] = {}
         for commit in commits:
-            entry = lookup_agent_judgment(commit.sha, judgments)
+            fp = compute_fingerprint(commit.message, commit.patch_id) if commit.patch_id else None
+            entry = lookup_agent_judgment(commit.sha, judgments, fingerprint=fp)
             cached = _coerce_risk(entry.get("risk")) if entry is not None else None
             if cached is not None:
                 out[commit.sha] = cached

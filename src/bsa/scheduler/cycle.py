@@ -8,6 +8,7 @@ from pathlib import Path
 
 from bsa.config.settings import load_settings
 from bsa.executor.exceptions import InfrastructureError
+from bsa.executor.lock import flock_acquire
 from bsa.graph import (
     GraphContext,
     build_graph_context,
@@ -22,6 +23,7 @@ from bsa.report import (
     write_agent_diffs,
     write_decisions_json,
 )
+from bsa.report.projection import write_state_json
 
 _RUN_LOGGER = logging.getLogger("bsa.cycle")
 
@@ -43,11 +45,23 @@ def _parse_cycle_date(date: str) -> date:
     raise ValueError(f"无效的周期日期 {date!r}，期望格式 YYYY-MM-DD")
 
 
+def manual_scan_cycle_id(since: str | None, until: str | None) -> str:
+    """manual-scan 独立周期 id：与每日周期隔离，重扫不撞旧 checkpoint（决策 38）。
+
+    由 CLI 在登记任务时同源计算，保证任务行 cycle_id 与 checkpoint 线程一致
+    （P2-7）。
+    """
+    if since and until:
+        return f"scan-{since}-{until}"
+    return f"scan-{datetime.now().strftime('%Y%m%d-%H%M%S')}"
+
+
 def _stale_worktree(path: Path, root: Path, cycle_id: str) -> bool:
     """True when ``path`` is a linked worktree under ``root`` from an older cycle.
 
     The main repo is never under ``root``; a worktree belonging to the current
-    cycle is named ``<target>-<cycle_id>`` and is kept.
+    cycle is named ``<target>-<cycle_id>`` and is kept. ``git worktree list``
+    的首条是主仓库路径（在 root 之外），必须保留，故 root 之外一律返回 False。
     """
     try:
         path.relative_to(root)
@@ -85,6 +99,9 @@ def _initial_state(cycle_id: str) -> dict:
         "classifications": {},
         "decisions": {},
         "batches": {},
+        "build_models": {},
+        "sources": [],
+        "targets": [],
         "current_target": None,
         "current_commit": None,
         "branch_results": {},
@@ -159,11 +176,15 @@ def list_cycle_records(log_dir: str | Path) -> list[dict]:
     if not root.is_dir():
         return []
     records = []
-    for path in root.glob("cycle-*/cycle.json"):
-        try:
-            records.append(json.loads(path.read_text(encoding="utf-8")))
-        except (OSError, json.JSONDecodeError):
-            continue
+    # 有 cycle.json 的周期 = run_cycle 落盘的周期，即 cron 每日（cycle-*）与
+    # manual-scan 重扫（scan-*）两类。manual-*（手动同步）/ rerun-*（重跑）走
+    # 单目标子图、不写 cycle.json，本就不该被枚举。
+    for glob in ("cycle-*/cycle.json", "scan-*/cycle.json"):
+        for path in root.glob(glob):
+            try:
+                records.append(json.loads(path.read_text(encoding="utf-8")))
+            except (OSError, json.JSONDecodeError):
+                continue
     records.sort(key=_started_sort_key)
     return records
 
@@ -177,6 +198,7 @@ def run_cycle(
     context: GraphContext | None = None,
     force_new: bool = False,
     manual: bool = False,
+    cycle_id: str | None = None,
 ) -> int:
     """Run one full sync cycle: build graph, invoke (resume-aware), produce artifacts.
 
@@ -186,18 +208,19 @@ def run_cycle(
     ``manual`` (manual-scan) uses an independent cycle_id derived from the scan
     window and forces a fresh checkpoint, so a re-scan is never short-circuited
     by an existing daily-cycle checkpoint (真机测试发现: manual-scan 撞旧
-    checkpoint 只 resume 不重扫).
+    checkpoint 只 resume 不重扫). ``cycle_id`` 显式指定时覆盖日期推导
+    （executor 守护进程注入，运行期即知周期 id）。
     """
     if context is None:
         settings = load_settings()
-        cycle_id = _derive_cycle_id(date)
-        if manual and since and until:
-            cycle_id = f"scan-{since}-{until}"
-        elif manual:
-            cycle_id = f"scan-{datetime.now().strftime('%Y%m%d-%H%M%S')}"
+        if cycle_id is None:
+            if manual:
+                cycle_id = manual_scan_cycle_id(since, until)
+            else:
+                cycle_id = _derive_cycle_id(date)
         context = build_graph_context(settings, cycle_id=cycle_id)
     else:
-        cycle_id = _derive_cycle_id(date)
+        cycle_id = cycle_id or _derive_cycle_id(date)
     return _execute(
         context, cycle_id, since=since, until=until, dry_run=dry_run, force_new=force_new
     )
@@ -224,16 +247,49 @@ def _execute(
 
     log_dir = Path(settings.log_dir)
     cycle_dir = log_dir / cycle_id
+    with flock_acquire(log_dir / "bsa.lock"):
+        return _execute_locked(
+            context,
+            cycle_id,
+            cycle_dir,
+            since=since,
+            until=until,
+            dry_run=dry_run,
+            force_new=force_new,
+        )
+
+
+def _execute_locked(
+    context: GraphContext,
+    cycle_id: str,
+    cycle_dir: Path,
+    *,
+    since: str | None,
+    until: str | None,
+    dry_run: bool,
+    force_new: bool = False,
+) -> int:
+    settings = context.settings
     cycle_dir.mkdir(parents=True, exist_ok=True)
+    started_at = datetime.now().isoformat(timespec="seconds")
+    _write_cycle_record(
+        cycle_dir,
+        cycle_id,
+        status="running",
+        report_path=None,
+        mail_status=None,
+        started_at=started_at,
+        finished_at=started_at,
+    )
     logger = _setup_run_logger(cycle_dir / "run.log")
 
     cleanup_worktrees(context, cycle_id)
 
-    started_at = datetime.now().isoformat(timespec="seconds")
     logger.info(
         "cycle %s start since=%s until=%s dry_run=%s", cycle_id, since, until, dry_run
     )
 
+    log_dir = Path(settings.log_dir)
     db_path = log_dir / "state.sqlite3"
     final: dict = {}
     with open_checkpointer(str(db_path)) as checkpointer:
@@ -262,6 +318,9 @@ def _execute(
 
     report = final.get("report")
     final_status = final.get("status", "UNKNOWN")
+    if final:
+        # 投影数据源落盘为结构化 state.json（G11），平台只消费 JSON。
+        write_state_json(log_dir, cycle_id, final)
     report_path: Path | None = None
     mail_status: str | None = None
     if report is not None:
