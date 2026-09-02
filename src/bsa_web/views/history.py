@@ -19,7 +19,7 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends, Request
 
-from bsa_web import projection
+from bsa_web import failure, projection
 from bsa_web.auth import make_csrf, require_login
 
 router = APIRouter(prefix="/history", tags=["history"])
@@ -80,16 +80,16 @@ def _cycle_detected_info(log_dir: str, cycle_id: str) -> tuple[list[str], int]:
     return list(sources), len(detected)
 
 
-def _cycle_summary(log_dir: str, cycle_id: str) -> dict[str, int]:
-    """从 state.json 提取周期检测/同步/跳过计数（复用投影 cycle_summary 语义）。"""
+def _cycle_destinations(log_dir: str, cycle_id: str) -> dict[str, int]:
+    """从 state.json 提取检测 commit 的守恒去向（synced/skipped/review/unhandled）。"""
     path = Path(log_dir) / cycle_id / "state.json"
     if not path.is_file():
-        return {"cycle_detected": 0, "cycle_synced": 0, "cycle_skipped": 0}
+        return {"detected": 0, "synced": 0, "skipped": 0, "review": 0, "unhandled": 0}
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
-        return {"cycle_detected": 0, "cycle_synced": 0, "cycle_skipped": 0}
-    return projection.cycle_summary(data)
+        return {"detected": 0, "synced": 0, "skipped": 0, "review": 0, "unhandled": 0}
+    return failure.commit_destinations(data)
 
 
 def _archived_tasks(db, log_dir: str) -> list[dict]:
@@ -146,7 +146,7 @@ def _archived_tasks(db, log_dir: str) -> list[dict]:
     # cycle 主任务：源分支/检测数从 state.json 提取，发起人收敛为「系统」。
     for cid, task in sorted(cycles.items(), key=lambda kv: kv[1]["id"]):
         sources, detected = _cycle_detected_info(log_dir, cid)
-        summary = _cycle_summary(log_dir, cid)
+        destinations = _cycle_destinations(log_dir, cid)
         tasks.append(
             {
                 "task_id": task["id"],
@@ -156,9 +156,7 @@ def _archived_tasks(db, log_dir: str) -> list[dict]:
                 "target": None,
                 "src": "、".join(sources) if sources else None,
                 "commits": detected if detected else None,
-                "cycle_detected": summary.get("cycle_detected", 0),
-                "cycle_synced": summary.get("cycle_synced", 0),
-                "cycle_skipped": summary.get("cycle_skipped", 0),
+                "destinations": destinations,
                 "state": task["state"],
                 "badge": _STATE_LABELS.get(task["state"], task["state"]),
                 "user": "系统",

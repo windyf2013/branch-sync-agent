@@ -109,6 +109,55 @@ def decision_breakdown(payload: dict) -> dict[str, int]:
     return counts
 
 
+def commit_destinations(payload: dict) -> dict[str, int]:
+    """周期级「检测 commit 去向」守恒归类（按 distinct commit）。
+
+    每个检测到的 commit 归入且仅归入一个去向桶，故恒有
+    ``detected == synced + skipped + review + unhandled``。优先级（先命中先归桶）：
+
+    1. synced   —— 任一目标分支 cherry_pick OK/EMPTY（已实际应用）；
+    2. skipped  —— 未同步，且所有判定 kind ⊆ {AlreadyIncluded, OutOfScope}；
+    3. review   —— 未同步，且存在 ManualReview 判定或 action_required 人工项；
+    4. unhandled—— 其余（检测到但无下落：NeedSync 未落地 / 无判定记录）。
+
+    这是对 ``cycle_summary`` 只给「检测/同步/跳过」三个数、账对不上的补全——
+    「未处理」桶正是失败无归因的缺口暴露点，历史页与周期概览共用。
+    """
+    decisions = payload.get("decisions") or {}
+    branches = payload.get("branch_results") or {}
+
+    synced_shas: set[str] = set()
+    for branch in branches.values():
+        for cr in branch.get("commits") or []:
+            if cr.get("sha") and cr.get("cherry_pick") in ("OK", "EMPTY"):
+                synced_shas.add(cr["sha"])
+
+    review_shas = {
+        item.get("sha")
+        for item in (payload.get("action_required") or [])
+        if item.get("kind") == "ManualReview" and item.get("sha")
+    }
+
+    counts = {"detected": 0, "synced": 0, "skipped": 0, "review": 0, "unhandled": 0}
+    for c in payload.get("detected_commits") or []:
+        sha = c.get("sha")
+        if not sha:
+            continue
+        counts["detected"] += 1
+        if sha in synced_shas:
+            counts["synced"] += 1
+            continue
+        kinds = {(d.get("kind") or "") for d in (decisions.get(sha) or {}).values()}
+        if kinds and kinds <= {"AlreadyIncluded", "OutOfScope"}:
+            counts["skipped"] += 1
+            continue
+        if "ManualReview" in kinds or sha in review_shas:
+            counts["review"] += 1
+            continue
+        counts["unhandled"] += 1
+    return counts
+
+
 def _manual_review_reason(item: dict) -> str | None:
     """ManualReview 项的归因：优先 ``reason``（若引擎某处写了），否则取 ``evidence`` 首条。"""
     reason = item.get("reason")

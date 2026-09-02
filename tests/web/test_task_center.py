@@ -724,7 +724,7 @@ class TestTaskDetail:
         )
         r = client.get(f"/task/{_CYCLE}/feat/bad")
         assert r.status_code == 200
-        assert "下载完整 patch" in r.text
+        assert "下载完整补丁" in r.text
         assert "compile error here" in r.text
         assert "下载完整日志" in r.text
 

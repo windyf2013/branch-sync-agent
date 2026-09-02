@@ -116,6 +116,7 @@ def cycle_detail(
         zero_detected_sources=zero_detected_sources,
         cycle_summary=projection.cycle_summary(payload),
         decision_breakdown=failure.decision_breakdown(payload),
+        destinations=failure.commit_destinations(payload),
         cycle_failures=failure.failure_summary(payload),
     )
 

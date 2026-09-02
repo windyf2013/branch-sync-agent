@@ -10,11 +10,18 @@ import json
 import os
 import subprocess
 import sys
+from datetime import UTC, datetime
 
 from bsa.report.projection import cycle_summary
 from bsa.scheduler.cycle import list_cycle_records
 
-__all__ = ["load_cycle", "latest_completed_cycle", "list_cycles", "cycle_summary"]
+__all__ = [
+    "load_cycle",
+    "latest_completed_cycle",
+    "list_cycles",
+    "latest_cycle_start",
+    "cycle_summary",
+]
 
 
 def load_cycle(log_dir: str, cycle_id: str) -> dict | None:
@@ -57,12 +64,29 @@ def list_cycles(log_dir: str) -> list[dict]:
     return list(reversed(list_cycle_records(log_dir)))
 
 
-def window_start(log_dir: str) -> str | None:
-    """最近完成周期扫描窗口起点；无完成周期/投影失败返回 None（不过滤）。"""
-    cycle_id = latest_completed_cycle(log_dir)
-    if cycle_id is None:
+def latest_cycle_start(log_dir: str) -> datetime | None:
+    """最近完成周期（非 running）的 started_at，归一化为无时区 UTC。
+
+    引擎写 ``cycle.json`` 的 ``started_at`` 是本地墙钟（``datetime.now().isoformat``，
+    无时区，如 ``2026-09-01T00:00:04``，CST=UTC+8）；``tasks.created_at`` 是 UTC-aware
+    ISO。两者比较前必须统一到 UTC-naive——否则偏移 8 小时，当天任务会被误归档。
+
+    引擎与 web 同机同目录（systemd WorkingDirectory 一致），系统本地时区即引擎时区，
+    故 naive 时间按系统本地时区解释。无已完成周期 / started_at 缺失/损坏返回 None
+    （调用方按「不过滤」处理）。
+    """
+    records = [
+        r for r in list_cycle_records(log_dir) if r.get("status") != "running"
+    ]
+    if not records:
         return None
-    payload = load_cycle(log_dir, cycle_id)
-    if payload is None:
+    started = records[-1].get("started_at")  # records 已按 started_at 升序
+    if not started:
         return None
-    return (payload.get("scan_window") or [None])[0]
+    try:
+        dt = datetime.fromisoformat(started)
+    except (TypeError, ValueError):
+        return None
+    if dt.tzinfo is None:
+        dt = dt.astimezone()  # naive 本地墙钟 → 附系统本地时区
+    return dt.astimezone(UTC).replace(tzinfo=None)

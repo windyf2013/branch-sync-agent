@@ -1,29 +1,22 @@
+{% if branch.stop_reason or (branch.status != "SUCCESS" and (payload.get("action_required") or [])) %}
 <section class="panel">
-  <div class="panel-head"><h2>分支状态</h2></div>
+  <div class="panel-head"><h2>失败原因 / 待处理</h2></div>
   <div class="panel-body">
-    <div class="branch-hero-meta" style="margin-top:0">
-      <span><span class="k">状态</span> <span class="badge {{ branch.status | lower }}">{{ branch.status }}</span></span>
-      <span><span class="k">目标分支</span> <code class="mono">{{ branch.target_branch }}</code></span>
-      <span><span class="k">worktree</span> <code class="mono">{{ branch.worktree_path }}</code></span>
-      {% if branch.patch_path %}
-      <span><span class="k">patch</span> <a href="/cycle/{{ payload.cycle_id }}/target/{{ target }}/patch">下载完整 patch</a></span>
-      {% endif %}
-    </div>
     {% if branch.stop_reason %}<p class="muted">停止原因：{{ branch.stop_reason }}</p>{% endif %}
     {% if branch.status != "SUCCESS" %}
-    <p class="muted">失败原因 / 待处理：</p>
-    <ul>
+    <ul class="evidence-list">
       {% for item in payload.get("action_required") or [] %}
         {% if item.node %}
         <li><span class="badge failed">节点失败</span> {{ item.node }}：{{ item.error }}</li>
         {% elif item.kind == "ManualReview" and item.branch == target %}
-        <li><span class="badge manual">{{ item.kind }}</span> {{ item.sha }}{% if item.evidence %}（{{ item.evidence | join("；") }}）{% endif %}</li>
+        <li><span class="badge manual">{{ item.kind | kind_zh }}</span> {{ item.sha }}{% if item.evidence %}（{{ item.evidence | join("；") }}）{% endif %}</li>
         {% endif %}
       {% endfor %}
     </ul>
     {% endif %}
   </div>
 </section>
+{% endif %}
 
 {% if branch.baseline %}
 <section class="panel">
@@ -31,7 +24,7 @@
   <div class="panel-body">
   {% for model, o in branch.baseline.items() %}
     <div class="build-outcome">
-      <span class="badge {{ o.status | lower }}">{{ o.status }}</span>
+      <span class="badge {{ o.status | lower }}">{{ o.status | status_zh }}</span>
       <strong>{{ o.model_label or model }}</strong>
       {% if o.status == "FAILED" %}
         {% if o.error_lines %}
@@ -83,7 +76,7 @@
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="m9 18 6-6-6-6"/></svg>
         </button></td>
         <td><a href="/cycle/{{ payload.cycle_id }}/commit/{{ cr.sha }}?target={{ target }}" class="branch-link"><code class="mono">{{ cr.sha[:10] }}</code></a></td>
-        <td><span class="badge {{ cr.cherry_pick | lower }}">{{ cr.cherry_pick }}</span></td>
+        <td><span class="badge {{ cr.cherry_pick | lower }}">{{ cr.cherry_pick | status_zh }}</span></td>
         <td>
           {% if cr.conflict_resolution %}
             <span class="badge ok">已解决</span>
@@ -97,7 +90,7 @@
         <td>
           {% for model, o in cr.build.items() %}
           <div class="build-outcome">
-            <span class="badge {{ o.status | lower }}">{{ o.status }}</span>
+            <span class="badge {{ o.status | lower }}">{{ o.status | status_zh }}</span>
             <strong>{{ o.model_label or model }}</strong>
             {% if o.agent_attempts %}<span class="muted">（修复 {{ o.agent_attempts }} 次）</span>{% endif %}
           </div>

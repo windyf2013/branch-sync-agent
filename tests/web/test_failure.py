@@ -2,7 +2,12 @@
 
 from __future__ import annotations
 
-from bsa_web.failure import decision_breakdown, failure_summary, failure_text
+from bsa_web.failure import (
+    commit_destinations,
+    decision_breakdown,
+    failure_summary,
+    failure_text,
+)
 
 
 def test_node_failure_action_required():
@@ -128,4 +133,58 @@ def test_decision_breakdown_counts():
         "AlreadyIncluded": 1,
         "OutOfScope": 1,
         "ManualReview": 1,
+    }
+
+
+def test_commit_destinations_conservation():
+    # 守恒：detected = synced + skipped + review + unhandled，每个 commit 恰好一个去向。
+    payload = {
+        "detected_commits": [
+            {"sha": "s1"},
+            {"sha": "s2"},
+            {"sha": "s3"},
+            {"sha": "s4"},
+            {"sha": "s5"},
+        ],
+        "decisions": {
+            "s2": {"t": {"kind": "AlreadyIncluded"}},
+            "s3": {"t": {"kind": "OutOfScope"}},
+            "s4": {"t": {"kind": "ManualReview"}},
+            "s5": {"t": {"kind": "NeedSync"}},  # 判定待同步但未落地 → 未处理
+        },
+        "branch_results": {
+            "t": {"commits": [{"sha": "s1", "cherry_pick": "OK"}]}
+        },
+        "action_required": [],
+    }
+    d = commit_destinations(payload)
+    assert d == {
+        "detected": 5,
+        "synced": 1,
+        "skipped": 2,
+        "review": 1,
+        "unhandled": 1,
+    }
+    assert d["detected"] == d["synced"] + d["skipped"] + d["review"] + d["unhandled"]
+
+
+def test_commit_destinations_review_from_action_required():
+    # ManualReview 可能只出现在 action_required（无 decisions），也算 review 桶。
+    payload = {
+        "detected_commits": [{"sha": "a1"}],
+        "decisions": {},
+        "branch_results": {},
+        "action_required": [{"sha": "a1", "branch": "t", "kind": "ManualReview"}],
+    }
+    d = commit_destinations(payload)
+    assert d == {"detected": 1, "synced": 0, "skipped": 0, "review": 1, "unhandled": 0}
+
+
+def test_commit_destinations_no_detection_is_all_zero():
+    assert commit_destinations({}) == {
+        "detected": 0,
+        "synced": 0,
+        "skipped": 0,
+        "review": 0,
+        "unhandled": 0,
     }

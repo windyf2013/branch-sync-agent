@@ -332,7 +332,7 @@ class TestCycleDetail:
         monkeypatch.setattr("bsa_web.projection.load_cycle", lambda log_dir, cid: payload)
         r = client.get("/cycle/cycle-2026-08-20")
         assert r.status_code == 200
-        assert "整体任务信息" in r.text
+        assert "周期结果" in r.text
         assert "br_fttr" in r.text
         assert "br_msg" in r.text
         assert "br_develop" in r.text
@@ -659,7 +659,7 @@ class TestCommitDetail:
         r = client.get("/cycle/cycle-2026-08-20/commit/a1")
         assert r.status_code == 200
         assert "处理结果" in r.text
-        assert "CONFLICT" in r.text
+        assert "冲突" in r.text
         assert "冲突解决失败" in r.text
         assert "疑似二进制" in r.text
 

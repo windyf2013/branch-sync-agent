@@ -63,6 +63,33 @@ def _localtime(value) -> str:
 
 templates.env.filters["localtime"] = _localtime
 
+
+# 面向人类的状态值/四态 → 中文映射（统一收敛在过滤器，模板只写 `| status_zh` /
+# `| kind_zh`，避免散落各页的硬编码英→中 if/else）。值不在表内则原样返回（兜底）。
+_STATUS_ZH = {
+    "SUCCESS": "成功",
+    "FAILED": "失败",
+    "PARTIAL": "停批",
+    "MANUAL": "待处理",
+    "UNKNOWN": "未知",
+    "RUNNING": "进行中",
+    "REPORTED": "已报告",
+    "OK": "通过",
+    "EMPTY": "已应用",
+    "CONFLICT": "冲突",
+}
+
+_FOUR_STATE_ZH = {
+    "NeedSync": "待同步",
+    "AlreadyIncluded": "已包含",
+    "OutOfScope": "不适用",
+    "ManualReview": "待人工",
+}
+
+
+templates.env.filters["status_zh"] = lambda v: _STATUS_ZH.get(str(v), v)
+templates.env.filters["kind_zh"] = lambda v: _FOUR_STATE_ZH.get(str(v), v)
+
 _access_logger = logging.getLogger("bsa_web.access")
 
 

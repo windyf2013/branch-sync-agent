@@ -395,6 +395,13 @@ section.panel {
 .kpi.kpi-neutral .kpi-icon { color: var(--brand); background: var(--brand-soft); border-color: var(--brand-line); }
 .kpi.kpi-neutral .value { color: var(--ink); }
 
+/* KPI 副标注：标注数值时间口径（本周期 / 实时 / 历史累计），避免混维度 */
+.kpi .sub { font-size: 10.5px; color: var(--faint); margin-top: 3px; }
+
+/* 累计卡：跨周期口径，用虚线边 + 浅灰底与其他「当前周期」卡区分 */
+.kpi.acc { background: var(--surface-2); border-style: dashed; }
+.kpi.acc .value { color: var(--ink-2); }
+
 /* 零值 KPI：灰显 */
 .kpi .value.kpi-zero { color: var(--faint); }
 .kpi:not(.kpi-ok):not(.kpi-review):not(.kpi-need):not(.kpi-pending):not(.kpi-neutral)::after {
@@ -601,6 +608,25 @@ td.num { text-align: right; font-variant-numeric: tabular-nums; white-space: now
     margin-bottom: 22px;
 }
 
+/* 周期条醒目态：放大徽章/周期 id，数字统计并排 */
+.period-bar-prominent { padding: 18px 22px; border-left: 4px solid var(--brand-2); }
+.period-bar-status { display: flex; flex-wrap: wrap; gap: 10px 14px; align-items: center; }
+.period-bar-stats { display: flex; flex-wrap: wrap; gap: 8px 16px; align-items: center; }
+.period-badge-lg { font-size: 15px; font-weight: 700; padding: 6px 16px; }
+.period-chip-lg { font-size: 13px; padding: 4px 12px; }
+.period-stat { display: inline-flex; flex-wrap: wrap; gap: 4px 12px; align-items: baseline; }
+.period-stat-num {
+    font-weight: 800;
+    font-size: 16px;
+    font-variant-numeric: tabular-nums;
+}
+.period-stat-num.review-num { color: var(--review); }
+
+/* 空 branch_results 时的周期级摘要行 */
+tr.task-row-cycle-summary td { background: var(--brand-soft); }
+tr.task-row-cycle-summary td:first-child { border-left: 3px solid var(--brand); }
+.task-row-cycle-summary .review-num { color: var(--review); font-weight: 700; }
+
 .period-bar-left { display: flex; flex-wrap: wrap; gap: 10px 16px; align-items: center; }
 .period-bar-right { display: flex; gap: 10px; align-items: center; }
 
@@ -637,6 +663,56 @@ td.num { text-align: right; font-variant-numeric: tabular-nums; white-space: now
     font-family: var(--mono);
 }
 
+/* ================= 守恒式（检测 commit 去向） ================= */
+.eq-line {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: 4px 10px;
+    font-size: 14px;
+    font-variant-numeric: tabular-nums;
+}
+.eq-line .eq-total { font-size: 26px; font-weight: 800; letter-spacing: -0.02em; line-height: 1; }
+.eq-line .eq-total-label { font-size: 12px; color: var(--muted); }
+.eq-op { color: var(--faint); font-weight: 700; }
+.eq-term { display: inline-flex; align-items: center; gap: 7px; }
+.eq-dot { width: 9px; height: 9px; border-radius: 50%; display: inline-block; flex: 0 0 9px; }
+.eq-dot.synced { background: var(--ok); }
+.eq-dot.skipped { background: #9aa7b8; }
+.eq-dot.review { background: var(--review); }
+.eq-dot.other { background: var(--need); }
+.eq-term .t-label { font-size: 12px; color: var(--muted); }
+.eq-term .t-num { font-size: 15px; font-weight: 750; font-variant-numeric: tabular-nums; }
+.eq-term .t-num.synced { color: var(--ok); }
+.eq-term .t-num.skipped { color: #64748b; }
+.eq-term .t-num.review { color: var(--review); }
+.eq-term .t-num.other { color: var(--need); }
+
+/* 四去向卡 */
+.stat-grid {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 10px;
+    margin-top: 16px;
+}
+.stat-card {
+    border: 1px solid var(--line);
+    border-radius: var(--radius-sm);
+    padding: 13px 15px;
+    background: var(--surface);
+}
+.stat-card .n { font-size: 26px; font-weight: 800; font-variant-numeric: tabular-nums; line-height: 1; }
+.stat-card .l { font-size: 12px; font-weight: 700; margin-top: 3px; }
+.stat-card .sub { font-size: 11px; margin-top: 5px; color: var(--muted); }
+.stat-card.synced { border-top: 3px solid var(--ok); } .stat-card.synced .n { color: var(--ok); } .stat-card.synced .l { color: var(--ok); }
+.stat-card.skipped { border-top: 3px solid #9aa7b8; } .stat-card.skipped .n { color: #64748b; } .stat-card.skipped .l { color: #64748b; }
+.stat-card.review { border-top: 3px solid var(--review); } .stat-card.review .n { color: var(--review); } .stat-card.review .l { color: var(--review); }
+.stat-card.other { border-top: 3px solid var(--need); background: var(--need-bg); } .stat-card.other .n { color: var(--need); } .stat-card.other .l { color: var(--need); }
+
+@media (max-width: 760px) {
+    .stat-grid { grid-template-columns: repeat(2, 1fr); }
+}
+
 /* ================= 任务表 ================= */
 .panel-head-tools {
     display: flex;
@@ -651,12 +727,20 @@ td.num { text-align: right; font-variant-numeric: tabular-nums; white-space: now
 
 /* 任务表 */
 .task-table th:nth-child(1), .task-table td:nth-child(1) {
-    width: 22%;
-    min-width: 220px;
+    width: 26%;
+    min-width: 240px;
     word-break: break-all;
 }
 .task-table th:nth-child(4), .task-table td:nth-child(4) { white-space: nowrap; }
 .task-table td:last-child { white-space: nowrap; }
+
+/* 任务表「目标分支」列两行结构：主行（徽章+链接）+ 副行（发起人·时间） */
+.cell-primary { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; font-weight: 650; color: var(--ink); }
+.cell-sub { display: block; color: var(--faint); font-size: 11.5px; margin-top: 2px; }
+
+/* 失败原因列：有值红色强调，无值淡灰占位 */
+.cell-reason { color: var(--need); font-size: 12.5px; font-weight: 600; }
+.cell-reason.empty { color: var(--faint); font-weight: 400; }
 
 /* 关联子行（重跑挂在源任务下） */
 tr.task-row-sub td { background: #f8fbfe; }
@@ -1004,6 +1088,7 @@ li.activity-item:last-child { border-bottom: none; }
     background: var(--surface-2);
 }
 .empty-state .empty-ico { font-size: 26px; display: block; margin-bottom: 8px; opacity: 0.6; }
+.empty-state .empty-ico svg { display: inline-block; vertical-align: middle; }
 
 .breadcrumb { margin: 2px 0 20px; color: var(--muted); font-size: 13px; }
 .inline-form { display: inline-flex; gap: 8px; align-items: center; margin: 0; }
@@ -1029,7 +1114,8 @@ dialog::backdrop { background: rgba(15, 23, 42, 0.46); backdrop-filter: blur(3px
     max-height: 88vh;
     max-width: none;
     overflow: auto;
-    resize: both;
+    /* 不自带原生 resize 手柄——拖拽调整由 .modal-resize-handle 唯一负责，
+       否则右下角会出现两个可拖拽的位置。 */
     min-width: 480px;
     min-height: 400px;
 }

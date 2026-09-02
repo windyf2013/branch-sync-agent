@@ -8,7 +8,7 @@
 <div class="branch-hero">
   <div class="branch-hero-head">
     <h1>{{ target }}</h1>
-    <span class="badge {{ status | lower }}">{{ status }}</span>
+    <span class="badge {{ status | lower }}">{{ status | status_zh }}</span>
     {% if branch_abandoned %}<span class="badge abandoned">已放弃</span>{% endif %}
   </div>
   {% if failure_reasons %}
@@ -23,8 +23,8 @@
   {% endif %}
   <div class="branch-hero-meta">
     <span><span class="k">周期</span> <code class="mono">{{ cycle_id }}</code></span>
-    {% if branch.worktree_path %}<span><span class="k">worktree</span> <code class="mono">{{ branch.worktree_path }}</code></span>{% endif %}
-    {% if branch.patch_path %}<span><span class="k">patch</span> <a href="/cycle/{{ cycle_id }}/target/{{ target }}/patch">下载完整 patch</a></span>{% endif %}
+    {% if branch.worktree_path %}<span><span class="k">工作树</span> <code class="mono">{{ branch.worktree_path }}</code></span>{% endif %}
+    {% if branch.patch_path %}<span><span class="k">补丁</span> <a href="/cycle/{{ cycle_id }}/target/{{ target }}/patch">下载完整补丁</a></span>{% endif %}
   </div>
   <div class="branch-hero-ops">
   {% if branch_abandoned %}
@@ -65,10 +65,10 @@
         <button type="submit" class="btn-outline">重跑</button>
       </form>
     {% else %}
-    <span class="muted">该分支需人工处理（{{ status }}），仅操作者可操作。</span>
+    <span class="muted">该分支需人工处理（{{ status | status_zh }}），仅操作者可操作。</span>
     {% endif %}
   {% else %}
-    <span class="muted">当前状态（{{ status }}）无可执行操作。</span>
+    <span class="muted">当前状态（{{ status | status_zh }}）无可执行操作。</span>
   {% endif %}
 
   {% if not branch_abandoned and user.role == "operator" %}
@@ -88,7 +88,7 @@
     {% for item in review_items %}
     <div class="review-card">
       <div class="review-card-head">
-        <span class="badge manual">{{ item.kind }}</span>
+        <span class="badge manual">{{ item.kind | kind_zh }}</span>
         <code class="mono review-sha">{{ item.sha }}</code>
         {% if item.reason %}<span class="review-reason">{{ item.reason }}</span>{% endif %}
         {% if item.override_stale %}

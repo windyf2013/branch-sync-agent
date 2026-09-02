@@ -248,15 +248,15 @@ def _task_commits(task: dict) -> int | None:
 
 
 def _manual_tasks(
-    db, log_dir: str, window_start: str | None, sections: dict | None = None
+    db, log_dir: str, cutoff: datetime | None, sections: dict | None = None
 ) -> list[dict]:
     """tasks 表展开为手动任务面板（唯一数据源）。
 
     解耦架构下所有任务（web/executor 发起的 sync/rerun，以及 executor 对账
     补登记的 CLI 直启周期 source=cli）都统一进 tasks 表；本函数只读 tasks 表，
-    不再枚举 checkpoint 线程。终态任务超过最近周期窗口收敛进历史页；
-    进行中/排队/interrupted 始终展示。状态唯一来自 tasks.state（投影仅补
-    commits 等详情字段，不覆盖任务状态）。
+    不再枚举 checkpoint 线程。终态任务早于 ``cutoff``（最近周期启动时刻，
+    已归一化为 UTC-naive）收敛进历史页；进行中/排队/interrupted 始终展示。
+    状态唯一来自 tasks.state（投影仅补 commits 等详情字段，不覆盖任务状态）。
     sections：branch → 产品线 映射，供统一任务表按产品线过滤。
     """
     sections = sections or {}
@@ -264,7 +264,7 @@ def _manual_tasks(
         "SELECT id, kind, target, src, fresh, state, error, cycle_id, user, source, "
         "created_at, shas, commits FROM tasks WHERE kind IN ('sync','rerun') ORDER BY id DESC"
     ).fetchall()
-    start = _parse_ts(window_start)
+    start = cutoff
     tasks = []
     for row in rows:
         task = dict(row)
@@ -334,11 +334,6 @@ def _link_rerun_children(
     return auto_tasks, standalone
 
 
-def _window_start(log_dir: str) -> str | None:
-    """最近完成周期扫描窗口起点；无完成周期/投影失败返回 None（不过滤手动任务）。"""
-    return projection.window_start(log_dir)
-
-
 def _cycle_task(db, cycle_id: str | None) -> dict | None:
     """最新 cron 周期任务行（kind=cycle），供自动区块展示运行状态。
 
@@ -390,7 +385,7 @@ def workbench(request: Request, user: Annotated[dict, Depends(require_login)]):
     if running is not None:
         # 运行中周期：仅显示"进行中"徽章，不渲染未完成周期详情（手动任务照常展示）
         auto_tasks: list[dict] = []
-        manual_rows = _manual_tasks(db, log_dir, _window_start(log_dir), sections)
+        manual_rows = _manual_tasks(db, log_dir, projection.latest_cycle_start(log_dir), sections)
         return _render(request, branch_options=branch_options,
             user=user,
             csrf=csrf,
@@ -430,7 +425,7 @@ def workbench(request: Request, user: Annotated[dict, Depends(require_login)]):
     if payload is None:
         # 子进程投影失败（returncode 非 0）→ 平台容错，提示不可用
         auto_tasks = []
-        manual_rows = _manual_tasks(db, log_dir, None, sections)
+        manual_rows = _manual_tasks(db, log_dir, projection.latest_cycle_start(log_dir), sections)
         return _render(request, branch_options=branch_options,
             user=user,
             csrf=csrf,
@@ -448,10 +443,9 @@ def workbench(request: Request, user: Annotated[dict, Depends(require_login)]):
         )
 
     abandoned = abandoned_keys(db, cycle_id)
-    window_start = (payload.get("scan_window") or [None])[0]
     todo = _build_todo(payload, abandoned)
     auto_tasks = _auto_tasks(payload, cycle_id, abandoned, sections)
-    manual_tasks = _manual_tasks(db, log_dir, window_start, sections)
+    manual_tasks = _manual_tasks(db, log_dir, projection.latest_cycle_start(log_dir), sections)
     auto_tasks, standalone_manual = _link_rerun_children(auto_tasks, manual_tasks)
     active_manual = _active_manual_count(standalone_manual) + sum(
         _active_manual_count(t.get("children") or []) for t in auto_tasks
@@ -463,6 +457,9 @@ def workbench(request: Request, user: Annotated[dict, Depends(require_login)]):
         current_cycle_id=cycle_id,
         agent_status="failed" if payload.get("status") in ("FAILED", "PARTIAL") else "done",
         cycle_status=payload.get("status"),
+        cycle_status_label=_STATUS_LABELS.get(
+            payload.get("status") or "UNKNOWN", "未知"
+        ),
         payload=payload,
         auto_tasks=_shorten_sections(auto_tasks),
         standalone_manual=_shorten_sections(standalone_manual),
