@@ -1,0 +1,71 @@
+{# 步骤进度清单（运行中 /tasks/{id} 与终态任务详情共用）。
+
+   期望上下文：
+     steps            read_progress() 结果（已完成步骤在前，进行中末尾）
+     steps_cycle_id   (可选) 周期 id，提供时 sha 渲染为 commit 详情链接
+     steps_target     (可选) 目标分支，commit 链接带 ?target=
+
+   每条 step 可带 `detail`（终态详情页由视图从投影富化，见 task_detail.py）：
+     detail.title      附件块标题（如「编译失败」）
+     detail.reason     归因一句话（如 基线失败 pre-existing / 引入本 commit）
+     detail.lines      错误定位行 / 冲突说明（短文本）
+     detail.log        折叠 build 日志尾部；detail.log_truncated 是否截断
+     detail.diff       折叠智能体 diff；detail.diff_caption 折叠标题
+
+   未带 detail 时回退旧行为：s.log_preview 折叠日志尾部。徽章文本统一走
+   `| step_zh` 映射（app.py），不在此散落英文。
+#}
+<ol class="step-list">
+  {% for s in steps %}
+    {% set _failed = s.status and (s.status.endswith("_FAILED") or "FAIL" in s.status
+                    or s.status in ("CONFLICT", "FAILFAST_STOP", "UNRESOLVABLE", "MANUAL", "RESOLUTION_FAILED")) %}
+    <li class="step-item{% if s.running %} step-running{% elif _failed %} step-failed{% endif %}">
+      <span class="step-name">
+        {{ s.step }}{% if s.model %} <span class="step-model">{{ s.model }}</span>{% endif %}
+        {% if s.sha %}
+          {% if steps_cycle_id %}
+            <a href="/cycle/{{ steps_cycle_id }}/commit/{{ s.sha }}{% if steps_target %}?target={{ steps_target }}{% endif %}"><code class="step-sha">{{ s.sha[:8] }}</code></a>
+          {% else %}
+            <code class="step-sha">{{ s.sha[:8] }}</code>
+          {% endif %}
+        {% endif %}
+      </span>
+      {% if s.running %}
+        <span class="badge running">进行中</span>
+      {% elif s.duration_ms is not none %}
+        <span class="step-duration">{{ (s.duration_ms / 1000) | round(1) }}s</span>
+        <span class="badge {% if _failed %}failed{% else %}success{% endif %}">{{ s.status | step_zh }}</span>
+      {% endif %}
+
+      {% if s.running and s.log_preview %}
+        <pre class="task-log-tail step-live-log">{{ s.log_preview }}{% if s.log_truncated %}&hellip;（已截断，随刷新更新）{% endif %}</pre>
+      {% elif s.detail and not s.running %}
+        {% set d = s.detail %}
+        <div class="step-detail">
+          {% if d.title %}<div class="step-detail-title">{{ d.title }}</div>{% endif %}
+          {% if d.reason %}<div class="muted step-detail-reason">{{ d.reason }}</div>{% endif %}
+          {% if d.lines %}
+          <details class="build-error" open>
+            <summary>错误定位 / 原因（{{ d.lines | length }} 条）</summary>
+            <ul>{% for ln in d.lines %}<li class="muted"><code>{{ ln }}</code></li>{% endfor %}</ul>
+          </details>
+          {% endif %}
+          {% if d.diff %}
+          <details class="step-log"><summary>{{ d.diff_caption or "智能体 diff" }}</summary>
+            <pre class="diff-pre">{{ d.diff }}</pre>
+          </details>
+          {% endif %}
+          {% if d.log %}
+          <details class="step-log"><summary>build 日志尾部{% if d.log_truncated %}（截断至 100 行）{% endif %}</summary>
+            <pre class="task-log-tail">{{ d.log }}</pre>
+          </details>
+          {% endif %}
+        </div>
+      {% elif s.log_preview and not s.running %}
+        <details class="step-log"><summary>查看日志</summary>
+          <pre class="task-log-tail">{{ s.log_preview }}{% if s.log_truncated %}&hellip;（已截断）{% endif %}</pre>
+        </details>
+      {% endif %}
+    </li>
+  {% endfor %}
+</ol>

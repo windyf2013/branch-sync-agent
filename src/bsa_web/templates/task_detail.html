@@ -79,6 +79,15 @@
   </div>
 </div>
 
+{% if steps %}
+<section class="panel">
+  <div class="panel-head"><h2>处理过程</h2><span class="panel-note">按引擎步骤顺序：冲突 / 编译失败 / 修复可展开查看</span></div>
+  <div class="panel-body">
+    {% include "_steps.html" %}
+  </div>
+</section>
+{% endif %}
+
 {% include "_target_detail.html" %}
 
 {% if review_items %}

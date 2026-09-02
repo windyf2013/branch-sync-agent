@@ -50,6 +50,7 @@ def read_progress(log_dir: str | Path, cycle_id: str) -> list[dict[str, Any]]:
             start = starts.pop(r["node"], None)
             entry = {
                 "step": r.get("step", r["node"]),
+                "node": r["node"],
                 "status": r.get("status"),
                 "model": r.get("model"),
                 "target": r.get("target"),
@@ -66,6 +67,7 @@ def read_progress(log_dir: str | Path, cycle_id: str) -> list[dict[str, Any]]:
         r = list(starts.values())[-1]
         running = {
             "step": r.get("step", r["node"]),
+            "node": r["node"],
             "status": None,
             "model": r.get("model"),
             "target": r.get("target"),

@@ -77,6 +77,32 @@ _STATUS_ZH = {
     "OK": "通过",
     "EMPTY": "已应用",
     "CONFLICT": "冲突",
+    "SKIPPED": "已跳过",
+}
+
+# 进度步骤徽章（progress.jsonl 的节点终态 → 中文）。与 _STATUS_ZH 分离：这些值
+# 只出现在步骤清单（_steps.html），不参与分支/commit/build 的既有 status_zh 展示。
+_STEP_ZH = {
+    "CHERRY_PICK_OK": "已应用",
+    "CHERRY_PICK_EMPTY": "已在目标",
+    "CHERRY_PICK_CONFLICT": "冲突",
+    "CHERRY_PICK_FAILED": "cherry-pick 失败",
+    "BUILD_OK": "编译通过",
+    "BUILD_FAILED": "编译失败",
+    "BASELINE_OK": "基线通过",
+    "BASELINE_FAILED": "基线失败",
+    "RESOLVED": "冲突已解决",
+    "RESOLUTION_FAILED": "解决失败",
+    "FAILFAST_STOP": "停批",
+    "PATCHED": "已出补丁",
+    "PREPARED": "已就绪",
+    "DETECTED": "已检出",
+    "DECIDED": "已判定",
+    "UNRESOLVABLE": "无法修复",
+    "SUCCESS": "成功",
+    "FAILED": "失败",
+    "PARTIAL": "停批",
+    "MANUAL": "需人工处理",
 }
 
 _FOUR_STATE_ZH = {
@@ -88,6 +114,7 @@ _FOUR_STATE_ZH = {
 
 
 templates.env.filters["status_zh"] = lambda v: _STATUS_ZH.get(str(v), v)
+templates.env.filters["step_zh"] = lambda v: _STEP_ZH.get(str(v), v)
 templates.env.filters["kind_zh"] = lambda v: _FOUR_STATE_ZH.get(str(v), v)
 
 _access_logger = logging.getLogger("bsa_web.access")

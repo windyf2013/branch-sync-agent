@@ -483,6 +483,68 @@ class TestTargetDetail:
         r = client.get("/task/cycle-2026-08-20/nope")
         assert r.status_code == 404
 
+    def _write_progress(self, tmp_path, cycle_id, records):
+        d = tmp_path / cycle_id
+        d.mkdir(parents=True, exist_ok=True)
+        (d / "progress.jsonl").write_text(
+            "\n".join(__import__("json").dumps(r, ensure_ascii=False) for r in records)
+            + "\n",
+            encoding="utf-8",
+        )
+
+    def test_target_detail_renders_process_timeline(self, tmp_path, monkeypatch):
+        """任务详情页渲染「处理过程」：progress 分支步骤 + 投影冲突/build 富化。"""
+        client = _client(_make_app(tmp_path))
+        _login(client)
+        cycle = "cycle-2026-08-20"
+        target = "t"
+        branch = _branch(
+            "t", "PARTIAL",
+            commits=[
+                _commit_result(
+                    "a1",
+                    cherry_pick="CONFLICT",
+                    build={"RTL9617C": _build_outcome(log_path="/logs/b.log")},
+                )
+            ],
+        )
+        payload = _payload(branch_results={"t": branch})
+        monkeypatch.setattr("bsa_web.projection.load_cycle", lambda log_dir, cid: payload)
+        recs = [
+            {"cycle_id": cycle, "node": "prepare_worktree", "step": "建立 worktree",
+             "target": target, "phase": "end", "status": "PREPARED", "duration_ms": 100},
+            {"cycle_id": cycle, "node": "cherry_pick", "step": "cherry-pick",
+             "target": target, "sha": "a1", "phase": "end",
+             "status": "CHERRY_PICK_CONFLICT", "duration_ms": 100},
+            {"cycle_id": cycle, "node": "resolve_conflict", "step": "解决冲突",
+             "target": target, "sha": "a1", "phase": "end",
+             "status": "RESOLUTION_FAILED", "duration_ms": 100},
+            {"cycle_id": cycle, "node": "report", "step": "生成报告", "phase": "end",
+             "status": "FAILED", "duration_ms": 100},
+        ]
+        self._write_progress(tmp_path, cycle, recs)
+        r = client.get(f"/task/{cycle}/{target}")
+        assert r.status_code == 200
+        assert "处理过程" in r.text
+        assert "解决冲突" in r.text
+        # 徽章走 step_zh 中文映射，不再裸英文
+        assert "解决失败" in r.text
+        assert "CHERRY_PICK_CONFLICT" not in r.text
+        assert "RESOLUTION_FAILED" not in r.text
+
+    def test_target_detail_timeline_degrades_when_no_progress(self, tmp_path, monkeypatch):
+        """周期无 progress.jsonl（老记录）→ 不渲染「处理过程」，详情其余部分照常。"""
+        client = _client(_make_app(tmp_path))
+        _login(client)
+        payload = _payload(
+            branch_results={"t": _branch("t", "SUCCESS", commits=[_commit_result("a1")])}
+        )
+        monkeypatch.setattr("bsa_web.projection.load_cycle", lambda log_dir, cid: payload)
+        r = client.get("/task/cycle-2026-08-20/t")
+        assert r.status_code == 200
+        assert "处理过程" not in r.text
+        assert "commit" in r.text
+
     def test_task_detail_decision_layer_manual_review_not_404(self, tmp_path, monkeypatch):
         # decision 层 ManualReview：branch_results 无该 target，但 action_required
         # 有该 target 的 ManualReview 项 → 降级渲染「仅人工项」视图，不 404。

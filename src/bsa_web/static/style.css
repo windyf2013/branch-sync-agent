@@ -973,6 +973,26 @@ details.build-log[open] + pre.build-log-tail { display: none; }
     color: var(--muted);
 }
 .step-item .step-log summary:hover { color: var(--ink); }
+.step-item .step-detail {
+    flex-basis: 100%;
+    margin-top: 2px;
+    padding-left: 14px;
+    border-left: 2px solid var(--line);
+}
+.step-item .step-detail-title {
+    font-weight: 650;
+    font-size: 12.5px;
+    color: var(--need);
+    margin: 6px 0 2px;
+}
+.step-item .step-detail-reason { font-size: 12.5px; margin: 2px 0; }
+.step-item .step-detail details.step-log { margin-top: 6px; }
+.step-item .step-detail details.step-log summary {
+    cursor: pointer;
+    font-size: 12px;
+    color: var(--muted);
+}
+.step-item .step-detail details.step-log summary:hover { color: var(--ink); }
 
 /* ================= 人工项 / 活动 ================= */
 .review-card {
@@ -1176,16 +1196,6 @@ dialog::backdrop { background: rgba(15, 23, 42, 0.46); backdrop-filter: blur(3px
 .commit-item:hover { border-color: var(--brand); background: var(--brand-soft); }
 .commit-item input[type="checkbox"] { margin-top: 3px; accent-color: var(--brand); }
 .commit-item span { font-size: 13px; word-break: break-all; }
-
-/* ================= 任务状态页 ================= */
-.progress-track { margin: 18px 0; background: var(--line); border-radius: var(--radius-pill); height: 8px; overflow: hidden; }
-.progress-fill {
-    height: 100%; width: 0;
-    background: linear-gradient(90deg, var(--brand), var(--accent));
-    border-radius: var(--radius-pill);
-    transition: width 0.5s ease;
-}
-.progress-running { width: 60%; }
 
 /* ================= 登录页 ================= */
 .login-body {
