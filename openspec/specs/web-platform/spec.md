@@ -74,6 +74,12 @@ Branch Sync Agent V2 的 Web 分支维护工作台：维护人员通过浏览器
 - **则** 跳转任务详情页，所有操作在该页完成：查看现场证据、WebSSH（失败/停批且现场存在）、重跑、推送（SUCCESS）、放弃/恢复、人工项处理
 - **且** 任务详情页复用现有分支/commit 详情渲染，patch/编译日志按需加载
 
+#### Scenario: 达成度醒目标记
+
+- **当** 周期 `status=SUCCESS` 但存在待人工项（`review_pending > 0`）
+- **则** period-bar 与状态徽章显示「完成 · N 待人工」，不只显示纯「完成」
+- **且** 「N」与「待确认」KPI 数值一致，可直接点击进入处理
+
 ### Requirement: 历史报告与详情查看
 
 平台提供按日期查看历史报告与 commit/分支详情的能力。
@@ -82,7 +88,8 @@ Branch Sync Agent V2 的 Web 分支维护工作台：维护人员通过浏览器
 
 - **当** 用户查看历史报告
 - **则** 列出所有超期归档任务（手动 sync/rerun + cron 周期，统一来自 tasks 表）
-- **且** 归档分界 = 最近完成周期扫描窗口起点：超期前任务留在工作台，超期后收敛进历史
+- **且** 归档分界 = 最近完成周期启动时刻：超期前任务留在工作台，超期后收敛进历史
+- **且** 最近完成周期（`latest_completed_cycle`）本身**不**被归档，只留在工作台——即便其 tasks 行的 `created_at` 早于 `cycle.json started_at`（进程边界固有 1 秒差）
 - **且** 历史只做归档显示，不提供「待同步/已包含」等操作型结论筛选
 
 #### Scenario: 详情展开
@@ -146,14 +153,44 @@ Branch Sync Agent V2 的 Web 分支维护工作台：维护人员通过浏览器
 - **当** 操作者修改某 commit 的 is_bug_fix / risk 判定
 - **则** 平台经 V1 CLI 写入 judgments.json（人工覆盖优先）
 - **且** 生效于下一次决策执行（cron 周期或重跑重判），不追溯改写已冻结的 decisions.json
-- **且** 提供"立即重跑"入口让新判定尽快生效
+- **且** 提供"立即重跑"入口让新判定尽快生效（本变更落地：override 成功后前端渲染"立即重跑该分支"入口，复用 rerun）
 - **且** 改判定行为记录操作日志（操作人/时间/sha/新值）
+
+#### Scenario: 按成因给对 override 控件
+
+- **当** 操作者对 ManualReview 项改判定
+- **则** 平台按该结论的 `cause` 字段精确渲染 override 控件：
+  - `cause=pending` → 只给「标记 bug fix」（`is_bug_fix=true`）
+  - `cause∈{severity_gate, fix_missing}` → 只给「风险」下拉（risk）
+  - 其余成因（`function_renamed`/`similarity_gray`/`symbols_missing`/`unknown_branch_type`）→ 不显示 override 控件，仅提供「确认继续 / 放弃」
+- **且** 不再提供 `is_bug_fix=false` 入口（流程无法阻止同步，「排除」一律走「放弃」）
+
+#### Scenario: 清除 override
+
+- **当** 操作者清除某 commit 的人工覆盖
+- **则** 平台调用 `bsa override <sha> --clear` 删除该 sha 及 `fp:` 键，回到「未判定」
+- **且** 清除后提供「立即重跑该分支」入口让 LLM 重判生效
+- **且** 清除行为记录操作日志
 
 #### Scenario: 确认继续与放弃
 
 - **当** 操作者确认某 ManualReview 项允许同步
-- **则** 复用直同步路径（指定 sha 强制同步）执行
+- **则** 复用直同步路径（指定 sha 强制同步，单个 commit）执行
 - **且** 操作者可放弃某 commit/分支，标记并记录操作日志
+
+#### Scenario: decision 层 ManualReview 操作可达
+
+- **当** 周期存在 ManualReview 项、但对应目标分支无 `branch_results`（决策层判定、未进入执行）
+- **则** 任务详情页 `/task/{cycle}/{target}` 不再 404，而是降级渲染「仅人工项」视图（无 worktree/build/patch，但有人工项操作区）
+- **且** 工作台「待确认」KPI 可点，落到可操作页
+- **且** 周期概览 ManualReview 项可点，落到可操作页
+- **且** 操作者可在该页完成「确认继续 / 改判定 / 放弃」全套人工项操作
+
+#### Scenario: 确认继续语义透明化
+
+- **当** 操作者对 ManualReview 项点击「确认继续」
+- **则** 平台在操作前明确提示「将发起一条独立手动同步任务（指定 sha 直同步），不在原周期内收敛」
+- **且** 提交后走现有直同步路径（`bsa sync <target> --sha <sha>`），与原 cron 周期分裂的关系对用户透明
 
 ### Requirement: 推送操作
 
@@ -283,3 +320,14 @@ Branch Sync Agent V2 的 Web 分支维护工作台：维护人员通过浏览器
 - **且** 加载失败时提示"候选 commit 加载失败"，不阻塞其他操作
 - **且** 候选加载的 `git fetch` 不持全局锁（fetch 只更新远端 ref 与对象库，原子安全），
   不被正在运行的同步/周期任务阻塞
+
+### Requirement: 周期拓扑对照
+
+工作台与周期概览展示完整源/目标清单（含零检出源），区分「零检出」与「漏扫」。
+
+#### Scenario: 拓扑对照展示
+
+- **当** 查看当前周期
+- **则** 展示完整源分支全集与目标分支全集（优先 `payload.sources`/`payload.targets`）
+- **且** 对零检出源标注「本期无新 commit（正常）」，与检出过 commit 的源视觉区分
+- **且** `sources`/`targets` 字段缺失时，降级从 `detected_commits`/`decisions` 推导，并标注「拓扑字段缺失，仅展示检出过 commit 的分支」
