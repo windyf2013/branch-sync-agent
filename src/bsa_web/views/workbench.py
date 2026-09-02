@@ -96,11 +96,6 @@ def _active_manual_count(*task_lists: list[dict]) -> int:
     return active
 
 
-def _kpi_counts(auto_tasks: list[dict]) -> dict:
-    """KPI 恒显所需的计数：自动任务总数。"""
-    return {"auto_total": len(auto_tasks)}
-
-
 def _done_count(db) -> int:
     """「已完成」卡 = 历史累计成功任务数（succeeded），非当前周期分支数。
 
@@ -341,11 +336,18 @@ def _cycle_task(db, cycle_id: str | None) -> dict | None:
     queued/running/interrupted 等状态徽章，与手动任务同一生命周期。
     无 cycle 任务行返回 None（历史周期 / 老库未迁移场景回退投影展示）。
     """
-    row = db.execute(
+    # 优先取指定 cycle_id 的活动/终态任务行；无 cycle_id 时回退最新任意 cycle 行
+    # （历史/老库场景），此时 is_current 为 False 仅作展示。
+    sql = (
         "SELECT id, kind, cycle_id, state, error, source, created_at "
-        "FROM tasks WHERE kind='cycle' "
-        "ORDER BY id DESC LIMIT 1"
-    ).fetchone()
+        "FROM tasks WHERE kind='cycle'"
+    )
+    params: list[str] = []
+    if cycle_id:
+        sql += " AND cycle_id=?"
+        params.append(cycle_id)
+    sql += " ORDER BY id DESC LIMIT 1"
+    row = db.execute(sql, params).fetchone()
     if row is None:
         return None
     task = dict(row)
@@ -389,7 +391,6 @@ def workbench(request: Request, user: Annotated[dict, Depends(require_login)]):
         return _render(request, branch_options=branch_options,
             user=user,
             csrf=csrf,
-            cycles=records,
             agent_status="running",
             running_cycle_id=running.get("cycle_id"),
             auto_tasks=_shorten_sections(auto_tasks),
@@ -397,7 +398,6 @@ def workbench(request: Request, user: Annotated[dict, Depends(require_login)]):
             section_options=section_options,
             cycle_task=_cycle_task(db, running.get("cycle_id")),
             active_manual=_active_manual_count(manual_rows),
-            **_kpi_counts(auto_tasks),
             done_count=_done_count(db),
             op_error=op_error,
         )
@@ -409,14 +409,12 @@ def workbench(request: Request, user: Annotated[dict, Depends(require_login)]):
         return _render(request, branch_options=branch_options,
             user=user,
             csrf=csrf,
-            cycles=records,
             agent_status=None,
             auto_tasks=_shorten_sections(auto_tasks),
             standalone_manual=_shorten_sections(manual_rows),
             section_options=section_options,
             cycle_task=_cycle_task(db, cycle_id),
             active_manual=_active_manual_count(manual_rows),
-            **_kpi_counts(auto_tasks),
             done_count=_done_count(db),
             op_error=op_error,
         )
@@ -429,7 +427,6 @@ def workbench(request: Request, user: Annotated[dict, Depends(require_login)]):
         return _render(request, branch_options=branch_options,
             user=user,
             csrf=csrf,
-            cycles=records,
             agent_status="unavailable",
             current_cycle_id=cycle_id,
             auto_tasks=_shorten_sections(auto_tasks),
@@ -437,7 +434,6 @@ def workbench(request: Request, user: Annotated[dict, Depends(require_login)]):
             section_options=section_options,
             cycle_task=_cycle_task(db, cycle_id),
             active_manual=_active_manual_count(manual_rows),
-            **_kpi_counts(auto_tasks),
             done_count=_done_count(db),
             op_error=op_error,
         )
@@ -453,7 +449,6 @@ def workbench(request: Request, user: Annotated[dict, Depends(require_login)]):
     return _render(request, branch_options=branch_options,
         user=user,
         csrf=csrf,
-        cycles=records,
         current_cycle_id=cycle_id,
         agent_status="failed" if payload.get("status") in ("FAILED", "PARTIAL") else "done",
         cycle_status=payload.get("status"),
@@ -468,7 +463,6 @@ def workbench(request: Request, user: Annotated[dict, Depends(require_login)]):
         abandoned_items=_abandoned_items(cycle_id, abandoned),
         active_manual=active_manual,
         decisions_json=json.dumps(payload.get("decisions") or {}, ensure_ascii=False),
-        **_kpi_counts(auto_tasks),
             done_count=_done_count(db),
         **_cycle_commit_summary(payload, auto_tasks),
         op_error=op_error,

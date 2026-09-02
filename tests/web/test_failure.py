@@ -20,6 +20,25 @@ def test_node_failure_action_required():
     assert failure_summary(payload) == ["branch_matrix 节点错误：未解析出任何同步边"]
 
 
+def test_node_failure_with_branch_scoped_to_that_branch():
+    # 绑定具体分支的节点失败只在该分支的 failure_summary 出现；
+    # 成功分支不得复制他分支的 prepare_worktree 失败（避免绿分支显红）。
+    payload = {
+        "branch_results": {},
+        "action_required": [
+            {
+                "node": "prepare_worktree",
+                "branch": "br_A",
+                "error": "br_A 基线编译失败",
+            },
+        ],
+    }
+    assert failure_summary(payload, "br_B") == []
+    assert failure_summary(payload, "br_A") == ["prepare_worktree 节点错误：br_A 基线编译失败"]
+    # 周期级（target=None）展示，并带分支前缀便于定位
+    assert failure_summary(payload) == ["br_A: prepare_worktree 节点错误：br_A 基线编译失败"]
+
+
 def test_manual_review_uses_evidence_not_reason():
     # 真实数据里 ManualReview 只有 evidence，没有 reason
     payload = {

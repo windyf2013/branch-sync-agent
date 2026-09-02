@@ -6,7 +6,7 @@
     {% if branch.status != "SUCCESS" %}
     <ul class="evidence-list">
       {% for item in payload.get("action_required") or [] %}
-        {% if item.node %}
+        {% if item.node and (not item.branch or item.branch == target) %}
         <li><span class="badge failed">节点失败</span> {{ item.node }}：{{ item.error }}</li>
         {% elif item.kind == "ManualReview" and item.branch == target %}
         <li><span class="badge manual">{{ item.kind | kind_zh }}</span> {{ item.sha }}{% if item.evidence %}（{{ item.evidence | join("；") }}）{% endif %}</li>

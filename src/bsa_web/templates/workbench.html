@@ -104,7 +104,11 @@
 
 <!-- KPI 总览（恒显 5 卡） -->
 <div class="kpi-grid">
+  {% if push_pending and current_cycle_id %}
+  <a class="kpi {% if push_pending %}kpi-ok{% endif %}" href="/cycle/{{ current_cycle_id }}" style="text-decoration:none">
+  {% else %}
   <div class="kpi {% if push_pending %}kpi-ok{% endif %}">
+  {% endif %}
     <div class="kpi-top">
       <span class="kpi-icon">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19V5"/><path d="m5 12 7-7 7 7"/></svg>
@@ -113,7 +117,11 @@
     </div>
     <span class="value{% if not push_pending %} kpi-zero{% endif %}">{{ push_pending | length }}</span>
     <div class="sub">本周期</div>
+  {% if push_pending and current_cycle_id %}
+  </a>
+  {% else %}
   </div>
+  {% endif %}
   {% if review_pending and current_cycle_id %}
   <a class="kpi {% if review_pending %}kpi-review{% endif %}" data-kpi-review-link href="/cycle/{{ current_cycle_id }}" style="text-decoration:none">
   {% else %}
@@ -132,7 +140,11 @@
   {% else %}
   </div>
   {% endif %}
+  {% if rerun_pending and current_cycle_id %}
+  <a class="kpi {% if rerun_pending %}kpi-need{% endif %}" href="/cycle/{{ current_cycle_id }}" style="text-decoration:none">
+  {% else %}
   <div class="kpi {% if rerun_pending %}kpi-need{% endif %}">
+  {% endif %}
     <div class="kpi-top">
       <span class="kpi-icon">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/></svg>
@@ -141,7 +153,11 @@
     </div>
     <span class="value{% if not rerun_pending %} kpi-zero{% endif %}">{{ rerun_pending | length }}</span>
     <div class="sub">本周期</div>
+  {% if rerun_pending and current_cycle_id %}
+  </a>
+  {% else %}
   </div>
+  {% endif %}
   <div class="kpi {% if active_manual %}kpi-pending{% endif %}">
     <div class="kpi-top">
       <span class="kpi-icon">
@@ -189,7 +205,7 @@
     {% elif auto_tasks or standalone_manual %}
       <div class="table-wrap">
       <table class="task-table">
-        <thead><tr><th>目标分支</th><th>状态</th><th>处理</th><th>失败原因</th><th>操作</th></tr></thead>
+        <thead><tr><th>目标分支</th><th>状态</th><th>处理情况</th><th>失败原因</th><th>操作</th></tr></thead>
         <tbody>
           {% if not auto_tasks and payload and current_cycle_id %}{{ cycle_summary_row() }}{% endif %}
           {% for t in auto_tasks %}
@@ -236,7 +252,7 @@
               <span class="cell-sub">{{ c.user or "—" }}{% if c.created_at %} · {{ c.created_at | localtime }}{% endif %}</span>
             </td>
             <td><span class="badge {{ c.status | lower }}">{{ c.badge }}</span></td>
-            <td class="num">{{ c.commits or "—" }}</td>
+            <td class="num"><span class="muted">commits</span> {{ c.commits or "—" }}</td>
             <td class="cell-reason{% if not c.reason %} empty{% endif %}">{{ c.reason or "—" }}</td>
             <td>
               {% if c.state in ("queued", "running") %}
@@ -263,7 +279,7 @@
               <span class="cell-sub">{{ t.user or "—" }}{% if t.created_at %} · {{ t.created_at | localtime }}{% endif %}</span>
             </td>
             <td><span class="badge {{ t.status | lower }}">{{ t.badge }}</span></td>
-            <td class="num">{{ t.commits or "—" }}</td>
+            <td class="num"><span class="muted">commits</span> {{ t.commits or "—" }}</td>
             <td class="cell-reason{% if not t.reason %} empty{% endif %}">{{ t.reason or "—" }}</td>
             <td>
               {% if t.state in ("queued", "running") %}
@@ -307,7 +323,7 @@
     {% elif payload %}
       <div class="table-wrap">
       <table class="task-table">
-        <thead><tr><th>目标分支</th><th>状态</th><th>处理</th><th>失败原因</th><th>操作</th></tr></thead>
+        <thead><tr><th>目标分支</th><th>状态</th><th>处理情况</th><th>失败原因</th><th>操作</th></tr></thead>
         <tbody>
           {% if current_cycle_id %}{{ cycle_summary_row() }}{% endif %}
         </tbody>

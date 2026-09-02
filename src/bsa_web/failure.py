@@ -47,8 +47,18 @@ def failure_summary(payload: dict, target: str | None = None) -> list[str]:
     # 2/3. action_required 节点失败 + ManualReview
     for item in payload.get("action_required") or []:
         if item.get("node"):
-            # 节点失败（周期级，无 branch）：影响所有分支，不受 target 过滤
-            reasons.append(f"{item['node']} 节点错误：{item.get('error') or '未知'}")
+            # 节点失败分两种：
+            # - 带 branch（如 prepare_worktree 绑定具体目标）：只在该分支展示，
+            #   否则会把 A 分支的编译失败复制到每个成功分支的「失败原因」上；
+            # - 无 branch（周期级，如 detect/branch_matrix 早退）：target 过滤时
+            #   照常透出（target=None 的周期概览始终展示），由周期级失败承载。
+            node_branch = item.get("branch")
+            if node_branch and target is not None and node_branch != target:
+                continue
+            reason = f"{item['node']} 节点错误：{item.get('error') or '未知'}"
+            if node_branch and target is None:
+                reason = f"{node_branch}: {reason}"
+            reasons.append(reason)
         elif item.get("kind") == "ManualReview":
             if target is not None and item.get("branch") != target:
                 continue
