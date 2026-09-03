@@ -1,0 +1,28 @@
+{# 分组步骤进度清单（周期概览专用）。
+
+   期望上下文：
+     step_groups    [ { target: 目标分支名 | null, steps: read_progress() 结果 } ]
+                    target 为空的分组是周期级步骤（探测/判定/报告），其余是某目标分支的处理流水。
+     cycle_id       周期 id
+     steps_cycle_id (可选) 周期 id，提供时 sha 渲染为 commit 详情链接
+
+   周期级步骤组无 commit 链接/富化（不落在任一目标分支上）；分支组组头指向
+   权威详情页 /task/{cycle}/{target}，组内复用 _steps.html 的清单/徽章/展开。
+#}
+<div class="step-groups">
+{% for g in step_groups %}
+  <section class="step-group">
+    <div class="step-group-head">
+      {% if g.target %}
+        <span class="step-group-branch"><a href="/task/{{ cycle_id }}/{{ g.target }}">{{ g.target }}</a></span>
+      {% else %}
+        <span class="step-group-branch">周期流程</span>
+      {% endif %}
+      <span class="step-group-count muted">{{ g.steps | length }} 步</span>
+    </div>
+    {% with steps=g.steps, steps_cycle_id=steps_cycle_id or cycle_id, steps_target=g.target %}
+      {% include "_steps.html" %}
+    {% endwith %}
+  </section>
+{% endfor %}
+</div>

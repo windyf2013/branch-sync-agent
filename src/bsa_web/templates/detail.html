@@ -76,6 +76,15 @@
 </section>
 {% endif %}
 
+{% if step_groups %}
+<section class="panel">
+<div class="panel-head"><h2>处理过程</h2><span class="panel-note">按执行顺序：周期流程与各目标分支的处理流水，冲突 / 编译失败 / 修复可展开查看</span></div>
+  <div class="panel-body">
+    {% include "_steps_grouped.html" %}
+  </div>
+</section>
+{% endif %}
+
 <section class="panel">
 <div class="panel-head"><h2>需人工处理</h2></div>
   <div class="panel-body">

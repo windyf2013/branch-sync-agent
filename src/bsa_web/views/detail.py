@@ -14,6 +14,8 @@ from fastapi.responses import FileResponse, RedirectResponse, Response
 
 from bsa_web import failure, projection
 from bsa_web.auth import make_csrf, require_login
+from bsa_web.progress import read_progress
+from bsa_web.steps import enrich_steps
 
 router = APIRouter(prefix="/cycle", tags=["detail"])
 
@@ -81,6 +83,20 @@ def cycle_detail(
         )
     branches = payload.get("branch_results") or {}
     detected = payload.get("detected_commits") or []
+    # 处理过程时间线：读该周期 progress.jsonl，沿执行顺序把相邻同 target 步骤
+    # 合成一组（探测/判定/报告等周期级步骤无 target → 「周期流程」段；分支级
+    # 步骤各自成段）。分组只切分不重排，忠实反映工作流；再把各分支投影的处理
+    # 产物富化挂到对应步骤展开（复用任务详情页同一套 _steps 交互）。
+    # 运行中周期已在上方 early-return，此处必为非 running。
+    step_groups: list[dict] = []
+    raw = read_progress(settings.log_dir, cycle_id)
+    for s in raw:
+        key = s.get("target") or None
+        if not step_groups or step_groups[-1]["target"] != key:
+            step_groups.append({"target": key, "steps": []})
+        step_groups[-1]["steps"].append(s)
+    for g in step_groups:
+        enrich_steps(g["steps"], branches.get(g["target"]))
     # 完整拓扑字段（含零检出源）由引擎投影提供（change1）；缺失时降级从
     # detected_commits 推导，仅能覆盖检出过 commit 的源，零检出源不可推导。
     topology_degraded = "sources" not in payload and "targets" not in payload
@@ -103,6 +119,9 @@ def cycle_detail(
         csrf=csrf,
         payload=payload,
         running=False,
+        cycle_id=cycle_id,
+        step_groups=step_groups,
+        steps_cycle_id=cycle_id,
         action_required=payload.get("action_required") or [],
         synced_branches=[
             b for b in branches.values() if b.get("status") == "SUCCESS"

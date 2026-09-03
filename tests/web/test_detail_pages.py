@@ -1,5 +1,7 @@
+import json
 import re
 from datetime import datetime
+from pathlib import Path
 
 from fastapi.testclient import TestClient
 
@@ -118,6 +120,16 @@ def _payload(**kw):
     }
     base.update(kw)
     return base
+
+
+def _write_progress_file(tmp_path, cycle_id, records):
+    """写 <log_dir>/<cycle_id>/progress.jsonl（引擎侧由 node_wrapper 生成）。"""
+    d = Path(tmp_path) / cycle_id
+    d.mkdir(parents=True, exist_ok=True)
+    (d / "progress.jsonl").write_text(
+        "\n".join(json.dumps(r, ensure_ascii=False) for r in records) + "\n",
+        encoding="utf-8",
+    )
 
 
 class TestHistory:
@@ -381,6 +393,54 @@ class TestCycleDetail:
         r = client.get("/cycle/cycle-2026-08-20")
         assert r.status_code == 200
         assert "拓扑字段缺失" in r.text
+
+    def test_cycle_overview_renders_grouped_process_timeline(self, tmp_path, monkeypatch):
+        """周期概览渲染「处理过程」分组时间线：周期级段在前 + 分支段，徽章中文。"""
+        client = _client(_make_app(tmp_path))
+        _login(client)
+        payload = _payload(
+            branch_results={
+                "t": _branch(
+                    "t", "PARTIAL",
+                    commits=[_commit_result("a1", cherry_pick="CONFLICT")],
+                )
+            },
+        )
+        monkeypatch.setattr("bsa_web.projection.load_cycle", lambda log_dir, cid: payload)
+        recs = [
+            # 周期级：检测 → 判定
+            {"cycle_id": "cycle-2026-08-20", "node": "detect_commits", "step": "代码迁出",
+             "phase": "end", "status": "DETECTED", "duration_ms": 100},
+            # 分支级：prepare → cherry_pick 冲突 → 失败 → 报告
+            {"cycle_id": "cycle-2026-08-20", "node": "prepare_worktree", "step": "建立 worktree",
+             "target": "t", "phase": "end", "status": "PREPARED", "duration_ms": 100},
+            {"cycle_id": "cycle-2026-08-20", "node": "cherry_pick", "step": "cherry-pick",
+             "target": "t", "sha": "a1", "phase": "end",
+             "status": "CHERRY_PICK_CONFLICT", "duration_ms": 100},
+            {"cycle_id": "cycle-2026-08-20", "node": "report", "step": "生成报告",
+             "phase": "end", "status": "REPORTED", "duration_ms": 100},
+        ]
+        _write_progress_file(tmp_path, "cycle-2026-08-20", recs)
+        r = client.get("/cycle/cycle-2026-08-20")
+        assert r.status_code == 200
+        assert "处理过程" in r.text
+        assert "代码迁出" in r.text
+        assert "周期流程" in r.text
+        assert "建立 worktree" in r.text
+        assert "t" in r.text  # 分支组头
+        assert "冲突" in r.text
+        assert "CHERRY_PICK_CONFLICT" not in r.text  # 徽章走 step_zh 中文映射
+
+    def test_cycle_overview_timeline_degrades_without_progress(self, tmp_path, monkeypatch):
+        """周期无 progress.jsonl（老记录）→ 不渲染「处理过程」，概览其余部分照常。"""
+        client = _client(_make_app(tmp_path))
+        _login(client)
+        payload = _payload(branch_results={"t": _branch("t", "SUCCESS")})
+        monkeypatch.setattr("bsa_web.projection.load_cycle", lambda log_dir, cid: payload)
+        r = client.get("/cycle/cycle-2026-08-20")
+        assert r.status_code == 200
+        assert "处理过程" not in r.text
+        assert "周期结果" in r.text
 
     def test_cycle_detail_running_shows_friendly_notice(self, tmp_path, monkeypatch):
         client = _client(_make_app(tmp_path))

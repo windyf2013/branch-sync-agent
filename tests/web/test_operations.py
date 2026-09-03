@@ -434,7 +434,7 @@ class TestFormWiring:
         assert "返回工作台" in html
 
     def test_task_page_shows_step_progress(self, tmp_path):
-        """有 cycle_id 的任务页渲染步骤清单（含耗时与中文步骤名）。"""
+        """有 cycle_id 的任务页渲染「处理过程」步骤清单（含耗时与中文步骤名）。"""
         app = _make_app(tmp_path)
         client = _client(app)
         _login(client)
@@ -460,7 +460,7 @@ class TestFormWiring:
 
         html = client.get(f"/tasks/{task_id}").text
 
-        assert "步骤进度" in html
+        assert "处理过程" in html
         assert "建立 worktree" in html
         assert "3.5s" in html  # 1003.5 - 1000.0
         assert "2600m" in html
