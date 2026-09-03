@@ -217,10 +217,12 @@ class LLMClient:
             j = self._complete("judge_bug_fix", prompt, _BugFixJudgment)
         except LLMUnavailable as exc:
             if self._settings.llm_degrade_to_manual:
+                # 保留 str(exc)：真实失败原因（claude -p 退出码/超时/非 JSON 等）必须随
+                # reason 透出，否则运维只看到「LLM 不可用」这一结果、无从排查。
                 return SyncDecision(
                     sha=commit.sha,
                     is_bug_fix=False,
-                    reason="LLM 不可用，降级人工审核",
+                    reason=f"LLM 调用失败：{exc}",
                     recognition_source="pending:claude-agent",
                     needs_agent=True,
                 )

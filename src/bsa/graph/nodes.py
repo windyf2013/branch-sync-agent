@@ -385,6 +385,7 @@ def _to_analysis(
         homologous_section=commit.homologous_section,
         risk=decision.risk,
         needs_agent=decision.needs_agent,
+        reason=decision.reason,
     )
 
 

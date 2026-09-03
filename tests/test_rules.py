@@ -487,7 +487,7 @@ def test_pending_needs_agent_never_auto_sync():
     target = _target(fix_clearly_missing=True)
     conclusion = conclude_pair(source, target, similarity_high=0.90, similarity_low=0.50)
     assert conclusion.kind == "ManualReview"
-    assert any("pending" in item for item in conclusion.evidence)
+    assert any("未判定" in item for item in conclusion.evidence)
 
 
 def test_pending_recognition_source_never_auto_sync():
@@ -1201,6 +1201,24 @@ def test_cause_pending():
     conclusion = conclude_pair(source, target, similarity_high=0.90, similarity_low=0.50)
     assert conclusion.kind == "ManualReview"
     assert conclusion.cause == "pending"
+
+
+def test_pending_evidence_surfaces_real_reason():
+    # 判定说明带出真实失败原因（reason 已含 str(exc)），而非只写「转人工」这一结果。
+    source = _analysis(needs_agent=True, reason="LLM 调用失败：claude -p exited 1: oom")
+    target = _target(fix_clearly_missing=True)
+    conclusion = conclude_pair(source, target, similarity_high=0.90, similarity_low=0.50)
+    assert conclusion.kind == "ManualReview"
+    assert "claude -p exited 1" in conclusion.evidence[0]
+
+
+def test_pending_without_reason_falls_back():
+    # reason 缺失时回退到结果性描述，不误加原因。
+    source = _analysis(needs_agent=True, reason=None)
+    target = _target(fix_clearly_missing=True)
+    conclusion = conclude_pair(source, target, similarity_high=0.90, similarity_low=0.50)
+    assert conclusion.kind == "ManualReview"
+    assert conclusion.evidence == ["LLM 未判定，转人工审核"]
 
 
 def test_cause_fix_missing():

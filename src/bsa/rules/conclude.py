@@ -33,6 +33,9 @@ class CommitAnalysis(BaseModel):
     homologous_section: str
     risk: Literal["low", "medium", "high"] | None = None
     needs_agent: bool = False
+    # 判定缘由（分类层/LLM 给出的中文说明），供 ManualReview 的 evidence 透出「为何未判定」，
+    # 而非只写「已转人工」这一结果。
+    reason: str | None = None
 
 
 class TargetSnapshot(BaseModel):
@@ -293,9 +296,17 @@ def conclude_pair(
 
     if source.needs_agent or source.recognition_source.startswith("pending:"):
         # 决策 18: LLM 未判定（pending）→ 降级人工审核，绝不自动同步。
+        # 落到这里的 pending 唯一成因是 LLM 判定不可用。判定说明必须带出真实失败
+        # 原因（SyncDecision.reason 已在 judge_bug_fix 降级分支保留 str(exc)），
+        # 否则运维只看到「转人工」这一结果、无从排查。
+        reason = (source.reason or "").strip()
+        if reason:
+            evidence = [f"LLM 未判定，转人工审核：{reason}"]
+        else:
+            evidence = ["LLM 未判定，转人工审核"]
         return Conclusion4(
             kind="ManualReview",
-            evidence=["LLM 未判定（pending），转人工审核"],
+            evidence=evidence,
             confidence="medium",
             cause="pending",
         )

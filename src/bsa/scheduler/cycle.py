@@ -123,6 +123,18 @@ def _setup_run_logger(log_path: Path) -> logging.Logger:
     stream_handler = logging.StreamHandler()
     stream_handler.setFormatter(formatter)
     _RUN_LOGGER.addHandler(stream_handler)
+
+    # bsa.agents 与 bsa.cycle 同挂 run.log：LLMClient._complete 的 err= 日志在此，
+    # 若不挂 handler，其 INFO 记录被 root 默认 WARNING 级别吞掉，LLM 失败的真实
+    # 原因（str(exc)）随之消失，run.log 只剩 bsa.cycle 四行。
+    _agents_logger = logging.getLogger("bsa.agents")
+    for handler in _agents_logger.handlers[:]:
+        _agents_logger.removeHandler(handler)
+        handler.close()
+    _agents_logger.setLevel(logging.INFO)
+    _agents_logger.addHandler(file_handler)
+    _agents_logger.addHandler(stream_handler)
+
     return _RUN_LOGGER
 
 

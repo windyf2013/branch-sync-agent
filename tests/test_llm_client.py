@@ -180,6 +180,8 @@ class TestJudgeBugFix:
         assert decision.is_bug_fix is False
         assert decision.recognition_source == "pending:claude-agent"
         assert decision.needs_agent is True
+        # 真实失败原因必须随 reason 透出，而不是被固定文案抹掉。
+        assert decision.reason is not None and "api down" in decision.reason
 
     def test_failure_raises_when_no_degrade(self, tmp_path, monkeypatch):
         client = LLMClient(make_settings(tmp_path, llm_backend="api", llm_degrade_to_manual=False))
