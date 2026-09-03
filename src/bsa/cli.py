@@ -500,13 +500,6 @@ def _cmd_rerun(args: argparse.Namespace) -> int:
             print("该修复已被合入/超出范围，无需重同步。", file=sys.stderr)
             register_finish(log_dir, task_id, state="succeeded", cycle_id=pre_cycle_id)
             return 0
-        if reason == "conclusion-manual-review":
-            print(
-                "无需自动重同步（结论非 NeedSync，含人工审核项），请先处理人工项。",
-                file=sys.stderr,
-            )
-            register_finish(log_dir, task_id, state="succeeded", cycle_id=pre_cycle_id)
-            return 0
         print(f"重跑被拦截: {reason}", file=sys.stderr)
         register_finish(log_dir, task_id, state="failed", cycle_id=pre_cycle_id)
         return 1

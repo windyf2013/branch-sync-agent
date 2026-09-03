@@ -53,26 +53,50 @@ def _cycle_records_newest_first(ctx: GraphContext) -> list[dict]:
     return sorted(list_cycle_records(ctx.settings.log_dir), key=_started_at, reverse=True)
 
 
+def _manual_cycle_ids(ctx: GraphContext) -> list[str]:
+    """manual-*/rerun-* 周期 id，按目录 mtime 新→旧。
+
+    ``list_cycle_records`` 只枚举 cron/scan 的 cycle.json；手动同步（manual-*）
+    与重跑（rerun-*）走单目标子图、不写 cycle.json，但会落盘 state.json 目录，
+    故重跑定位来源周期时须额外按目录枚举。
+    """
+    ids: list[tuple[float, str]] = []
+    for pattern in ("manual-*", "rerun-*"):
+        for path in Path(ctx.settings.log_dir).glob(pattern):
+            if path.is_dir():
+                ids.append((path.stat().st_mtime, path.name))
+    ids.sort(reverse=True)
+    return [name for _, name in ids]
+
+
 def _locate_cycle(
     ctx: GraphContext, target: str, cycle_id: str | None
 ) -> tuple[str | None, dict | None]:
     """定位最近含 target 的已完成周期，返回 (cycle_id, 冻结 state)。
 
-    从新到旧遍历周期记录，跳过仍在运行、或冻结批次里不含该 target 的周期；
-    ``--cycle`` 指定时只接受该周期。
+    ``--cycle`` 指定时直接读该周期冻结 state——manual-*/rerun-* 不写 cycle.json，
+    只能经 checkpoint 直接取，不能再走 ``list_cycle_records`` 过滤；未指定时从
+    新到旧遍历 cron/scan 周期记录与 manual/rerun 周期目录，跳过仍在运行、或
+    冻结批次里不含该 target 的周期。
     """
-    records = _cycle_records_newest_first(ctx)
     if cycle_id is not None:
-        records = [record for record in records if record.get("cycle_id") == cycle_id]
-    for record in records:
+        state = read_cycle_state(ctx.settings, cycle_id)
+        if state is not None and (state.get("batches") or {}).get(target):
+            return cycle_id, state
+        return None, None
+
+    for record in _cycle_records_newest_first(ctx):
         if record.get("status") == "running":
             continue
         state = read_cycle_state(ctx.settings, record["cycle_id"])
-        if state is None:
-            continue
-        if not (state.get("batches") or {}).get(target):
+        if state is None or not (state.get("batches") or {}).get(target):
             continue
         return record["cycle_id"], state
+
+    for cid in _manual_cycle_ids(ctx):
+        state = read_cycle_state(ctx.settings, cid)
+        if state is not None and (state.get("batches") or {}).get(target):
+            return cid, state
     return None, None
 
 
@@ -126,10 +150,14 @@ def _target_branch_ref(target: str, branch_mapping: dict[str, str]) -> BranchRef
 def _rejudge_batch(
     ctx: GraphContext, target: str, batch: list[CommitInfo], state: dict
 ) -> tuple[list[CommitInfo], dict[str, Conclusion4]]:
-    """对当前远端重判 batch 四态；返回 (仍 NeedSync 的 commits, 全部结论)。
+    """对当前远端重判 batch 四态；返回 (仍需重同步的 commits, 全部结论)。
 
-    --fresh 先判结论再动现场：批次已全部合入/超范围时直接拦截，
-    避免无谓丢弃 worktree 重建。
+    --fresh 先判结论再动现场：重判只「降级」客观已合入/超范围的 commit
+    （AlreadyIncluded/OutOfScope），其余（NeedSync 与 ManualReview）一律保留进
+    重同步批次。冻结批次里的 commit 本就已经过 NeedSync 判定（否则不会进
+    batch），而 ManualReview 是决策层「无法自动判定」，并非「已合入」的客观
+    证据——不能据此把用户要重同步的 commit 静默丢弃，否则失败分支重跑会被
+    误报成功却不做任何同步。
     """
     thresholds = ctx.decision_rules.conclude
     branch = _target_branch_ref(target, ctx.decision_rules.branch_mapping)
@@ -151,7 +179,7 @@ def _rejudge_batch(
             similarity_low=thresholds.similarity_low,
         )
         conclusions[commit.sha] = conclusion
-        if conclusion.kind == "NeedSync":
+        if conclusion.kind not in ("AlreadyIncluded", "OutOfScope"):
             remaining.append(commit)
     return remaining, conclusions
 
@@ -216,7 +244,7 @@ def _rerun_fresh(
     ctx: GraphContext, *, target: str, cycle: str | None, checkpointer,
     thread_id: str | None = None,
 ) -> dict:
-    """--fresh 重建重同步：先对当前远端重判，仍 NeedSync 才丢弃现场重建。"""
+    """--fresh 重建重同步：先对当前远端重判，未全部合入/超范围才丢弃现场重建。"""
     ctx.git.fetch_all()
     cycle_id, state = _locate_cycle(ctx, target, cycle)
     if cycle_id is None:
@@ -231,17 +259,6 @@ def _rerun_fresh(
         }
     remaining, conclusions = _rejudge_batch(ctx, target, batch, state)
     if not remaining:
-        if any(
-            conclusion.kind == "ManualReview"
-            for conclusion in conclusions.values()
-        ):
-            return {
-                "stop": True,
-                "reason": "conclusion-manual-review",
-                "target": target,
-                "cycle_id": cycle_id,
-                "conclusions": {sha: conclusion.kind for sha, conclusion in conclusions.items()},
-            }
         return {
             "stop": True,
             "reason": "conclusion-now-included",
@@ -279,10 +296,10 @@ def run_rerun_command(
     """分支级重跑：默认保留现场续跑；--fresh 重建并对当前远端重判。
 
     返回值统一为 dict：拦截场景含 ``stop=True`` 与 ``reason``
-    （dirty / no-cycle / no-worktree / no-batch / conclusion-now-included /
-    conclusion-manual-review），正常场景返回同步最终 state 并附 ``rerun``
-    元信息。retained 模式将 checkpoint 写入独立 ``rerun-*`` 线程
-    （``rerun.cycle_id``），不覆盖来源周期投影。
+    （dirty / no-cycle / no-worktree / no-batch / conclusion-now-included），
+    正常场景返回同步最终 state 并附 ``rerun`` 元信息。retained 模式将
+    checkpoint 写入独立 ``rerun-*`` 线程（``rerun.cycle_id``），不覆盖来源
+    周期投影。
 
     ``thread_id`` 由调用方预生成（P2-3 单一线程 id）：``_cmd_rerun`` 用它做
     register_start，与本函数内 checkpoint 线程一致，避免二次生成导致任务行

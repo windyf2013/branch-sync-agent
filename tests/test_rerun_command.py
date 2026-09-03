@@ -220,7 +220,50 @@ def test_rerun_fresh_still_need_sync_discards_and_rebuilds(tmp_path, monkeypatch
     assert branch.patch_path is not None
 
 
-def test_rerun_fresh_manual_review_stops_with_distinct_reason(tmp_path, monkeypatch):
+def test_rerun_fresh_locates_manual_cycle_without_cycle_json(tmp_path, monkeypatch):
+    # 回归：手动同步（manual-*）不写 cycle.json，list_cycle_records 枚举不到；
+    # fresh 重跑须按目录枚举 manual-*/rerun-* 才能定位来源周期，否则误报 no-cycle。
+    ctx = make_ctx(tmp_path)
+    ctx.git.tips = {
+        TARGET: ("origin/" + TARGET, "tip1"),
+        DEVELOP: ("origin/" + DEVELOP, "tip1"),
+    }
+    monkeypatch.setattr("bsa.commands.rerun.list_cycle_records", lambda log_dir: [])
+    manual_cid = "manual-20260101-000000"
+    monkeypatch.setattr(
+        "bsa.commands.rerun.read_cycle_state",
+        lambda settings, cid: frozen_state(manual_cid, TARGET, ["a1"])
+        if cid == manual_cid
+        else None,
+    )
+    # 手动周期只落 state.json 目录，无 cycle.json。
+    (Path(ctx.settings.log_dir) / manual_cid).mkdir(parents=True, exist_ok=True)
+    ctx.build_snapshot = lambda **kw: target_snapshot()
+    ctx.conclude.results = {
+        ("a1", TARGET): Conclusion4(kind="NeedSync", evidence=[], confidence="high")
+    }
+    old_wt = make_valid_worktree(ctx, TARGET, manual_cid)
+    monkeypatch.setattr(
+        "bsa.commands.rerun.manual_cycle_id", lambda: "manual-20260824-101010"
+    )
+    new_wt = worktree_path(ctx, TARGET, "manual-20260824-101010")
+    wg = ok_worktree_git(cherry_pick="OK")
+    ctx.worktree_gits[str(new_wt)] = wg
+
+    final = run_rerun_command(ctx, target=TARGET, fresh=True)
+
+    assert not final.get("stop")
+    assert final["rerun"]["mode"] == "fresh"
+    assert final["rerun"]["source_cycle_id"] == manual_cid
+    assert final["rerun"]["cycle_id"] == "manual-20260824-101010"
+    assert ("remove_worktree", (old_wt,)) in ctx.git.calls
+    assert ("add_worktree", ("origin/" + TARGET, new_wt)) in ctx.git.calls
+
+
+def test_rerun_fresh_manual_review_keeps_and_resyncs(tmp_path, monkeypatch):
+    # 回归：--fresh 重判时 ManualReview 不是「已合入」的客观证据，不能据此静默
+    # 丢弃用户要重同步的 commit（否则失败分支重跑会被误报成功却不做任何同步）。
+    # 冻结批次里的 commit 本就已经过 NeedSync 判定，重判只降级客观已合入/超范围。
     ctx = make_ctx(tmp_path)
     ctx.git.tips = {
         TARGET: ("origin/" + TARGET, "tip1"),
@@ -231,15 +274,63 @@ def test_rerun_fresh_manual_review_stops_with_distinct_reason(tmp_path, monkeypa
     ctx.conclude.results = {
         ("a1", TARGET): Conclusion4(kind="ManualReview", evidence=[], confidence="low")
     }
+    old_wt = make_valid_worktree(ctx, TARGET, RETAINED_CYCLE)
+    monkeypatch.setattr(
+        "bsa.commands.rerun.manual_cycle_id", lambda: "manual-20260824-101010"
+    )
+    new_wt = worktree_path(ctx, TARGET, "manual-20260824-101010")
+    wg = ok_worktree_git(cherry_pick="OK")
+    ctx.worktree_gits[str(new_wt)] = wg
 
-    result = run_rerun_command(ctx, target=TARGET, fresh=True)
+    final = run_rerun_command(ctx, target=TARGET, fresh=True)
 
-    assert result["stop"] is True
-    assert result["reason"] == "conclusion-manual-review"
-    assert result["conclusions"]["a1"] == "ManualReview"
-    assert result.get("rerun") is None
-    assert not any(name == "remove_worktree" for name, args in ctx.git.calls)
-    assert not any(name == "add_worktree" for name, args in ctx.git.calls)
+    assert not final.get("stop")
+    assert final["rerun"]["mode"] == "fresh"
+    assert final["rerun"]["source_cycle_id"] == RETAINED_CYCLE
+    assert final["rerun"]["cycle_id"] == "manual-20260824-101010"
+    assert ("remove_worktree", (old_wt,)) in ctx.git.calls
+    assert ("add_worktree", ("origin/" + TARGET, new_wt)) in ctx.git.calls
+    picked = [args[0] for name, args in wg.calls if name == "cherry_pick"]
+    assert picked == ["a1"]
+
+
+def test_rerun_fresh_mixed_conclusions_drop_only_included(tmp_path, monkeypatch):
+    # 重判混合结论：AlreadyIncluded/OutOfScope 降级丢弃，ManualReview/NeedSync 保留重同步。
+    shas = ["a1", "a2", "a3", "a4"]
+    ctx = make_ctx(tmp_path)
+    ctx.git.tips = {
+        TARGET: ("origin/" + TARGET, "tip1"),
+        DEVELOP: ("origin/" + DEVELOP, "tip1"),
+    }
+    monkeypatch.setattr(
+        "bsa.commands.rerun.list_cycle_records",
+        lambda log_dir: [cycle_record(RETAINED_CYCLE)],
+    )
+    monkeypatch.setattr(
+        "bsa.commands.rerun.read_cycle_state",
+        lambda settings, c: frozen_state(RETAINED_CYCLE, TARGET, shas),
+    )
+    ctx.build_snapshot = lambda **kw: target_snapshot()
+    ctx.conclude.results = {
+        ("a1", TARGET): Conclusion4(kind="AlreadyIncluded", evidence=[], confidence="high"),
+        ("a2", TARGET): Conclusion4(kind="OutOfScope", evidence=[], confidence="high"),
+        ("a3", TARGET): Conclusion4(kind="ManualReview", evidence=[], confidence="low"),
+        ("a4", TARGET): Conclusion4(kind="NeedSync", evidence=[], confidence="high"),
+    }
+    old_wt = make_valid_worktree(ctx, TARGET, RETAINED_CYCLE)
+    monkeypatch.setattr(
+        "bsa.commands.rerun.manual_cycle_id", lambda: "manual-20260824-101010"
+    )
+    new_wt = worktree_path(ctx, TARGET, "manual-20260824-101010")
+    wg = ok_worktree_git(cherry_pick="OK")
+    ctx.worktree_gits[str(new_wt)] = wg
+
+    final = run_rerun_command(ctx, target=TARGET, fresh=True)
+
+    assert not final.get("stop")
+    picked = [args[0] for name, args in wg.calls if name == "cherry_pick"]
+    # 丢弃 a1/a2，保留 a3/a4，按 commit 原顺序重同步
+    assert picked == ["a3", "a4"]
 
 
 def test_rerun_fresh_out_of_scope_keeps_now_included_reason(tmp_path, monkeypatch):
@@ -364,28 +455,6 @@ def test_rerun_cli_conclusion_now_included_exits_zero(monkeypatch, tmp_path, cap
 
     assert code == 0
     assert "无需重同步" in capsys.readouterr().err
-
-
-def test_rerun_cli_manual_review_exits_zero_with_hint(monkeypatch, tmp_path, capsys):
-    env = valid_env()
-    env["LOG_DIR"] = str(tmp_path / "logs")
-    monkeypatch.setattr("bsa.config.settings.os.environ", env)
-    monkeypatch.setattr(
-        "bsa.cli.build_graph_context",
-        lambda settings, **kw: SimpleNamespace(settings=settings),
-    )
-    monkeypatch.setattr(
-        "bsa.cli.run_rerun_command",
-        lambda ctx, *, target, cycle, fresh, checkpointer, thread_id=None: {
-            "stop": True,
-            "reason": "conclusion-manual-review",
-        },
-    )
-
-    code = main(["rerun", TARGET, "--fresh"])
-
-    assert code == 0
-    assert "请先处理人工项" in capsys.readouterr().err
 
 
 def test_cleanup_worktree_removes_existing(tmp_path):
