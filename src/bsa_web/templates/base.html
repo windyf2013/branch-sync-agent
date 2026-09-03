@@ -55,8 +55,10 @@
       <div class="sidebar-footer">
         <div class="user-chip">
           <span class="user-avatar">{{ user.username[:1] | upper }}</span>
-          <span class="user-name">{{ user.username }}</span>
-          <span class="badge {{ 'scope' if user.role == 'viewer' else 'neutral' }}">{{ user.role | role_zh }}</span>
+          <div class="user-meta">
+            <span class="user-name">{{ user.username }}</span>
+            <span class="user-role">{{ user.role | role_zh }}</span>
+          </div>
           <form method="post" action="/logout" class="logout-form">
             <input type="hidden" name="_csrf" value="{{ csrf }}">
             <button type="submit" class="logout-btn" title="登出" aria-label="登出">
