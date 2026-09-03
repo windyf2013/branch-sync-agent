@@ -5,6 +5,7 @@ from __future__ import annotations
 from bsa_web.failure import (
     commit_bucket,
     commit_destinations,
+    commit_rationale,
     decision_breakdown,
     failure_summary,
     failure_text,
@@ -226,6 +227,53 @@ def test_commit_destinations_no_detection_is_all_zero():
         "review": 0,
         "unhandled": 0,
     }
+
+
+def test_commit_rationale_mirrors_decision_evidence():
+    # 判定说明 = 决定该 commit 去向的那条判定的 evidence 原文
+    payload = {
+        "detected_commits": [
+            {"sha": "s1"}, {"sha": "s2"}, {"sha": "s3"},
+            {"sha": "s4"}, {"sha": "s5"}, {"sha": "s6"},
+        ],
+        "decisions": {
+            "s2": {"t": {"kind": "AlreadyIncluded",
+                         "evidence": ["关联改动相似度 1.00 达到已包含阈值。"]}},
+            "s4": {"t": {"kind": "ManualReview",
+                         "evidence": ["关联文件存在，但目标分支上函数/符号疑似已重命名。"]}},
+        },
+        "branch_results": {},
+        "action_required": [
+            {"sha": "s4", "branch": "t", "kind": "ManualReview"},
+        ],
+    }
+    # skipped：取 AlreadyIncluded evidence
+    assert commit_rationale(payload, "s2") == "关联改动相似度 1.00 达到已包含阈值。"
+    # review：取 ManualReview evidence
+    assert commit_rationale(payload, "s4") == "关联文件存在，但目标分支上函数/符号疑似已重命名。"
+    # unhandled：无判定 → 排查归因兜底
+    assert commit_rationale(payload, "s5") == "无判定记录，需排查归因"
+    # synced 但无判定记录 → 桶级兜底
+    assert commit_rationale(payload, "s6") == "无判定记录，需排查归因"
+
+
+def test_commit_rationale_synced_uses_applied_target_decision():
+    # synced：应取「实际同步到的目标分支」上那条 NeedSync 的 evidence
+    payload = {
+        "detected_commits": [{"sha": "s1"}],
+        "decisions": {
+            "s1": {
+                "tA": {"kind": "ManualReview", "evidence": ["tA 需人工"]},
+                "tB": {"kind": "NeedSync", "evidence": ["tB 缺少该修复，需同步"]},
+            }
+        },
+        # s1 实际只同步到 tB
+        "branch_results": {"tB": {"target_branch": "tB",
+                                  "commits": [{"sha": "s1", "cherry_pick": "OK"}]}},
+        "action_required": [],
+    }
+    assert commit_bucket(payload, "s1") == "synced"
+    assert commit_rationale(payload, "s1") == "tB 缺少该修复，需同步"
 
 
 def test_commit_bucket_each_verdict():

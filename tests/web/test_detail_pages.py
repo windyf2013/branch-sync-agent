@@ -351,6 +351,29 @@ class TestCycleDetail:
         assert "检测" in r.text
         assert "跳过" in r.text
 
+    def test_cycle_overview_commit_verdict_columns_far_right(self, tmp_path, monkeypatch):
+        # 检测信息 commit 表：判定 + 判定说明 两列在行最右（改动文件之后）
+        client = _client(_make_app(tmp_path))
+        _login(client)
+        payload = _payload(
+            detected_commits=[_commit_info("a1")],
+            decisions={"a1": {"t": _conclusion("AlreadyIncluded")}},
+            action_required=[],
+        )
+        monkeypatch.setattr("bsa_web.projection.load_cycle", lambda log_dir, cid: payload)
+        r = client.get("/cycle/cycle-2026-08-20")
+        assert r.status_code == 200
+        start = r.text.index("检测信息")
+        table = r.text[start:start + 3000]
+        # 表头：判定两列位于改动文件列之后
+        assert table.index("判定") > table.index("改动文件")
+        assert table.index("判定说明") > table.index("改动文件")
+        # 行内顺序：commit → 消息 → 文件数 → 徽章(跳过) → evidence 缘由
+        assert table.index("/commit/a1") < table.index("msg-a1")
+        assert table.index("msg-a1") < table.index(">1</td>")
+        assert table.index(">1</td>") < table.index("跳过")
+        assert table.index("跳过") < table.index("ev-AlreadyIncluded")
+
     def test_cycle_overview_groups_detection_by_source(self, tmp_path, monkeypatch):
         client = _client(_make_app(tmp_path))
         _login(client)

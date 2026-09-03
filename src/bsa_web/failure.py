@@ -150,6 +150,74 @@ def commit_bucket(payload: dict, sha: str) -> str:
     return "unhandled"
 
 
+def commit_rationale(payload: dict, sha: str) -> str:
+    """单 commit 的判定说明（结果列的同源缘由），与 ``commit_bucket`` 对齐。
+
+    取「决定该 commit 去向」的那条判定的 evidence 原文，缺失时给桶级兜底文案：
+    - synced    —— 实际同步到的那条目标分支的 NeedSync 判定缘由（为什么需同步）；
+    - skipped   —— AlreadyIncluded / OutOfScope 判定缘由；
+    - review    —— ManualReview 判定缘由；
+    - unhandled —— 判定待同步但未同步落地；无判定则提示排查归因。
+    """
+    decisions = (payload.get("decisions") or {}).get(sha) or {}
+    bucket = commit_bucket(payload, sha)
+
+    def _first_evidence_of(*kinds: str) -> str | None:
+        for d in decisions.values():
+            if not isinstance(d, dict) or d.get("kind") not in kinds:
+                continue
+            ev = _decision_evidence(d)
+            if ev:
+                return ev
+        return None
+
+    if bucket == "synced":
+        # 精确到实际同步到的目标分支上的判定，拿不到再退回任意 NeedSync
+        applied_targets = [
+            branch.get("target_branch")
+            for branch in (payload.get("branch_results") or {}).values()
+            for cr in (branch.get("commits") or [])
+            if cr.get("sha") == sha and cr.get("cherry_pick") in ("OK", "EMPTY")
+            and branch.get("target_branch")
+        ]
+        for target in applied_targets:
+            d = decisions.get(target)
+            if isinstance(d, dict) and d.get("kind") == "NeedSync":
+                ev = _decision_evidence(d)
+                if ev:
+                    return ev
+        ev = _first_evidence_of("NeedSync")
+        if ev:
+            return ev
+        return "已同步应用到目标分支"
+    if bucket == "skipped":
+        ev = _first_evidence_of("AlreadyIncluded", "OutOfScope")
+        if ev:
+            return ev
+        return "目标分支已包含该修复，或本产品线不适用"
+    if bucket == "review":
+        ev = _first_evidence_of("ManualReview")
+        if ev:
+            return ev
+        return "需人工裁决"
+    # unhandled
+    ev = _first_evidence_of("NeedSync")
+    if ev:
+        return f"判定待同步但未同步落地：{ev}"
+    return "无判定记录，需排查归因"
+
+
+def _decision_evidence(decision: dict) -> str | None:
+    """一条判定里最像「缘由」的文本：优先 evidence 首条，回退 reason 兜底。"""
+    for e in decision.get("evidence") or []:
+        if isinstance(e, str) and e.strip():
+            return e.strip()
+    reason = decision.get("reason")
+    if isinstance(reason, str) and reason.strip():
+        return reason.strip()
+    return None
+
+
 def commit_destinations(payload: dict) -> dict[str, int]:
     """周期级「检测 commit 去向」守恒归类（按 distinct commit）。
 

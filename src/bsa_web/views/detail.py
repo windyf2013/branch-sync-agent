@@ -174,6 +174,10 @@ def cycle_detail(
             c.get("sha"): failure.commit_bucket(payload, c.get("sha"))
             for c in detected if c.get("sha")
         },
+        commit_rationales={
+            c.get("sha"): failure.commit_rationale(payload, c.get("sha"))
+            for c in detected if c.get("sha")
+        },
     )
 
 

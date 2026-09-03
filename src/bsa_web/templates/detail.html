@@ -147,16 +147,17 @@
     {% set verdict_meta = {"synced": ["同步", "success"], "skipped": ["跳过", "skip"], "review": ["待确认", "review"], "unhandled": ["未处理", "need"]} %}
     <div class="table-wrap">
     <table>
-      <thead><tr><th>commit</th><th>判定</th><th>说明</th><th>改动文件</th></tr></thead>
+      <thead><tr><th>commit</th><th>说明</th><th>改动文件</th><th>判定</th><th>判定说明</th></tr></thead>
       <tbody>
         {% for c in detected_by_source[src] %}
         {% set _vb = commit_verdicts.get(c.sha, "unhandled") %}
         {% set _vmeta = verdict_meta[_vb] %}
         <tr>
           <td><a href="/cycle/{{ payload.cycle_id }}/commit/{{ c.sha }}"><code class="mono">{{ c.sha[:10] }}</code></a></td>
-          <td><span class="badge {{ _vmeta[1] }}">{{ _vmeta[0] }}</span></td>
           <td class="commit-message" title="{{ c.message }}">{{ c.message }}</td>
           <td class="num">{{ c.changed_files | length }}</td>
+          <td><span class="badge {{ _vmeta[1] }}">{{ _vmeta[0] }}</span></td>
+          <td class="muted verdict-reason">{{ commit_rationales.get(c.sha, "") }}</td>
         </tr>
         {% endfor %}
       </tbody>
@@ -169,17 +170,18 @@
   {% set verdict_meta = {"synced": ["同步", "success"], "skipped": ["跳过", "skip"], "review": ["待确认", "review"], "unhandled": ["未处理", "need"]} %}
   <div class="table-wrap">
   <table>
-    <thead><tr><th>commit</th><th>判定</th><th>说明</th><th>来源分支</th><th>改动文件</th></tr></thead>
+    <thead><tr><th>commit</th><th>说明</th><th>来源分支</th><th>改动文件</th><th>判定</th><th>判定说明</th></tr></thead>
     <tbody>
       {% for c in detected_commits %}
       {% set _vb = commit_verdicts.get(c.sha, "unhandled") %}
       {% set _vmeta = verdict_meta[_vb] %}
       <tr>
         <td><a href="/cycle/{{ payload.cycle_id }}/commit/{{ c.sha }}"><code class="mono">{{ c.sha[:10] }}</code></a></td>
-        <td><span class="badge {{ _vmeta[1] }}">{{ _vmeta[0] }}</span></td>
         <td class="commit-message" title="{{ c.message }}">{{ c.message }}</td>
         <td>{{ c.source_branch }}</td>
         <td class="num">{{ c.changed_files | length }}</td>
+        <td><span class="badge {{ _vmeta[1] }}">{{ _vmeta[0] }}</span></td>
+        <td class="muted verdict-reason">{{ commit_rationales.get(c.sha, "") }}</td>
       </tr>
       {% endfor %}
     </tbody>
