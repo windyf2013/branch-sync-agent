@@ -51,6 +51,8 @@
     --radius-pill: 999px;
 
     --sidebar-w: 252px;
+    --content-max: 1280px;   /* 主内容区最大宽度（侧栏右侧居中） */
+    --topbar-h: 74px;
     --sans: "Segoe UI", "Inter", -apple-system, "PingFang SC", "Microsoft YaHei", "Noto Sans SC", sans-serif;
     --mono: "Cascadia Code", "JetBrains Mono", "SFMono-Regular", Consolas, monospace;
 }
@@ -95,14 +97,14 @@ p { margin: 0.4rem 0; }
     position: sticky;
     top: 0;
     z-index: 100;
+    height: var(--topbar-h);
     background: linear-gradient(135deg, var(--brand) 0%, var(--brand-2) 130%);
     box-shadow: 0 2px 12px rgba(37, 99, 235, 0.2);
 }
 
 .topbar-inner {
-    max-width: 1560px;
-    margin: 0 auto;
     padding: 12px 28px;
+    height: 100%;
     display: flex;
     align-items: center;
     justify-content: space-between;
@@ -126,79 +128,21 @@ p { margin: 0.4rem 0; }
     flex: 0 0 50px;
 }
 
-.brand-copy .eyebrow {
-    margin: 0;
-    font-size: 11px;
-    letter-spacing: 0.16em;
-    text-transform: uppercase;
-    color: rgba(255, 255, 255, 0.72);
-    font-weight: 700;
-}
-
 .brand-copy h1 {
-    margin: 2px 0 0;
+    margin: 0;
     font-size: 20px;
     font-weight: 800;
     letter-spacing: 0.01em;
     color: #fff;
 }
 
-.topbar-right { display: flex; align-items: center; gap: 14px; }
-
-.user-chip-top {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    padding: 5px 12px;
-    border-radius: var(--radius-pill);
-    background: rgba(255, 255, 255, 0.14);
-    border: 1px solid rgba(255, 255, 255, 0.26);
-    backdrop-filter: blur(6px);
-}
-
-.user-chip-top .user-avatar {
-    width: 26px;
-    height: 26px;
-    border-radius: 50%;
-    background: rgba(255, 255, 255, 0.9);
-    color: var(--brand);
-    display: grid;
-    place-items: center;
-    font-size: 12px;
-    font-weight: 800;
-    flex: 0 0 26px;
-}
-
-.user-chip-name { color: #fff; font-size: 13.5px; font-weight: 650; }
-.user-chip-role {
-    color: rgba(255, 255, 255, 0.85);
-    font-size: 12px;
-    padding: 1px 8px;
-    border-radius: var(--radius-pill);
-    background: rgba(255, 255, 255, 0.16);
-}
-
-.topbar .logout-form { margin: 0; }
-.topbar .logout-btn {
-    border: 1px solid rgba(255, 255, 255, 0.35);
-    background: rgba(255, 255, 255, 0.1);
-    color: #fff;
-    border-radius: var(--radius-sm);
-    padding: 6px 14px;
-    font-weight: 650;
-    font-size: 13px;
-    cursor: pointer;
-    transition: background 0.14s ease;
-}
-.topbar .logout-btn:hover { background: rgba(255, 255, 255, 0.2); color: #fff; }
-
 /* ================= 左侧固定侧栏 ================= */
 .sidebar {
     width: var(--sidebar-w);
     flex: 0 0 var(--sidebar-w);
     position: sticky;
-    top: 66px;
-    height: calc(100vh - 66px);
+    top: var(--topbar-h);
+    height: calc(100vh - var(--topbar-h));
     display: flex;
     flex-direction: column;
     background: var(--surface);
@@ -245,12 +189,58 @@ p { margin: 0.4rem 0; }
 .nav-ico svg { width: 18px; height: 18px; }
 .sidebar-nav a.active .nav-ico { color: var(--brand); }
 
+/* 侧栏底部用户区：身份锚点 + 登出随行 */
+.sidebar-footer {
+    border-top: 1px solid var(--line);
+    padding: 12px;
+    margin-top: auto;
+}
+.user-chip { display: flex; align-items: center; gap: 9px; }
+.user-chip .user-avatar {
+    width: 30px;
+    height: 30px;
+    border-radius: 50%;
+    background: var(--brand-soft);
+    color: var(--brand);
+    display: grid;
+    place-items: center;
+    font-weight: 800;
+    font-size: 13px;
+    flex: 0 0 30px;
+}
+.user-chip .user-name {
+    flex: 1;
+    min-width: 0;
+    font-size: 13.5px;
+    font-weight: 650;
+    color: var(--ink);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+.sidebar .logout-btn {
+    border: 1px solid transparent;
+    background: transparent;
+    color: var(--muted);
+    width: 30px;
+    height: 30px;
+    border-radius: var(--radius-sm);
+    padding: 0;
+    display: grid;
+    place-items: center;
+    cursor: pointer;
+    transition: all 0.14s ease;
+}
+.sidebar .logout-btn:hover { background: var(--surface-2); color: var(--need); }
+.sidebar .logout-btn svg { width: 16px; height: 16px; }
+
 /* ================= 主内容区 ================= */
 .main {
     flex: 1;
     min-width: 0;
+    max-width: var(--content-max);
+    margin: 0 auto;
     padding: 30px 34px 60px;
-    max-width: 1560px;
 }
 
 /* 页头 */
@@ -1305,9 +1295,8 @@ dialog::backdrop { background: rgba(15, 23, 42, 0.46); backdrop-filter: blur(3px
 
 @media (max-width: 840px) {
     .app { flex-direction: column; }
-    .topbar { position: static; }
+    .topbar { position: static; height: auto; }
     .topbar-inner { padding: 10px 16px; }
-    .brand-copy .eyebrow { display: none; }
     .sidebar {
         width: 100%;
         height: auto;
@@ -1320,6 +1309,13 @@ dialog::backdrop { background: rgba(15, 23, 42, 0.46); backdrop-filter: blur(3px
         border-bottom: 1px solid var(--line);
     }
     .sidebar-nav { flex-direction: row; padding: 0; flex: 1; overflow: visible; }
+    .sidebar-footer {
+        margin-top: 0;
+        margin-left: auto;
+        border-top: none;
+        border-left: 1px solid var(--line);
+        padding: 0 0 0 12px;
+    }
     .main { padding: 20px 16px 40px; }
 }
 

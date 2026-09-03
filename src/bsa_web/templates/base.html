@@ -13,20 +13,8 @@
       <div class="brand-mark">
         <div class="brand-logo">BSA</div>
         <div class="brand-copy">
-          <p class="eyebrow">Branch Sync Agent</p>
           <h1>分支维护工作台</h1>
         </div>
-      </div>
-      <div class="topbar-right">
-        <div class="user-chip-top">
-          <span class="user-avatar">{{ user.username[:1] | upper }}</span>
-          <span class="user-chip-name">{{ user.username }}</span>
-          <span class="user-chip-role">{{ '操作者' if user.role == 'operator' else '查看者' }}</span>
-        </div>
-        <form method="post" action="/logout" class="logout-form">
-          <input type="hidden" name="_csrf" value="{{ csrf }}">
-          <button type="submit" class="logout-btn">登出</button>
-        </form>
       </div>
     </div>
   </header>
@@ -62,6 +50,18 @@
           设置
         </a>
       </nav>
+      <div class="sidebar-footer">
+        <div class="user-chip">
+          <span class="user-avatar">{{ user.username[:1] | upper }}</span>
+          <span class="user-name">{{ user.username }}</span>
+          <form method="post" action="/logout" class="logout-form">
+            <input type="hidden" name="_csrf" value="{{ csrf }}">
+            <button type="submit" class="logout-btn" title="登出" aria-label="登出">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><path d="m16 17 5-5-5-5"/><path d="M21 12H9"/></svg>
+            </button>
+          </form>
+        </div>
+      </div>
     </aside>
 
     <main class="main">
