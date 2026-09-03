@@ -20,6 +20,13 @@ class WebSettings(BaseSettings):
     cookie_secure: bool = False
     users: dict[str, str] = Field(default_factory=dict, validation_alias="BSA_USERS")
     branch_file: str = ""
+    # 自助登记（JIT 建号）：登录时用户名未占用且密码命中 signup_password 即建号。
+    # 空值 = 关闭该功能。角色默认 operator；白名单内用户名建为 admin。
+    signup_password: str = Field(default="", validation_alias="BSA_SIGNUP_PASSWORD")
+    signup_admin_users: list[str] = Field(
+        default_factory=lambda: ["yuhui", "yangfu"],
+        validation_alias="BSA_SIGNUP_ADMIN_USERS",
+    )
 
 
 def load_web_settings(*, env_file: str | None = ".env") -> WebSettings:

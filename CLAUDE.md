@@ -148,7 +148,7 @@ log_dir/
 全部走环境变量 + `pydantic-settings`，**真实路径/密钥绝不硬编码**，文档里一律用占位符。`.env.example` 是权威清单。
 
 - V1（`bsa/config/settings.py`）：`REPO_PATH` `BRANCH_FILE`（完整清单）`CRON_BRANCH_FILE`（cron 专用标注文件，空则回退 `BRANCH_FILE`，见不变量 #1）`WORKTREE_ROOT` `LLM_*` `DOCKER_*` `BUILD_SCRIPT_DIR` `MAIL_*` `LOG_DIR` 等。
-- V2（`bsa_web/settings.py`）：`SECRET_KEY`（必填）`BSA_USERS`（JSON，`username -> "bcrypt_hash:role"`，role ∈ operator|viewer）`BSA_WEB_PORT` `SESSION_TTL_SEC` `COOKIE_SECURE` `LOG_DIR`。
+- V2（`bsa_web/settings.py`）：`SECRET_KEY`（必填）`BSA_USERS`（JSON，`username -> "bcrypt_hash:role"`，role ∈ admin|operator|viewer；**仅首启引导入 `users` 表，此后经管理员「设置」页管理**，admin 是 operator 超集）`BSA_SIGNUP_PASSWORD`（可选，自助登记共享口令，空则关闭）`BSA_SIGNUP_ADMIN_USERS`（可选，登记白名单建 admin）`BSA_WEB_PORT` `SESSION_TTL_SEC` `COOKIE_SECURE` `LOG_DIR`。
 - 两者只在 `LOG_DIR` 和 `BRANCH_FILE` 重叠——两个进程必须指向同一个 `LOG_DIR`，所以两个 systemd unit 共用 `WorkingDirectory` 以读同一份 `.env`。
 - 运行期注入（executor 设置，别自造）：`BSA_TASK_ID` `BSA_CYCLE_ID` `BSA_MANUAL_CYCLE_ID` `BSA_RERUN_THREAD_ID`。
 - `required_models`（型号）**刻意不在 Settings 里**，唯一权威来源是 `safety_rules.yaml`。

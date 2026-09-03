@@ -16,16 +16,20 @@ from bsa_web.api.abandon import router as abandon_api_router
 from bsa_web.api.manual_review import router as manual_review_api_router
 from bsa_web.api.operations import router as operations_api_router
 from bsa_web.api.push import router as push_api_router
+from bsa_web.api.users import router as users_api_router
 from bsa_web.auth import (
     SESSION_COOKIE,
-    EnvAuthenticator,
+    DbAuthenticator,
     create_session,
+    current_user,
     make_csrf,
+    provision_user,
+    require_admin,
     require_csrf,
     require_login,
-    require_operator,
 )
-from bsa_web.db import InstanceLock, init_db
+from bsa_web.db import InstanceLock, bootstrap_users, init_db
+from bsa_web.rbac import role_label_zh
 from bsa_web.runner import enqueue_task, get_task
 from bsa_web.settings import WebSettings
 from bsa_web.views.audit_log import router as audit_log_router
@@ -116,6 +120,7 @@ _FOUR_STATE_ZH = {
 templates.env.filters["status_zh"] = lambda v: _STATUS_ZH.get(str(v), v)
 templates.env.filters["step_zh"] = lambda v: _STEP_ZH.get(str(v), v)
 templates.env.filters["kind_zh"] = lambda v: _FOUR_STATE_ZH.get(str(v), v)
+templates.env.filters["role_zh"] = role_label_zh
 
 _access_logger = logging.getLogger("bsa_web.access")
 
@@ -195,8 +200,8 @@ def create_app(*, settings_override: dict | None = None, env_file: str | None = 
     instance_lock = InstanceLock(db_path)
     app.state.db = init_db(db_path)
     app.state.instance_lock = instance_lock
-    raw_users = ",".join(f"{name}:{creds}" for name, creds in settings.users.items())
-    app.state.authenticator = EnvAuthenticator(raw_users)
+    bootstrap_users(app.state.db, settings.users)
+    app.state.authenticator = DbAuthenticator(app.state.db)
 
     app.mount(
         "/static",
@@ -247,10 +252,16 @@ def create_app(*, settings_override: dict | None = None, env_file: str | None = 
 
     @app.get("/login")
     def login_page(request: Request):
+        # 令牌绑定当前会话用户（未登录则为空字符串）：已登录用户再访登录页
+        # 重新登录时，提交的 _csrf 才能与会话匹配，避免 require_csrf 误判 403。
+        user = current_user(request)
         return templates.TemplateResponse(
             request,
             "login.html",
-            {"csrf": make_csrf(settings.secret_key, ""), "error": None},
+            {
+                "csrf": make_csrf(settings.secret_key, user["username"] if user else ""),
+                "error": None,
+            },
         )
 
     @app.post("/login", dependencies=[Depends(require_csrf)])
@@ -259,11 +270,24 @@ def create_app(*, settings_override: dict | None = None, env_file: str | None = 
     ):
         role = app.state.authenticator.authenticate(username, password)
         if role is None:
+            # 常规账号认证失败后，尝试 JIT 自助登记：密码命中共享口令且用户名
+            # 未占用则建号（白名单内建 admin，否则 operator）。
+            role = provision_user(
+                app.state.db,
+                username,
+                password,
+                settings.signup_password,
+                settings.signup_admin_users,
+            )
+        if role is None:
+            user = current_user(request)
             return templates.TemplateResponse(
                 request,
                 "login.html",
                 {
-                    "csrf": make_csrf(settings.secret_key, ""),
+                    "csrf": make_csrf(
+                        settings.secret_key, user["username"] if user else ""
+                    ),
                     "error": "用户名或密码错误",
                 },
                 status_code=400,
@@ -303,17 +327,22 @@ def create_app(*, settings_override: dict | None = None, env_file: str | None = 
     app.include_router(manual_review_api_router)
     app.include_router(abandon_api_router)
     app.include_router(push_api_router)
+    app.include_router(users_api_router)
     app.include_router(task_detail_router)
     app.include_router(ssh_api_router)
     app.include_router(ssh_router)
     @app.get("/settings")
     def settings_page(
-        request: Request, user: Annotated[dict, Depends(require_operator)]
+        request: Request, user: Annotated[dict, Depends(require_admin)]
     ):
         # 只读展示非敏感有效配置：不暴露 secret_key 与 bcrypt hash。
+        # 用户清单从 users 表读取（admin 经 UI 增删改后的权威真相源）。
+        rows = app.state.db.execute(
+            "SELECT username, role FROM users ORDER BY username"
+        ).fetchall()
         users = [
-            {"username": name, "role": "操作者" if creds.endswith(":operator") else "查看者"}
-            for name, creds in settings.users.items()
+            {"username": r["username"], "role": r["role"], "role_zh": role_label_zh(r["role"])}
+            for r in rows
         ]
         return templates.TemplateResponse(
             request,
@@ -329,6 +358,11 @@ def create_app(*, settings_override: dict | None = None, env_file: str | None = 
                     "Cookie 仅 HTTPS": "是" if settings.cookie_secure else "否",
                 },
                 "users": users,
+                "roles": [
+                    {"value": "admin", "label": "管理员"},
+                    {"value": "operator", "label": "操作者"},
+                    {"value": "viewer", "label": "查看者"},
+                ],
             },
         )
 

@@ -19,7 +19,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
 
 from bsa_web.auth import current_user, require_csrf, require_login, require_operator
-from bsa_web.rbac import OPERATOR
+from bsa_web.rbac import is_operator_role
 from bsa_web.runner import QUEUED_WAIT_REASON
 
 router = APIRouter(prefix="/api", tags=["operations"])
@@ -32,7 +32,7 @@ def _require_operator_api(request: Request) -> dict:
     user = current_user(request)
     if user is None:
         raise HTTPException(status_code=403, detail="需要登录")
-    if user["role"] != OPERATOR:
+    if not is_operator_role(user["role"]):
         raise HTTPException(status_code=403, detail="需要操作者权限")
     return user
 

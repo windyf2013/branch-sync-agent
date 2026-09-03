@@ -3,8 +3,13 @@ import os
 import sqlite3
 from pathlib import Path
 
+from bsa_web.rbac import normalize_role
+
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS meta(key TEXT PRIMARY KEY, value TEXT);
+CREATE TABLE IF NOT EXISTS users(
+  username TEXT PRIMARY KEY, pwhash TEXT NOT NULL,
+  role TEXT NOT NULL DEFAULT 'viewer', created_at TEXT NOT NULL DEFAULT (datetime('now')));
 CREATE TABLE IF NOT EXISTS sessions(
   token TEXT PRIMARY KEY, user TEXT NOT NULL, role TEXT NOT NULL,
   created_at TEXT NOT NULL, expires_at TEXT NOT NULL);
@@ -80,6 +85,35 @@ def init_db(path: str | Path) -> sqlite3.Connection:
     conn.execute("INSERT OR IGNORE INTO meta(key,value) VALUES('schema_version','2')")
     conn.commit()
     return conn
+
+
+def bootstrap_users(conn: sqlite3.Connection, env_users: dict[str, str]) -> int:
+    """首启时把 ``BSA_USERS`` 一次性引导进 ``users`` 表，返回写入条数。
+
+    ``env_users`` 形如 ``{username: "bcrypt_hash:role"}``（来自 WebSettings.users）。
+    仅当 ``users`` 表为空时执行引导（空表即首启）：此后 DB 成为账号唯一真相源，
+    admin 经 UI 的增删改在重启后不会被 env 复活（避免「重启复活已删用户」）。
+    executor 也调 ``init_db`` 但不持有 ``BSA_USERS``，故引导只在此处、由 web 装配。
+
+    引导时角色过 ``normalize_role``（未知值宽松回退 viewer，不报错）；``meta``
+    里的 ``users_seeded`` 标记仅作可观测性记录，不承担判断语义。
+    """
+    if not env_users:
+        return 0
+    row = conn.execute("SELECT COUNT(*) AS n FROM users").fetchone()
+    if row["n"] > 0:
+        return 0
+    n = 0
+    for username, creds in env_users.items():
+        pwhash, _, role = creds.rpartition(":")  # bcrypt 哈希不含 ':'
+        conn.execute(
+            "INSERT OR IGNORE INTO users(username, pwhash, role) VALUES (?,?,?)",
+            (username, pwhash, normalize_role(role)),
+        )
+        n += 1
+    conn.execute("INSERT OR IGNORE INTO meta(key,value) VALUES('users_seeded','1')")
+    conn.commit()
+    return n
 
 
 class InstanceLock:

@@ -28,7 +28,7 @@
   </div>
   <div class="branch-hero-ops">
   {% if branch_abandoned %}
-    {% if user.role == "operator" %}
+    {% if user.is_operator %}
     <button type="button" data-restore-cycle="{{ cycle_id }}" data-restore-target="{{ target }}" data-restore-sha="">恢复</button>
     <span class="restore-result"></span>
     {% else %}
@@ -36,7 +36,7 @@
     {% endif %}
   {% elif show_resume %}
     <span class="badge interrupted">已中断</span> <span class="muted">执行被中断（executor 重启），现场已保留，可续跑。</span>
-    {% if user.role == "operator" %}
+    {% if user.is_operator %}
     <form method="post" action="/rerun" class="inline-form">
       <input type="hidden" name="_csrf" value="{{ csrf }}">
       <input type="hidden" name="target" value="{{ target }}">
@@ -47,14 +47,14 @@
     <span class="muted">该分支需续跑，仅操作者可操作。</span>
     {% endif %}
   {% elif show_push %}
-    {% if user.role == "operator" %}
+    {% if user.is_operator %}
     <button type="button" data-push-target="{{ target }}" data-push-cycle="{{ cycle_id }}" class="btn-primary">推送</button>
     <span data-push-result="{{ target }}"></span>
     {% else %}
     <span class="muted">该分支可推送，仅操作者可执行。</span>
     {% endif %}
   {% elif status in ("FAILED", "PARTIAL", "MANUAL") %}
-    {% if user.role == "operator" %}
+    {% if user.is_operator %}
       {% if show_webssh %}
       <a class="btn" href="/ssh/task/{{ cycle_id }}/{{ target }}">WebSSH 在线处理</a>
       {% endif %}
@@ -71,7 +71,7 @@
     <span class="muted">当前状态（{{ status | status_zh }}）无可执行操作。</span>
   {% endif %}
 
-  {% if not branch_abandoned and user.role == "operator" %}
+  {% if not branch_abandoned and user.is_operator %}
   <span class="ops-sep"></span>
   <button type="button" class="btn-danger" data-abandon-cycle="{{ cycle_id }}" data-abandon-target="{{ target }}" data-abandon-sha="">放弃</button>
   <span class="abandon-result"></span>
@@ -102,7 +102,7 @@
         {% if item.reason %}<span class="review-reason">{{ item.reason }}</span>{% endif %}
         {% if item.override_stale %}
         <span class="badge warn" title="该 commit 内容已变化，此前的改判定不再匹配，请重新判定">⚠️ 覆盖已失效</span>
-        {% if user.role == "operator" %}
+        {% if user.is_operator %}
         <button type="button" data-override-clear="{{ item.sha }}">清除覆盖</button>
         <span class="override-clear-result"></span>
         {% endif %}
@@ -111,7 +111,7 @@
       {% if item.evidence %}
       <ul class="evidence-list">{% for e in item.evidence %}<li>{{ e }}</li>{% endfor %}</ul>
       {% endif %}
-      {% if user.role == "operator" %}
+      {% if user.is_operator %}
       <div class="review-actions">
         <div class="review-action-main">
           <button type="button" data-confirm-target="{{ target }}" data-confirm-sha="{{ item.sha }}" class="btn-primary">确认继续</button>

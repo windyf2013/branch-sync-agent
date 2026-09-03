@@ -69,7 +69,7 @@ class TestInitDb:
                 "SELECT name FROM sqlite_master WHERE type='table'"
             )
         }
-        assert {"meta", "sessions", "audit_log", "tasks"} <= tables
+        assert {"meta", "sessions", "audit_log", "tasks", "users"} <= tables
         row = conn.execute(
             "SELECT value FROM meta WHERE key='schema_version'"
         ).fetchone()

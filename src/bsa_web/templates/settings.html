@@ -28,21 +28,128 @@
 </section>
 
 <section class="panel">
-  <div class="panel-head"><h2>授权用户</h2><span class="panel-note">{{ users | length }} 个</span></div>
+  <div class="panel-head"><h2>授权用户</h2><span class="panel-note">{{ users | length }} 个 · 管理员可增删用户、改角色、重置密码</span></div>
   <div class="panel-body">
     <div class="table-wrap">
       <table>
-        <thead><tr><th>用户名</th><th>角色</th></tr></thead>
+        <thead><tr><th>用户名</th><th>角色</th><th class="ops-col">操作</th></tr></thead>
         <tbody>
           {% for u in users %}
-          <tr>
+          <tr data-user="{{ u.username }}">
             <td><code class="mono">{{ u.username }}</code></td>
-            <td><span class="badge {{ 'neutral' if u.role == '操作者' else 'scope' }}">{{ u.role }}</span></td>
+            <td>
+              <span class="badge {{ 'neutral' if u.role in ('admin', 'operator') else 'scope' }}">{{ u.role_zh }}</span>
+              {% if u.username == user.username %}<span class="muted">（当前登录）</span>{% endif %}
+            </td>
+            <td>
+              <select class="role-select" data-role-user="{{ u.username }}">
+                {% for r in roles %}
+                <option value="{{ r.value }}" {% if r.value == u.role %}selected{% endif %}>{{ r.label }}</option>
+                {% endfor %}
+              </select>
+              <button type="button" class="btn" data-save-role="{{ u.username }}">保存角色</button>
+              <button type="button" class="btn" data-reset-pw="{{ u.username }}">重置密码</button>
+              <button type="button" class="btn-danger" data-delete-user="{{ u.username }}" {% if u.username == user.username %}disabled{% endif %}>删除</button>
+              <span class="muted user-op-result" data-result="{{ u.username }}"></span>
+            </td>
           </tr>
           {% endfor %}
         </tbody>
       </table>
     </div>
+
+    <div class="user-create">
+      <h3>新增用户</h3>
+      <div class="user-create-fields">
+        <input type="text" id="new-username" placeholder="用户名">
+        <input type="password" id="new-password" placeholder="密码">
+        <select id="new-role">
+          {% for r in roles %}
+          <option value="{{ r.value }}">{{ r.label }}</option>
+          {% endfor %}
+        </select>
+        <button type="button" id="create-user" class="btn-primary">创建</button>
+        <span id="create-result" class="muted"></span>
+      </div>
+    </div>
   </div>
 </section>
+
+<script>
+(function () {
+  var csrf = "{{ csrf }}";
+
+  function post(url, body, onDone) {
+    fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(Object.assign({ _csrf: csrf }, body)),
+    })
+      .then(function (r) {
+        return r.json().catch(function () { return {}; }).then(function (data) {
+          return { ok: r.ok, status: r.status, data: data };
+        });
+      })
+      .then(function (res) {
+        if (!res.ok) {
+          var msg = (res.data && res.data.detail) || ("请求失败（" + res.status + "）");
+          onDone(false, msg);
+        } else {
+          onDone(true, res.data);
+        }
+      })
+      .catch(function () { onDone(false, "网络错误"); });
+  }
+
+  function flash(el, ok, msg) {
+    el.textContent = msg || "";
+    el.className = "muted user-op-result" + (ok ? " ok" : " err");
+  }
+
+  document.querySelectorAll("[data-save-role]").forEach(function (btn) {
+    btn.addEventListener("click", function () {
+      var username = btn.getAttribute("data-save-role");
+      var sel = document.querySelector('[data-role-user="' + username + '"]');
+      var result = document.querySelector('[data-result="' + username + '"]');
+      post("/api/users/" + encodeURIComponent(username) + "/role", { role: sel.value }, function (ok, msg) {
+        flash(result, ok, ok ? "已保存" : msg);
+        if (ok) { setTimeout(function () { location.reload(); }, 400); }
+      });
+    });
+  });
+
+  document.querySelectorAll("[data-reset-pw]").forEach(function (btn) {
+    btn.addEventListener("click", function () {
+      var username = btn.getAttribute("data-reset-pw");
+      var pw = prompt("为 " + username + " 设置新密码：");
+      if (pw === null || pw === "") { return; }
+      var result = document.querySelector('[data-result="' + username + '"]');
+      post("/api/users/" + encodeURIComponent(username) + "/password", { password: pw }, function (ok, msg) {
+        flash(result, ok, ok ? "密码已重置" : msg);
+      });
+    });
+  });
+
+  document.querySelectorAll("[data-delete-user]").forEach(function (btn) {
+    btn.addEventListener("click", function () {
+      var username = btn.getAttribute("data-delete-user");
+      if (!confirm("确认删除用户 " + username + "？此操作不可撤销。")) { return; }
+      var result = document.querySelector('[data-result="' + username + '"]');
+      post("/api/users/" + encodeURIComponent(username) + "/delete", {}, function (ok, msg) {
+        if (ok) { location.reload(); } else { flash(result, false, msg); }
+      });
+    });
+  });
+
+  document.getElementById("create-user").addEventListener("click", function () {
+    var username = document.getElementById("new-username").value.trim();
+    var password = document.getElementById("new-password").value;
+    var role = document.getElementById("new-role").value;
+    var result = document.getElementById("create-result");
+    post("/api/users", { username: username, password: password, role: role }, function (ok, msg) {
+      if (ok) { location.reload(); } else { flash(result, false, msg); }
+    });
+  });
+})();
+</script>
 {% endblock %}

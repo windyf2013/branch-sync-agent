@@ -40,7 +40,7 @@
   </div>
   <div class="page-head-actions">
     <a class="btn" href="{{ request.url.path }}?{{ request.url.query }}">↻ 刷新</a>
-    {% if user.role == "operator" %}
+    {% if user.is_operator %}
     <button type="button" id="open-sync" class="btn-primary">＋ 发起同步</button>
     {% else %}
     <span class="push-result-muted">仅操作者可发起同步</span>
@@ -93,7 +93,7 @@
       {% endif %}
       {% if cycle_task.state == "interrupted" %}
         <span class="badge interrupted">已中断 · 现场已保留</span>
-        {% if user.role == "operator" %}
+        {% if user.is_operator %}
         <button type="button" id="cycle-resume" data-resume-cycle="{{ cycle_task.cycle_id }}">续跑</button>
         <span id="cycle-resume-result"></span>
         {% endif %}
@@ -221,12 +221,12 @@
             <td class="cell-reason{% if not t.reason %} empty{% endif %}">{{ t.reason or "—" }}</td>
             <td>
               {% if t.abandoned %}
-                {% if user.role == "operator" %}
+                {% if user.is_operator %}
                 <button type="button" data-restore-cycle="{{ current_cycle_id }}" data-restore-target="{{ t.target }}" data-restore-sha="">恢复</button>
                 <span class="restore-result"></span>
                 {% endif %}
               {% elif t.status == "SUCCESS" %}
-                {% if user.role == "operator" %}
+                {% if user.is_operator %}
                 <button type="button" data-push-target="{{ t.target }}" data-push-cycle="{{ t.cycle_id }}">推送</button>
                 <span data-push-result="{{ t.target }}"></span>
                 {% else %}
@@ -345,7 +345,7 @@
       <li class="todo-item">
         <span class="badge abandoned">已放弃</span>
         <span class="todo-title">{{ item.target }}{% if item.sha %}（{{ item.sha }}）{% else %}（整分支）{% endif %}</span>
-        {% if user.role == "operator" %}
+        {% if user.is_operator %}
         <button type="button" data-restore-cycle="{{ current_cycle_id }}" data-restore-target="{{ item.target }}" data-restore-sha="{{ item.sha or '' }}">恢复</button>
         <span class="restore-result"></span>
         {% endif %}
@@ -360,7 +360,7 @@
 {% include "_push_confirm.html" %}
 
 <!-- 发起同步弹窗（可缩放，最大近全屏） -->
-{% if user.role == "operator" %}
+{% if user.is_operator %}
 <dialog id="sync-modal" class="modal-resizable">
   <form method="dialog"><button class="dialog-close" aria-label="关闭">×</button></form>
   <h3>发起同步</h3>

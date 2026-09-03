@@ -6,7 +6,7 @@ import bcrypt
 from fastapi import Depends, HTTPException, Request
 from itsdangerous import BadSignature, URLSafeTimedSerializer
 
-from bsa_web.rbac import OPERATOR
+from bsa_web.rbac import ADMIN, OPERATOR, VIEWER, is_operator_role, normalize_role
 
 SESSION_COOKIE = "bsa_session"
 CSRF_SALT = "bsa-csrf"
@@ -17,40 +17,50 @@ class Authenticator(Protocol):
 
     def authenticate(self, username: str, password: str) -> str | None: ...
 
-    def roles_for(self, username: str) -> str: ...
 
+class DbAuthenticator:
+    """基于 ``users`` 表的账号认证：角色可经 admin UI 运行时变更。"""
 
-class EnvAuthenticator:
-    """解析 BSA_USERS（user:bcrypt_hash:role,user2:...）的静态账号认证。"""
-
-    def __init__(self, raw: str):
-        self._users: dict[str, tuple[str, str]] = {}
-        for entry in raw.split(","):
-            entry = entry.strip()
-            if not entry:
-                continue
-            parts = entry.split(":")
-            if len(parts) != 3:
-                continue
-            username, pwhash, role = parts
-            self._users[username] = (pwhash, role)
-
-    def roles_for(self, username: str) -> str:
-        entry = self._users.get(username)
-        return entry[1] if entry else ""
+    def __init__(self, db):
+        self._db = db
 
     def authenticate(self, username: str, password: str) -> str | None:
-        entry = self._users.get(username)
-        if entry is None:
+        row = self._db.execute(
+            "SELECT pwhash, role FROM users WHERE username=?", (username,)
+        ).fetchone()
+        if row is None:
             return None
-        pwhash, role = entry
-        if bcrypt.checkpw(password.encode(), pwhash.encode()):
-            return role
+        if bcrypt.checkpw(password.encode(), row["pwhash"].encode()):
+            return normalize_role(row["role"])
         return None
 
 
 def hash_password(password: str) -> str:
     return bcrypt.hashpw(password.encode(), bcrypt.gensalt()).decode()
+
+
+def provision_user(
+    db, username: str, password: str, signup_password: str, admin_users: list[str]
+) -> str | None:
+    """JIT 自助登记：密码命中共享 ``signup_password`` 且用户名未占用时建号。
+
+    返回新账号角色；不满足条件（功能关闭 / 密码不符 / 用户名已存在）返回
+    None 且不创建。已存在用户即使输对共享密码也**不覆盖**其既有账号与角色，
+    杜绝用共享密码顶掉他人身份的越权路径。
+    """
+    if not signup_password or not username or password != signup_password:
+        return None
+    row = db.execute("SELECT 1 FROM users WHERE username=?", (username,)).fetchone()
+    if row is not None:
+        return None
+    role = ADMIN if username in admin_users else OPERATOR
+    pwhash = hash_password(password)
+    db.execute(
+        "INSERT INTO users(username, pwhash, role, created_at) VALUES (?,?,?,?)",
+        (username, pwhash, role, datetime.now(UTC).isoformat()),
+    )
+    db.commit()
+    return role
 
 
 def create_session(db, user: str, role: str, ttl_sec: int) -> str:
@@ -98,11 +108,28 @@ def _session_user(request: Request) -> tuple[str, str] | None:
 
 
 def current_user(request: Request) -> dict | None:
-    """只读当前会话用户；无会话返回 None（API 层复用，JSON 场景不用 302）。"""
+    """只读当前会话用户；无会话返回 None（API 层复用，JSON 场景不用 302）。
+
+    角色从 ``users`` 表实时解析（而非会话行里的历史角色），使 admin 的角色
+    变更/删除在用户下一次请求即生效；被删除的用户视同已登出。附派生布尔供
+    模板与依赖使用，避免散落各处做原始字符串比较。
+    """
     session = _session_user(request)
     if session is None:
         return None
-    return {"username": session[0], "role": session[1]}
+    row = request.app.state.db.execute(
+        "SELECT role FROM users WHERE username=?", (session[0],)
+    ).fetchone()
+    if row is None:  # 用户会话期内被删除 → 视同登出
+        return None
+    role = normalize_role(row["role"])
+    return {
+        "username": session[0],
+        "role": role,
+        "is_viewer": role == VIEWER,
+        "is_operator": is_operator_role(role),
+        "is_admin": role == ADMIN,
+    }
 
 
 def require_login(request: Request) -> dict:
@@ -115,8 +142,16 @@ def require_login(request: Request) -> dict:
 def require_operator(
     request: Request, user: Annotated[dict, Depends(require_login)]
 ) -> dict:
-    if user["role"] != OPERATOR:
+    if not user["is_operator"]:
         raise HTTPException(status_code=403, detail="需要操作者权限")
+    return user
+
+
+def require_admin(
+    request: Request, user: Annotated[dict, Depends(require_login)]
+) -> dict:
+    if not user["is_admin"]:
+        raise HTTPException(status_code=403, detail="需要管理员权限")
     return user
 
 

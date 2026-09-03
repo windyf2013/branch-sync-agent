@@ -57,7 +57,7 @@ curl -fsS https://<BSA_HOST>/healthz           # → {"status":"ok"}（nginx 层
 | 变量 | 必填 | 说明 |
 |---|---|---|
 | `SECRET_KEY` | 是 | 会话/CSRF 签名密钥，缺失则拒绝启动 |
-| `BSA_USERS` | 是 | 静态账号 JSON 字典 `{username: "bcrypt哈希:角色"}`，operator=操作者 / viewer=查看者；生成示例见 `.env.example` |
+| `BSA_USERS` | 是 | 静态账号 JSON 字典 `{username: "bcrypt哈希:角色"}`，admin=管理员 / operator=操作者 / viewer=查看者；**仅首启引导入库**，此后账号经管理员在「设置」页管理；生成示例见 `.env.example` |
 | `LOG_DIR` | 否 | 平台库与访问日志根目录，默认 `logs` |
 | `BSA_WEB_PORT` | 否 | 监听端口，默认 8888 |
 | `SESSION_TTL_SEC` | 否 | 会话有效期（秒），默认 28800 |
@@ -166,10 +166,11 @@ sudo systemctl start bsa-web
 1. `curl -fsS http://127.0.0.1:8888/healthz` → `{"status":"ok"}`。
 2. 浏览器访问 `https://<BSA_HOST>`，http 访问自动跳 https。
 3. 用查看者账号登录：可看工作台/历史/详情，**无**触发同步/推送按钮，直接调 API 返回 403。
-4. 用操作者账号登录：工作台显示当前周期总览与待办区。
-5. 触发一次同步（源+目标），任务区显示进度，轮询到 succeeded。
-6. 对 SUCCESS 分支点推送 → 确认框（commit 范围/patch 摘要）→ 确认 → 结果回显。
-7. 审计页可见登录、触发同步、推送记录（操作人/时间/分支/结果）。
-8. `tail LOG_DIR/access.log` 为 JSON 行（method/path/status/duration_ms/user），无敏感信息。
-9. 连续错误登录 5 次后触发 nginx 429（登录限速生效）。
-10. 手动执行保留 job，确认 `backup-*.tgz` 生成、超龄 build/run.log 被清理。
+4. 用操作者账号登录：工作台显示当前周期总览与待办区；侧栏**无**「设置」入口（管理员专属）。
+5. 用管理员账号登录：侧栏出现「设置」，可增删用户、改角色、重置密码；管理员也能做操作者的全部业务操作。
+6. 触发一次同步（源+目标），任务区显示进度，轮询到 succeeded。
+7. 对 SUCCESS 分支点推送 → 确认框（commit 范围/patch 摘要）→ 确认 → 结果回显。
+8. 审计页可见登录、触发同步、推送记录（操作人/时间/分支/结果）。
+9. `tail LOG_DIR/access.log` 为 JSON 行（method/path/status/duration_ms/user），无敏感信息。
+10. 连续错误登录 5 次后触发 nginx 429（登录限速生效）。
+11. 手动执行保留 job，确认 `backup-*.tgz` 生成、超龄 build/run.log 被清理。

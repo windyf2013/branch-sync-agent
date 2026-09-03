@@ -7,7 +7,7 @@ from fastapi.testclient import TestClient
 
 from bsa_web.app import create_app
 from bsa_web.auth import SESSION_COOKIE, create_session, hash_password
-from bsa_web.rbac import OPERATOR, VIEWER
+from bsa_web.rbac import ADMIN, OPERATOR, VIEWER
 
 
 def _make_app(tmp_path, users=None, **kw):
@@ -142,22 +142,122 @@ class TestCsrf:
         r = client.post("/logout", data={"_csrf": csrf})
         assert r.status_code in (302, 303)
 
+    def test_relogin_while_authenticated_not_rejected(self, tmp_path):
+        # 已登录（持有有效会话 cookie）时再访 /login 并提交：登录页 CSRF
+        # 令牌必须绑定当前用户，不得因空用户签名与会话不匹配而误报 403。
+        client = _client(_make_app(tmp_path))
+        _login(client)
+        r = client.get("/login")
+        assert r.status_code == 200
+        csrf = _extract_csrf(r.text)
+        r = client.post(
+            "/login", data={"_csrf": csrf, "username": "alice", "password": "op"}
+        )
+        assert r.status_code in (302, 303)
+
+
+class TestSignupProvisioning:
+    def _make(self, tmp_path, signup_password, admin_users=("yuhui", "yangfu")):
+        overrides = {
+            "log_dir": str(tmp_path),
+            "secret_key": "test-secret",
+            "signup_password": signup_password,
+            "signup_admin_users": list(admin_users),
+        }
+        return _client(create_app(settings_override=overrides, env_file=None))
+
+    def test_new_user_signs_up_as_operator(self, tmp_path):
+        client = self._make(tmp_path, "raisecom")
+        r = _login(client, "someone", "raisecom")
+        assert r.status_code == 302
+        # 已建号且为 operator：可读首页、打设置 403
+        assert client.get("/").status_code == 200
+        assert client.get("/settings").status_code == 403
+
+    def test_whitelisted_user_signs_up_as_admin(self, tmp_path):
+        client = self._make(tmp_path, "raisecom")
+        _login(client, "yuhui", "raisecom")
+        assert client.get("/settings").status_code == 200
+
+    def test_wrong_shared_password_rejected(self, tmp_path):
+        client = self._make(tmp_path, "raisecom")
+        r = _login(client, "newbie", "wrong")
+        assert r.status_code == 400
+
+    def test_existing_user_not_overridden_by_shared_password(self, tmp_path):
+        # 已存在用户（真实密码 different），用共享口令登录应被拒，且角色不被顶掉
+        users = {"alice": f"{hash_password('different')}:{VIEWER}"}
+        overrides = {
+            "log_dir": str(tmp_path),
+            "secret_key": "test-secret",
+            "users": users,
+            "signup_password": "raisecom",
+            "signup_admin_users": ["yuhui"],
+        }
+        client = _client(create_app(settings_override=overrides, env_file=None))
+        assert _login(client, "alice", "raisecom").status_code == 400
+        # 真实密码仍可正常登录（viewer 身份未变）
+        assert _login(client, "alice", "different").status_code == 302
+        assert client.get("/settings").status_code == 403
+
+    def test_signup_disabled_when_empty(self, tmp_path):
+        client = self._make(tmp_path, "")
+        assert _login(client, "newbie", "raisecom").status_code == 400
+
 
 class TestRoles:
-    def test_viewer_forbidden_operator_allowed(self, tmp_path):
+    def test_settings_admin_only(self, tmp_path):
         users = {
+            "root": f"{hash_password('adm')}:{ADMIN}",
             "alice": f"{hash_password('op')}:{OPERATOR}",
             "bob": f"{hash_password('view')}:{VIEWER}",
         }
         client = _client(_make_app(tmp_path, users=users))
+        # viewer → 403
         _login(client, "bob", "view")
-        r = client.get("/settings")
-        assert r.status_code == 403
+        assert client.get("/settings").status_code == 403
         csrf = _extract_csrf(client.get("/").text)
         client.post("/logout", data={"_csrf": csrf})
+        # operator → 403（设置现为管理员专属）
         _login(client, "alice", "op")
-        r = client.get("/settings")
-        assert r.status_code == 200
+        assert client.get("/settings").status_code == 403
+        csrf = _extract_csrf(client.get("/").text)
+        client.post("/logout", data={"_csrf": csrf})
+        # admin → 200
+        _login(client, "root", "adm")
+        assert client.get("/settings").status_code == 200
+
+    def test_unknown_role_falls_back_viewer(self, tmp_path):
+        users = {"bob": f"{hash_password('x')}:superuser"}
+        client = _client(_make_app(tmp_path, users=users))
+        _login(client, "bob", "x")
+        # 未识别角色按 viewer 兜底：可读首页、打设置 403
+        assert client.get("/").status_code == 200
+        assert client.get("/settings").status_code == 403
+
+    def test_admin_superset_of_operator(self, tmp_path):
+        users = {"root": f"{hash_password('adm')}:{ADMIN}"}
+        app = _make_app(tmp_path, users=users)
+        app.state.enqueue_task = lambda *a, **k: 42
+        client = _client(app)
+        _login(client, "root", "adm")
+        csrf = _extract_csrf(client.get("/").text)
+        r = client.post(
+            "/api/sync",
+            json={"src": "a", "target": "b", "_csrf": csrf},
+        )
+        assert r.status_code == 201
+
+    def test_operator_forbidden_on_admin_endpoints(self, tmp_path):
+        users = {"alice": f"{hash_password('op')}:{OPERATOR}"}
+        client = _client(_make_app(tmp_path, users=users))
+        _login(client, "alice", "op")
+        csrf = _extract_csrf(client.get("/").text)
+        r = client.post(
+            "/api/users",
+            json={"username": "carol", "password": "pw", "role": "viewer", "_csrf": csrf},
+        )
+        assert r.status_code == 403
 
 
 class TestSecretKeyEnforcement:
