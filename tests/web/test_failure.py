@@ -19,7 +19,7 @@ def test_node_failure_action_required():
             {"node": "branch_matrix", "error": "未解析出任何同步边"},
         ],
     }
-    assert failure_summary(payload) == ["branch_matrix 节点错误：未解析出任何同步边"]
+    assert failure_summary(payload) == ["分支拓扑解析 节点错误：未解析出任何同步边"]
 
 
 def test_node_failure_with_branch_scoped_to_that_branch():
@@ -36,9 +36,9 @@ def test_node_failure_with_branch_scoped_to_that_branch():
         ],
     }
     assert failure_summary(payload, "br_B") == []
-    assert failure_summary(payload, "br_A") == ["prepare_worktree 节点错误：br_A 基线编译失败"]
+    assert failure_summary(payload, "br_A") == ["建立 worktree 节点错误：br_A 基线编译失败"]
     # 周期级（target=None）展示，并带分支前缀便于定位
-    assert failure_summary(payload) == ["br_A: prepare_worktree 节点错误：br_A 基线编译失败"]
+    assert failure_summary(payload) == ["br_A: 建立 worktree 节点错误：br_A 基线编译失败"]
 
 
 def test_manual_review_not_a_failure_reason():
@@ -83,8 +83,8 @@ def test_failure_summary_still_shows_real_failure_alongside_manual_review():
              "evidence": ["关联文件存在，但目标分支上函数/符号疑似已重命名。"]},
         ],
     }
-    assert failure_summary(payload, "t") == ["baseline build failed on 2600m"]
-    assert failure_summary(payload) == ["t: baseline build failed on 2600m"]
+    assert failure_summary(payload, "t") == ["型号 2600m 基线编译失败"]
+    assert failure_summary(payload) == ["t: 型号 2600m 基线编译失败"]
 
 
 def test_stop_reason_branch_level():
@@ -98,7 +98,7 @@ def test_stop_reason_branch_level():
             }
         },
     }
-    assert failure_summary(payload, "t") == ["fail-fast: a1 failed"]
+    assert failure_summary(payload, "t") == ["a1 失败"]
 
 
 def test_build_failure_reason_and_error():

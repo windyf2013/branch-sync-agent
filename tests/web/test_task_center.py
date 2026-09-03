@@ -787,7 +787,7 @@ class TestTaskDetail:
         assert r.status_code == 200
         assert "UTF-8" in r.text
         assert "冲突解决失败" in r.text
-        assert "resolve_conflict" in r.text
+        assert "解决冲突" in r.text
 
     def test_detail_running_task_redirects_to_status_page(self, tmp_path, monkeypatch):
         # 竞态回归：cycle_id 已回写但 state.json 未落盘（任务仍在跑），详情页投影未就绪

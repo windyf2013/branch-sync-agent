@@ -12,6 +12,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from pydantic import ValidationError
 
+from bsa_web import failure
 from bsa_web.api.abandon import router as abandon_api_router
 from bsa_web.api.manual_review import router as manual_review_api_router
 from bsa_web.api.operations import router as operations_api_router
@@ -121,6 +122,10 @@ templates.env.filters["status_zh"] = lambda v: _STATUS_ZH.get(str(v), v)
 templates.env.filters["step_zh"] = lambda v: _STEP_ZH.get(str(v), v)
 templates.env.filters["kind_zh"] = lambda v: _FOUR_STATE_ZH.get(str(v), v)
 templates.env.filters["role_zh"] = role_label_zh
+# 引擎写死的英文 stop_reason / 节点名 → 自然中文（统一收敛在过滤器，模板只写
+# `| stop_reason_zh` / `| node_zh`，避免英文代码化文案散落各页）。
+templates.env.filters["stop_reason_zh"] = failure.humanize_stop_reason
+templates.env.filters["node_zh"] = failure.node_label
 
 _access_logger = logging.getLogger("bsa_web.access")
 

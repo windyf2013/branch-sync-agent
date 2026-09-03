@@ -14,9 +14,66 @@ history / detail）与 executor 终态富化共用，可单测直接 import。
 
 from __future__ import annotations
 
+import re
+
 # build 失败时引擎若无法归因，会写这个占位 reason；此时不应当作归因展示，
 # 具体错误由日志定位（build_labels.extract_build_errors）另行提取。
 _UNATTRIBUTABLE_BUILD_REASON = "LLM 不可用，无法归因"
+
+# 节点名 → 中文标签（页面展示用）。与引擎 progress.py 的 NODE_LABELS 语义一致，
+# 但这里覆盖更全（含 decide / branch_matrix 等只在错误路径出现的节点），
+# 未知节点原样返回兜底，绝不吞掉信息。
+_NODE_ZH: dict[str, str] = {
+    "detect_commits": "代码迁出",
+    "sync_decision": "同步判定",
+    "decide": "同步判定",
+    "branch_matrix": "分支拓扑解析",
+    "prepare_worktree": "建立 worktree",
+    "baseline_build": "基线编译",
+    "cherry_pick": "cherry-pick",
+    "resolve_conflict": "解决冲突",
+    "build": "编译",
+    "fix_build": "修复重编译",
+    "generate_patch": "生成 patch",
+    "report": "生成报告",
+    "fail_fast": "失败关联判定",
+    "next_branch": "切换目标分支",
+    "next_commit": "切换提交",
+}
+
+# 引擎写死的英文 stop_reason → 自然中文。按 (正则, 格式化函数) 顺序匹配，
+# 命中即替换；未命中原样透传（历史数据或未来新增文案不会因此丢失）。
+_STOP_REASON_PATTERNS: list[tuple[re.Pattern, object]] = [
+    (
+        re.compile(r"^baseline build failed on (.+)$"),
+        lambda m: f"型号 {m.group(1)} 基线编译失败",
+    ),
+    (
+        re.compile(r"^fail-fast: (\S+) failed; subsequent commits judged related$"),
+        lambda m: f"{m.group(1)} 失败，后续关联提交已一并停批",
+    ),
+    (
+        re.compile(r"^fail-fast: (\S+) failed$"),
+        lambda m: f"{m.group(1)} 失败",
+    ),
+]
+
+
+def node_label(node: str | None) -> str:
+    """节点名 → 中文标签；未知节点原样返回（兜底不吞）。"""
+    return _NODE_ZH.get(str(node or ""), node or "")
+
+
+def humanize_stop_reason(text: str | None) -> str | None:
+    """把引擎写死的英文 stop_reason 转成自然中文；未知内容原样透传。"""
+    if not isinstance(text, str) or not text.strip():
+        return text
+    t = text.strip()
+    for pattern, fmt in _STOP_REASON_PATTERNS:
+        m = pattern.match(t)
+        if m:
+            return fmt(m)
+    return t
 
 
 def failure_summary(payload: dict, target: str | None = None) -> list[str]:
@@ -39,15 +96,17 @@ def failure_summary(payload: dict, target: str | None = None) -> list[str]:
     reasons: list[str] = []
     branches = payload.get("branch_results") or {}
 
-    # 1. 分支级 stop_reason
+    # 1. 分支级 stop_reason（引擎写死的英文 → 自然中文）
     if target is not None:
         branch = branches.get(target)
         if branch:
-            _append_if_text(reasons, branch.get("stop_reason"))
+            _append_if_text(reasons, humanize_stop_reason(branch.get("stop_reason")))
     else:
         for b in branches.values():
             if b.get("stop_reason"):
-                reasons.append(f"{b.get('target_branch')}: {b['stop_reason']}")
+                reasons.append(
+                    f"{b.get('target_branch')}: {humanize_stop_reason(b['stop_reason'])}"
+                )
 
     # 2. action_required 节点失败（无 ManualReview 分支）。
     # 节点失败分两种：
@@ -61,7 +120,7 @@ def failure_summary(payload: dict, target: str | None = None) -> list[str]:
         node_branch = item.get("branch")
         if node_branch and target is not None and node_branch != target:
             continue
-        reason = f"{item['node']} 节点错误：{item.get('error') or '未知'}"
+        reason = f"{node_label(item['node'])} 节点错误：{item.get('error') or '未知'}"
         if node_branch and target is None:
             reason = f"{node_branch}: {reason}"
         reasons.append(reason)

@@ -97,7 +97,7 @@
     {% for item in action_required %}
     <li class="todo-item">
       {% if item.error %}
-        <span class="badge failed">{{ item.node }} 节点错误</span> &mdash; {{ item.error }}
+        <span class="badge failed">{{ item.node | node_zh }} 节点错误</span> &mdash; {{ item.error }}
       {% else %}
         <span class="badge manual">{{ item.kind | kind_zh }}</span>
         <a href="/cycle/{{ payload.cycle_id }}/commit/{{ item.sha }}?target={{ item.branch }}"><code class="mono">{{ item.sha }}</code></a>
