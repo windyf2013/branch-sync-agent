@@ -153,10 +153,10 @@ class BuildAgent:
         ctx = self._context(commit, errors, model, git=wgit)
         try:
             attribution = self._llm.classify_build_error(ctx)
-        except LLMUnavailable:
+        except LLMUnavailable as exc:
             return BuildAttribution(
                 category="unresolvable",
-                reason="LLM 不可用，无法归因",
+                reason=f"LLM 调用失败，无法归因：{exc}",
                 files_to_fix=[],
             )
         if attribution.category == "pre_existing":

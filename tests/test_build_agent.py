@@ -261,6 +261,8 @@ def test_llm_unavailable_classify_degrades_to_unresolvable(tmp_path: Path) -> No
     result = agent.fix(make_commit(), [ERROR_BLOCK], "RTL9617C")
 
     assert result.category == "unresolvable"
+    # 真实失败原因随 reason 透出，而非固定文案「LLM 不可用，无法归因」。
+    assert "api down" in result.reason
     assert llm.fix_calls == []
     assert git.snapshots == []
     assert runner.build_calls == []

@@ -28,7 +28,12 @@ from bsa.report.projection import (
     write_state_json,
 )
 from bsa.rules import BuildConfigError, load_decision_rules, load_safety_rules
-from bsa.scheduler.cycle import list_cycle_records, manual_scan_cycle_id, run_cycle
+from bsa.scheduler.cycle import (
+    list_cycle_records,
+    manual_scan_cycle_id,
+    run_cycle,
+    setup_agents_run_logger,
+)
 
 
 def _parse_bool(value: str) -> bool:
@@ -366,6 +371,9 @@ def _cmd_sync(args: argparse.Namespace) -> int:
     cycle_id = manual_cycle_id()
     log_dir = Path(settings.log_dir)
     log_dir.mkdir(parents=True, exist_ok=True)
+    # 手动同步不经 scheduler，LLM 失败日志（bsa.agents INFO）默认被吞掉；
+    # 挂到本周期 run.log，失败真实原因才可查证（cron 路径见 _setup_run_logger）。
+    setup_agents_run_logger(log_dir / cycle_id / "run.log")
     task_id = register_start(
         log_dir, kind="sync", target=args.target, cycle_id=cycle_id,
         src=args.src, shas=args.sha,
@@ -444,6 +452,8 @@ def _cmd_rerun(args: argparse.Namespace) -> int:
     from bsa.commands.rerun import _rerun_thread_id
 
     pre_cycle_id = manual_cycle_id() if args.fresh else _rerun_thread_id(args.target)
+    # 重跑同样不经 scheduler，LLM 失败日志挂到本周期 run.log（同 _cmd_sync）。
+    setup_agents_run_logger(log_dir / pre_cycle_id / "run.log")
     task_id = register_start(
         log_dir, kind="rerun", target=args.target, cycle_id=pre_cycle_id
     )

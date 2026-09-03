@@ -477,3 +477,25 @@ class TestIsSuccess:
         )
         runner = BuildRunner(FakeExecutor(), make_settings(tmp_path), cycle_id="c1")
         assert runner.is_success(result) is False
+
+    def test_module_build_success_by_returncode_only(self, tmp_path):
+        # 模块级编译（component cell 等）只编单个组件，不产 rootfs / MSG 产物，
+        # 退出码 0 即为成功——三重校验会让干净编译的模块被误判 FAILED。
+        log_path = tmp_path / "build.log"
+        log_path.write_text("GENERATE executable file cell\nmake: Leaving directory\n")
+        result = BuildResult(
+            model="5200", returncode=0, log_path=log_path, succeeded=True,
+            errors=[], module="component cell",
+        )
+        runner = BuildRunner(FakeExecutor(), make_settings(tmp_path), cycle_id="c1")
+        assert runner.is_success(result) is True
+
+    def test_module_build_nonzero_returncode_fails(self, tmp_path):
+        log_path = tmp_path / "build.log"
+        log_path.write_text("/x/cell.c:10: error: undeclared identifier\n")
+        result = BuildResult(
+            model="5200", returncode=2, log_path=log_path, succeeded=False,
+            errors=["error: undeclared identifier"], module="component cell",
+        )
+        runner = BuildRunner(FakeExecutor(), make_settings(tmp_path), cycle_id="c1")
+        assert runner.is_success(result) is False

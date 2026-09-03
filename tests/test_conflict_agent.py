@@ -403,6 +403,8 @@ def test_llm_unavailable_returns_none_without_retry_or_rollback(tmp_path: Path) 
     assert len(llm.calls) == 1
     assert git.staged == []
     assert git.restored == []
+    # 真实失败原因必须随 last_reason 透出（UI 冲突失败归因），而非无任何缘由。
+    assert agent.last_reason is not None and "llm down" in agent.last_reason
 
 
 def test_out_of_bounds_file_in_resolution_rejected(tmp_path: Path) -> None:

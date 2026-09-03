@@ -287,6 +287,8 @@ class TestClassifyBuildError:
         monkeypatch.setattr(client._backend, "complete", boom)
         attribution = client.classify_build_error(make_build_context())
         assert attribution.category == "unresolvable"
+        # 真实失败原因必须随 reason 透出，而非固定文案「LLM 不可用，无法归因」。
+        assert "api down" in attribution.reason
 
 
 class TestJudgeFailfastRelated:

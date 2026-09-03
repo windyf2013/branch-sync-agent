@@ -16,8 +16,9 @@ from __future__ import annotations
 
 import re
 
-# build 失败时引擎若无法归因，会写这个占位 reason；此时不应当作归因展示，
-# 具体错误由日志定位（build_labels.extract_build_errors）另行提取。
+# 旧版引擎写死的「LLM 不可用」占位 reason（无真实失败信息）：仅兼容旧记录，
+# 命中时改由日志定位（build_labels.extract_build_errors）提取真实错误。新引擎
+# 已让 reason 携带真实失败原因（「LLM 调用失败：…」），会作为正常归因展示。
 _UNATTRIBUTABLE_BUILD_REASON = "LLM 不可用，无法归因"
 
 # 节点名 → 中文标签（页面展示用）。与引擎 progress.py 的 NODE_LABELS 语义一致，

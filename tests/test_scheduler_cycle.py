@@ -4,7 +4,7 @@ import json
 from contextlib import contextmanager
 from pathlib import Path
 
-from bsa.scheduler.cycle import _execute_locked, list_cycle_records
+from bsa.scheduler.cycle import _execute_locked, list_cycle_records, setup_agents_run_logger
 from tests.test_graph_nodes import make_ctx
 
 CYCLE_ID = "cycle-2026-08-20"
@@ -113,6 +113,28 @@ def _write_record(log_dir: Path, cycle_id: str, status: str, started_at: str) ->
             }
         ),
         encoding="utf-8",
+    )
+
+
+def test_setup_agents_run_logger_writes_llm_errors_to_file(tmp_path):
+    """手动 sync/rerun 路径挂 run.log：bsa.agents 的 INFO（LLM 失败原因）落盘，
+    且 stream=False 时不加 StreamHandler（避免污染 executor 已流式的 task 日志）。"""
+    import logging
+
+    log_path = tmp_path / "nested" / "run.log"
+    setup_agents_run_logger(log_path)
+
+    logging.getLogger("bsa.agents").info("llm method=classify_build_error err=boom")
+
+    text = log_path.read_text(encoding="utf-8")
+    assert "err=boom" in text
+    handlers = logging.getLogger("bsa.agents").handlers
+    assert any(isinstance(h, logging.FileHandler) for h in handlers)
+    # stream=False 不加控制台 StreamHandler（FileHandler 本身继承自 StreamHandler，
+    # 须排除它再断言，否则误判）。
+    assert not any(
+        isinstance(h, logging.StreamHandler) and not isinstance(h, logging.FileHandler)
+        for h in handlers
     )
 
 

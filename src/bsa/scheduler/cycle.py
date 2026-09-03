@@ -111,6 +111,31 @@ def _initial_state(cycle_id: str) -> dict:
     }
 
 
+def setup_agents_run_logger(log_path: Path, *, stream: bool = False) -> logging.Logger:
+    """给 ``bsa.agents`` logger 挂 run.log handler（LLM 失败日志落盘）。
+
+    cron（``_setup_run_logger``）与手动 sync/rerun 两条路径共用：LLMClient.
+    ``_complete`` 的 err= 日志是 INFO 级，若无人挂 handler 会被 root 默认
+    WARNING 级别吞掉，LLM 失败真实原因（str(exc)）随之消失。``stream`` 仅在
+    cron 路径打开（LLM 日志同时打终端）；手动 CLI 的 stdout/stderr 已被 executor
+    流式写入 task-<id>.log，再挂 stream handler 会重复污染，故默认关闭。
+    """
+    agents = logging.getLogger("bsa.agents")
+    for handler in agents.handlers[:]:
+        agents.removeHandler(handler)
+        handler.close()
+    agents.setLevel(logging.INFO)
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    file_handler = logging.FileHandler(log_path, encoding="utf-8")
+    file_handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s %(message)s"))
+    agents.addHandler(file_handler)
+    if stream:
+        stream_handler = logging.StreamHandler()
+        stream_handler.setFormatter(file_handler.formatter)
+        agents.addHandler(stream_handler)
+    return agents
+
+
 def _setup_run_logger(log_path: Path) -> logging.Logger:
     for handler in _RUN_LOGGER.handlers[:]:
         _RUN_LOGGER.removeHandler(handler)
@@ -127,13 +152,7 @@ def _setup_run_logger(log_path: Path) -> logging.Logger:
     # bsa.agents 与 bsa.cycle 同挂 run.log：LLMClient._complete 的 err= 日志在此，
     # 若不挂 handler，其 INFO 记录被 root 默认 WARNING 级别吞掉，LLM 失败的真实
     # 原因（str(exc)）随之消失，run.log 只剩 bsa.cycle 四行。
-    _agents_logger = logging.getLogger("bsa.agents")
-    for handler in _agents_logger.handlers[:]:
-        _agents_logger.removeHandler(handler)
-        handler.close()
-    _agents_logger.setLevel(logging.INFO)
-    _agents_logger.addHandler(file_handler)
-    _agents_logger.addHandler(stream_handler)
+    setup_agents_run_logger(log_path, stream=True)
 
     return _RUN_LOGGER
 

@@ -93,6 +93,9 @@ class BuildResult(BaseModel):
     log_path: Path
     succeeded: bool
     errors: list[str]
+    # 模块编译标记：非 None 时本次为模块级编译（不产 rootfs / MSG 产物），
+    # is_success 只认 returncode（见下）。
+    module: str | None = None
 
 
 class BuildRunner:
@@ -245,13 +248,22 @@ class BuildRunner:
             log_path=log_path,
             succeeded=proc.returncode == 0,
             errors=self.parse_errors(errors_text),
+            module=module,
         )
 
     def parse_errors(self, log_text: str) -> list[str]:
         return extract_errors(log_text)
 
     def is_success(self, result: BuildResult) -> bool:
-        """Three-check success: artifact produced + log marker + container state."""
+        """Three-check success: artifact produced + log marker + container state.
+
+        模块级编译（``result.module`` 非 None）只编单个 component，不产 rootfs /
+        ``MSG<model>_*_SYSTEM_*.bin`` 产物，故不适用 marker/artifact 三重校验；
+        唯一可信的成功信号是 ``make`` 退出码为 0（编译错误必然非零）。否则模块
+        编译永远被判失败，进而误触发 fix_build → LLM 归因（每 commit 模块编译引入）。
+        """
+        if result.module:
+            return result.returncode == 0
         try:
             log = result.log_path.read_text(encoding="utf-8", errors="replace")
         except OSError:

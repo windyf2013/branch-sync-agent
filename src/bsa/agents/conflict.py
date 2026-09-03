@@ -208,11 +208,15 @@ class ConflictAgent:
             snapshots = _snapshot_bytes(conflict_files, git=wgit)
             try:
                 resolution = self._attempt(commit, conflict_files, git=wgit, target_branch=tgt)
-            except LLMUnavailable:
+            except LLMUnavailable as exc:
+                # 保留 str(exc)：LLM 失败真实原因（退出码/超时/非 JSON）随 reason 透出，
+                # 否则 UI 只显示「冲突解决失败」而无任何缘由（与 classify_build_error 同源）。
+                self.last_reason = f"LLM 调用失败，无法自动解决冲突：{exc}"
                 return None
             if resolution is not None:
                 return resolution
             self._rollback(conflict_files, snapshots, git=wgit)
+        self.last_reason = "冲突自动解决多次尝试均未通过校验，转人工处理"
         return None
 
     def _attempt(

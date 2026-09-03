@@ -286,9 +286,11 @@ class LLMClient:
             out = self._complete("classify_build_error", prompt, _BuildAttributionOutput)
         except LLMUnavailable as exc:
             if self._settings.llm_degrade_to_manual:
+                # 保留 str(exc)：真实失败原因（退出码/超时/非 JSON 等）随 reason 透出，
+                # 否则运维只看到「LLM 不可用」这一结果、无从排查（同 judge_bug_fix）。
                 return BuildAttribution(
                     category="unresolvable",
-                    reason="LLM 不可用，无法归因",
+                    reason=f"LLM 调用失败：{exc}",
                     files_to_fix=[],
                 )
             raise exc
