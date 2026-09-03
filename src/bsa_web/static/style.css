@@ -1138,6 +1138,7 @@ dialog {
 dialog::backdrop { background: rgba(15, 23, 42, 0.46); backdrop-filter: blur(3px); }
 
 .modal-resizable {
+    position: relative;
     width: min(88vw, 1500px);
     height: auto;
     max-height: 88vh;
@@ -1149,9 +1150,9 @@ dialog::backdrop { background: rgba(15, 23, 42, 0.46); backdrop-filter: blur(3px
     min-height: 400px;
 }
 .modal-resize-handle {
-    position: sticky;
+    position: absolute;
+    right: 8px;
     bottom: 8px;
-    margin-left: auto;
     width: 16px;
     height: 16px;
     cursor: nwse-resize;
