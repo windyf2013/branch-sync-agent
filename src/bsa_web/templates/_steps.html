@@ -60,6 +60,9 @@
             <pre class="task-log-tail">{{ d.log }}</pre>
           </details>
           {% endif %}
+          {% if d.log_href %}
+            <p class="muted" style="margin-top:4px"><a href="{{ d.log_href }}">下载完整 build 日志</a></p>
+          {% endif %}
         </div>
       {% elif s.log_preview and not s.running %}
         <details class="step-log"><summary>查看日志</summary>

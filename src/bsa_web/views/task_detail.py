@@ -107,7 +107,7 @@ def task_detail(
     for s in read_progress(settings.log_dir, cycle_id):
         if not s.get("target") or s.get("target") == target:
             steps.append(s)
-    enrich_steps(steps, branch)
+    enrich_steps(steps, branch, cycle_id=cycle_id)
 
     abandoned = abandoned_keys(request.app.state.db, cycle_id)
     branch_abandoned = (target, None) in abandoned

@@ -14,6 +14,7 @@ from fastapi.responses import FileResponse, RedirectResponse, Response
 
 from bsa_web import failure, projection
 from bsa_web.auth import make_csrf, require_login
+from bsa_web.build_labels import enrich_build_outcomes
 from bsa_web.progress import read_progress
 from bsa_web.steps import enrich_steps
 
@@ -83,6 +84,11 @@ def cycle_detail(
         )
     branches = payload.get("branch_results") or {}
     detected = payload.get("detected_commits") or []
+    # 基线编译失败的完整日志/错误定位：投影原始 errors 是大块编译输出，逐分支
+    # 用 build_labels 从日志尾部提炼 error_lines + log_preview（读一次缓存 outcome
+    # 上），周期概览/任务详情时间线据此展开「错误定位 / build 日志尾部」。
+    for branch in branches.values():
+        enrich_build_outcomes(branch, settings.log_dir)
     # 处理过程时间线：读该周期 progress.jsonl，沿执行顺序把相邻同 target 步骤
     # 合成一组（探测/判定/报告等周期级步骤无 target → 「周期流程」段；分支级
     # 步骤各自成段）。分组只切分不重排，忠实反映工作流；再把各分支投影的处理
@@ -95,8 +101,29 @@ def cycle_detail(
         if not step_groups or step_groups[-1]["target"] != key:
             step_groups.append({"target": key, "steps": []})
         step_groups[-1]["steps"].append(s)
+    # 周期级 report 步骤补一句周期失败归因旁注：report 节点回传的是周期终态
+    # （FAILED = 周期有分支失败/需人工，报告本身已生成、report.html 已落盘），
+    # 进度行把它记为 FAILED 是语义正确的。只有节点真正抛异常（异常被 node_wrapper
+    # 捕获记入 action_required node:report 且 errors 里无它）才算报告失败。
+    report_node_failed = any(
+        item.get("node") == "report"
+        for item in (payload.get("action_required") or [])
+    )
     for g in step_groups:
-        enrich_steps(g["steps"], branches.get(g["target"]))
+        for s in g["steps"]:
+            if s.get("node") == "report" and not report_node_failed:
+                s["detail"] = {
+                    "reason": (
+                        "报告已生成（report.html 已落盘）。此处「失败」是报告节点"
+                        "回传的周期终态——周期内有分支失败 / 需人工处理，并非"
+                        "生成报告本身失败。"
+                    ),
+                }
+    for g in step_groups:
+        enrich_steps(
+            g["steps"], branches.get(g["target"]),
+            cycle_id=cycle_id,
+        )
     # 完整拓扑字段（含零检出源）由引擎投影提供（change1）；缺失时降级从
     # detected_commits 推导，仅能覆盖检出过 commit 的源，零检出源不可推导。
     topology_degraded = "sources" not in payload and "targets" not in payload
@@ -137,6 +164,16 @@ def cycle_detail(
         decision_breakdown=failure.decision_breakdown(payload),
         destinations=failure.commit_destinations(payload),
         cycle_failures=failure.failure_summary(payload),
+        cycle_has_review=bool(
+            any(
+                item.get("kind") == "ManualReview"
+                for item in (payload.get("action_required") or [])
+            )
+        ),
+        commit_verdicts={
+            c.get("sha"): failure.commit_bucket(payload, c.get("sha"))
+            for c in detected if c.get("sha")
+        },
     )
 
 

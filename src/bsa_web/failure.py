@@ -20,16 +20,21 @@ _UNATTRIBUTABLE_BUILD_REASON = "LLM 不可用，无法归因"
 
 
 def failure_summary(payload: dict, target: str | None = None) -> list[str]:
-    """从投影 payload 提取失败归因摘要（中文，去重保序）。
+    """从投影 payload 提取执行失败归因摘要（中文，去重保序）。
+
+    **不含 ManualReview 人工项**——那不是失败，是待人工裁决，由各页
+    独立的「需人工处理 / 人工项」板块承载（周期概览、任务详情、工作台待办）。
+    混进「失败原因」会让待确认 commit 被误读为周期执行失败。
 
     优先级（target 为 None 时聚合全部分支，否则只看该分支）：
     1. branch_results[target].stop_reason
-    2. action_required 节点失败的 node:error
-    3. action_required ManualReview 的 evidence（兼容 reason 兜底）
-    4. commit 级 resolution_error（冲突解决失败）
-    5. build outcome 的 o.reason / 编译失败占位标记
+    2. action_required 节点失败的 node:error（带 branch 的节点失败按分支过滤，
+       周期级失败在 target=None 时始终透出）
+    3. commit 级 resolution_error（冲突解决失败）
+    4. build outcome 的 o.reason / 编译失败占位标记
 
-    返回空列表 = 无失败证据（成功或数据缺失）。
+    返回空列表 = 无执行失败（周期可能因 MANUAL/待人工而终态非 SUCCESS，
+    此时由调用方据 action_required 给出「无执行失败」的旁注，见 detail.py）。
     """
     reasons: list[str] = []
     branches = payload.get("branch_results") or {}
@@ -44,27 +49,24 @@ def failure_summary(payload: dict, target: str | None = None) -> list[str]:
             if b.get("stop_reason"):
                 reasons.append(f"{b.get('target_branch')}: {b['stop_reason']}")
 
-    # 2/3. action_required 节点失败 + ManualReview
+    # 2. action_required 节点失败（无 ManualReview 分支）。
+    # 节点失败分两种：
+    # - 带 branch（如 prepare_worktree 绑定具体目标）：只在该分支展示，
+    #   否则会把 A 分支的编译失败复制到每个成功分支的「失败原因」上；
+    # - 无 branch（周期级，如 detect/branch_matrix 早退）：target 过滤时
+    #   照常透出（target=None 的周期概览始终展示），由周期级失败承载。
     for item in payload.get("action_required") or []:
-        if item.get("node"):
-            # 节点失败分两种：
-            # - 带 branch（如 prepare_worktree 绑定具体目标）：只在该分支展示，
-            #   否则会把 A 分支的编译失败复制到每个成功分支的「失败原因」上；
-            # - 无 branch（周期级，如 detect/branch_matrix 早退）：target 过滤时
-            #   照常透出（target=None 的周期概览始终展示），由周期级失败承载。
-            node_branch = item.get("branch")
-            if node_branch and target is not None and node_branch != target:
-                continue
-            reason = f"{item['node']} 节点错误：{item.get('error') or '未知'}"
-            if node_branch and target is None:
-                reason = f"{node_branch}: {reason}"
-            reasons.append(reason)
-        elif item.get("kind") == "ManualReview":
-            if target is not None and item.get("branch") != target:
-                continue
-            _append_if_text(reasons, _manual_review_reason(item))
+        if not item.get("node"):
+            continue
+        node_branch = item.get("branch")
+        if node_branch and target is not None and node_branch != target:
+            continue
+        reason = f"{item['node']} 节点错误：{item.get('error') or '未知'}"
+        if node_branch and target is None:
+            reason = f"{node_branch}: {reason}"
+        reasons.append(reason)
 
-    # 4/5. commit 级 resolution_error + build 失败
+    # 3. commit 级 resolution_error + build 失败
     for branch_name, branch in branches.items():
         if target is not None and branch_name != target:
             continue
@@ -119,62 +121,52 @@ def decision_breakdown(payload: dict) -> dict[str, int]:
     return counts
 
 
-def commit_destinations(payload: dict) -> dict[str, int]:
-    """周期级「检测 commit 去向」守恒归类（按 distinct commit）。
+def commit_bucket(payload: dict, sha: str) -> str:
+    """单 commit 的去向桶（synced/skipped/review/unhandled），幂等、每个恰好一个。
 
-    每个检测到的 commit 归入且仅归入一个去向桶，故恒有
-    ``detected == synced + skipped + review + unhandled``。优先级（先命中先归桶）：
-
+    与 ``commit_destinations`` 同规则（它逐 commit 复用本函数），供 commit 表
+    「判定结果」列展示：同步 / 跳过 / 待确认 / 未处理。优先级（先命中先归）：
     1. synced   —— 任一目标分支 cherry_pick OK/EMPTY（已实际应用）；
     2. skipped  —— 未同步，且所有判定 kind ⊆ {AlreadyIncluded, OutOfScope}；
     3. review   —— 未同步，且存在 ManualReview 判定或 action_required 人工项；
     4. unhandled—— 其余（检测到但无下落：NeedSync 未落地 / 无判定记录）。
-
-    这是对 ``cycle_summary`` 只给「检测/同步/跳过」三个数、账对不上的补全——
-    「未处理」桶正是失败无归因的缺口暴露点，历史页与周期概览共用。
     """
-    decisions = payload.get("decisions") or {}
     branches = payload.get("branch_results") or {}
-
-    synced_shas: set[str] = set()
     for branch in branches.values():
         for cr in branch.get("commits") or []:
-            if cr.get("sha") and cr.get("cherry_pick") in ("OK", "EMPTY"):
-                synced_shas.add(cr["sha"])
-
-    review_shas = {
-        item.get("sha")
+            if cr.get("sha") == sha and cr.get("cherry_pick") in ("OK", "EMPTY"):
+                return "synced"
+    decisions = payload.get("decisions") or {}
+    kinds = {(d.get("kind") or "") for d in (decisions.get(sha) or {}).values()}
+    if kinds and kinds <= {"AlreadyIncluded", "OutOfScope"}:
+        return "skipped"
+    if "ManualReview" in kinds:
+        return "review"
+    if any(
+        item.get("kind") == "ManualReview" and item.get("sha") == sha
         for item in (payload.get("action_required") or [])
-        if item.get("kind") == "ManualReview" and item.get("sha")
-    }
+    ):
+        return "review"
+    return "unhandled"
 
+
+def commit_destinations(payload: dict) -> dict[str, int]:
+    """周期级「检测 commit 去向」守恒归类（按 distinct commit）。
+
+    每个检测到的 commit 归入且仅归入一个去向桶，故恒有
+    ``detected == synced + skipped + review + unhandled``——直接复用
+    ``commit_bucket`` 逐 commit 归类，两处永不漂移。这是对 ``cycle_summary``
+    只给「检测/同步/跳过」三个数、账对不上的补全——「未处理」桶正是失败无归因
+    的缺口暴露点，历史页与周期概览共用。
+    """
     counts = {"detected": 0, "synced": 0, "skipped": 0, "review": 0, "unhandled": 0}
     for c in payload.get("detected_commits") or []:
         sha = c.get("sha")
         if not sha:
             continue
         counts["detected"] += 1
-        if sha in synced_shas:
-            counts["synced"] += 1
-            continue
-        kinds = {(d.get("kind") or "") for d in (decisions.get(sha) or {}).values()}
-        if kinds and kinds <= {"AlreadyIncluded", "OutOfScope"}:
-            counts["skipped"] += 1
-            continue
-        if "ManualReview" in kinds or sha in review_shas:
-            counts["review"] += 1
-            continue
-        counts["unhandled"] += 1
+        counts[commit_bucket(payload, sha)] += 1
     return counts
-
-
-def _manual_review_reason(item: dict) -> str | None:
-    """ManualReview 项的归因：优先 ``reason``（若引擎某处写了），否则取 ``evidence`` 首条。"""
-    reason = item.get("reason")
-    if reason:
-        return reason
-    evidence = item.get("evidence") or []
-    return evidence[0] if evidence else None
 
 
 def _append_if_text(reasons: list[str], value: object) -> None:

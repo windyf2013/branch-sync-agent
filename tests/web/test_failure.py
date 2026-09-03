@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from bsa_web.failure import (
+    commit_bucket,
     commit_destinations,
     decision_breakdown,
     failure_summary,
@@ -39,10 +40,13 @@ def test_node_failure_with_branch_scoped_to_that_branch():
     assert failure_summary(payload) == ["br_A: prepare_worktree 节点错误：br_A 基线编译失败"]
 
 
-def test_manual_review_uses_evidence_not_reason():
-    # 真实数据里 ManualReview 只有 evidence，没有 reason
+def test_manual_review_not_a_failure_reason():
+    # ManualReview 是待人工裁决，不是执行失败：不得混进 failure_summary
+    # （否则周期概览「周期失败原因」会被待确认 commit 污染）。
     payload = {
         "branch_results": {},
+        "detected_commits": [{"sha": "a1"}],
+        "decisions": {},
         "action_required": [
             {
                 "sha": "a1",
@@ -53,18 +57,33 @@ def test_manual_review_uses_evidence_not_reason():
             },
         ],
     }
-    assert failure_summary(payload, "t") == ["函数/符号疑似已重命名"]
+    assert failure_summary(payload, "t") == []
+    assert failure_summary(payload) == []
+    # 但它在去向归类里是「待确认」，不被漏掉
+    assert commit_bucket(payload, "a1") == "review"
+    assert commit_destinations(payload) == {
+        "detected": 1, "synced": 0, "skipped": 0, "review": 1, "unhandled": 0,
+    }
 
 
-def test_manual_review_reason_fallback():
-    # 兼容引擎某处写 reason 的形状
+def test_failure_summary_still_shows_real_failure_alongside_manual_review():
+    # 真实失败（stop_reason）与 ManualReview 并存时，只出失败、不出人工项
     payload = {
-        "branch_results": {},
+        "branch_results": {
+            "t": {
+                "target_branch": "t",
+                "status": "FAILED",
+                "stop_reason": "baseline build failed on 2600m",
+                "commits": [],
+            }
+        },
         "action_required": [
-            {"sha": "a1", "branch": "t", "kind": "ManualReview", "reason": "需人工"},
+            {"sha": "a1", "branch": "t", "kind": "ManualReview",
+             "evidence": ["关联文件存在，但目标分支上函数/符号疑似已重命名。"]},
         ],
     }
-    assert failure_summary(payload, "t") == ["需人工"]
+    assert failure_summary(payload, "t") == ["baseline build failed on 2600m"]
+    assert failure_summary(payload) == ["t: baseline build failed on 2600m"]
 
 
 def test_stop_reason_branch_level():
@@ -207,3 +226,31 @@ def test_commit_destinations_no_detection_is_all_zero():
         "review": 0,
         "unhandled": 0,
     }
+
+
+def test_commit_bucket_each_verdict():
+    # commit 表「判定结果」列 + 去向归类的共同单一来源（幂等、互斥）
+    payload = {
+        "detected_commits": [
+            {"sha": "s1"}, {"sha": "s2"}, {"sha": "s3"},
+            {"sha": "s4"}, {"sha": "s5"}, {"sha": "s6"},
+        ],
+        "decisions": {
+            "s2": {"t": {"kind": "AlreadyIncluded"}},
+            "s3": {"t": {"kind": "OutOfScope"}},
+            "s4": {"t": {"kind": "ManualReview"}},
+            # s5 无判定记录、s6 NeedSync 未落地 → unhandled
+        },
+        "branch_results": {
+            "t": {"commits": [{"sha": "s1", "cherry_pick": "EMPTY"}]}
+        },
+        "action_required": [
+            {"sha": "s4", "branch": "t", "kind": "ManualReview"},
+        ],
+    }
+    assert commit_bucket(payload, "s1") == "synced"
+    assert commit_bucket(payload, "s2") == "skipped"
+    assert commit_bucket(payload, "s3") == "skipped"
+    assert commit_bucket(payload, "s4") == "review"
+    assert commit_bucket(payload, "s5") == "unhandled"
+    assert commit_bucket(payload, "s6") == "unhandled"
