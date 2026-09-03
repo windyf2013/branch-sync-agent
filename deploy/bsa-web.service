@@ -20,7 +20,7 @@ Wants=bsa-executor.service
 Type=simple
 WorkingDirectory=%h/projects/branch-sync-agent/.worktrees/feat-v3-web-platform
 Environment=PYTHONUNBUFFERED=1
-ExecStart=%h/projects/branch-sync-agent/.worktrees/feat-v3-web-platform/.venv/bin/uvicorn bsa_web.app:create_app --factory --host 127.0.0.1 --port 8888
+ExecStart=%h/projects/branch-sync-agent/.worktrees/feat-v3-web-platform/.venv/bin/uvicorn bsa_web.app:create_app --factory --host 10.10.100.161 --port 8888
 Restart=always
 RestartSec=5
 TimeoutStopSec=30
