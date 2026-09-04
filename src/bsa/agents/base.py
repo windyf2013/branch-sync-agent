@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import re
 import subprocess
 import time
@@ -145,6 +146,21 @@ class _ClaudeCliBackend:
         self._settings = settings
         self._runner = runner
 
+    def _subprocess_env(self) -> dict[str, str] | None:
+        """claude 子进程环境：继承当前进程 env 并叠加 CLAUDE_CLI_ENV 认证上下文。
+
+        systemd 守护进程（executor）不 source 用户 shell，``.bashrc`` 里的
+        ANTHROPIC_* / DEEPSEEK_* 认证变量对子进程不可见 → claude 拿不到认证。
+        运维把这些变量写进 .env 的 ``CLAUDE_CLI_ENV``（JSON dict），pydantic-settings
+        解析进 Settings.claude_cli_env，这里再显式注入 claude 子进程 env（pydantic-settings
+        只读 .env 到对象，不会回写 os.environ）。未配置时返回 None，走默认继承。
+        """
+        if not self._settings.claude_cli_env:
+            return None
+        env = dict(os.environ)
+        env.update(self._settings.claude_cli_env)
+        return env
+
     def _invoke(self, prompt: str) -> subprocess.CompletedProcess[str]:
         args = [self._settings.claude_cli_path, "-p", prompt]
         if self._runner is not None:
@@ -154,6 +170,7 @@ class _ClaudeCliBackend:
             capture_output=True,
             text=True,
             timeout=self._settings.llm_timeout_sec,
+            env=self._subprocess_env(),
         )
 
     def complete(self, prompt: str, schema: type[BaseModel]) -> BaseModel:

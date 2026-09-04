@@ -457,6 +457,38 @@ class TestClaudeCliBackend:
         assert decision.is_bug_fix is False
         assert decision.recognition_source == "pending:claude-agent"
 
+    def test_injects_claude_cli_env(self, tmp_path, monkeypatch):
+        """CLAUDE_CLI_ENV 认证上下文显式注入 claude 子进程 env（systemd 守护进程无 shell 环境）。"""
+        env_vars = {"ANTHROPIC_API_KEY": "sk-abc", "ANTHROPIC_BASE_URL": "https://x"}
+        captured: dict = {}
+
+        def fake_run(args, **kwargs):
+            captured["env"] = kwargs.get("env")
+            return _completed('{"is_bug_fix": true, "reason": "ok"}')
+
+        monkeypatch.setattr("bsa.agents.base.subprocess.run", fake_run)
+        client = LLMClient(
+            make_settings(tmp_path, llm_backend="claude_cli", claude_cli_env=env_vars)
+        )
+        decision = client.judge_bug_fix(make_commit())
+        assert decision.is_bug_fix is True
+        assert captured["env"] is not None
+        assert captured["env"]["ANTHROPIC_API_KEY"] == "sk-abc"
+        assert captured["env"]["ANTHROPIC_BASE_URL"] == "https://x"
+
+    def test_env_none_when_claude_cli_env_empty(self, tmp_path, monkeypatch):
+        """未配置 CLAUDE_CLI_ENV 时 env=None，走默认继承（不改变现有行为）。"""
+        captured: dict = {}
+
+        def fake_run(args, **kwargs):
+            captured["env"] = kwargs.get("env")
+            return _completed('{"is_bug_fix": true, "reason": "ok"}')
+
+        monkeypatch.setattr("bsa.agents.base.subprocess.run", fake_run)
+        client = LLMClient(make_settings(tmp_path, llm_backend="claude_cli"))
+        client.judge_bug_fix(make_commit())
+        assert captured["env"] is None
+
 
 class TestObservation:
     def test_logs_each_call(self, tmp_path, monkeypatch, caplog):

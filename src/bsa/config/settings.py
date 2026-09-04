@@ -1,6 +1,7 @@
 import os  # noqa: F401 — os.environ is the env source for pydantic-settings; tests monkeypatch bsa.config.settings.os.environ
 from typing import Literal
 
+from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -32,6 +33,12 @@ class Settings(BaseSettings):
     llm_api_key: str
     llm_base_url: str
     claude_cli_path: str = "claude"
+    # claude -p 子进程认证上下文。systemd 守护进程不 source 用户 shell（.bashrc 里的
+    # ANTHROPIC_* / DEEPSEEK_* 对 executor 不可见），claude 子进程拿不到认证 → LLMUnavailable。
+    # 故运维须把认证环境显式写进 .env（与 web/executor 共用同一份），由 pydantic-settings
+    # 解析进 Settings，后端再显式注入 claude 子进程 env（见 base._ClaudeCliBackend）。
+    # 字段名 claude_cli_env 天然映射 env 变量 CLAUDE_CLI_ENV（JSON dict，同 mail_recipients）。
+    claude_cli_env: dict[str, str] = Field(default_factory=dict)
     llm_timeout_sec: int = 60
     llm_max_retries: int = 3
     llm_degrade_to_manual: bool = True

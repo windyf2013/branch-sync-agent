@@ -27,6 +27,7 @@ DEFAULTS = {
     "llm_max_retries": 3,
     "llm_degrade_to_manual": True,
     "claude_cli_path": "claude",
+    "claude_cli_env": {},
     "docker_prefix": "",
     "docker_container_prefix": "rcios-sync",
     "max_conflict_attempts": 3,
@@ -137,6 +138,22 @@ class TestEnvInjection:
         env["MAIL_BRIDGE_PATH"] = "/srv/bsa/bridge-scripts"
         s = make(monkeypatch, env)
         assert s.mail_bridge_path == "/srv/bsa/bridge-scripts"
+
+    def test_claude_cli_env_parsed_from_json_dict(self, monkeypatch):
+        env = valid_env()
+        env["CLAUDE_CLI_ENV"] = '{"ANTHROPIC_API_KEY": "sk-abc", "ANTHROPIC_BASE_URL": "https://x"}'
+        s = make(monkeypatch, env)
+        assert s.claude_cli_env == {
+            "ANTHROPIC_API_KEY": "sk-abc",
+            "ANTHROPIC_BASE_URL": "https://x",
+        }
+
+    def test_claude_cli_env_invalid_json_raises(self, monkeypatch):
+        env = valid_env()
+        env["CLAUDE_CLI_ENV"] = "not-a-dict"
+        monkeypatch.setattr("bsa.config.settings.os.environ", env)
+        with pytest.raises(SettingsError):
+            load_settings(env_file=None)
 
 
 class TestListField:
