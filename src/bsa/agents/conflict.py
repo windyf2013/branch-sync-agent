@@ -157,12 +157,14 @@ class ConflictAgent:
         safety: SafetyEnforcer,
         max_attempts: int = 3,
         target_branch: str | None = None,
+        max_context_chars: int = 50_000,
     ) -> None:
         self._llm = llm
         self._git = git
         self._safety = safety
         self._max_attempts = max_attempts
         self._target_branch = target_branch
+        self._max_context_chars = max_context_chars
         self.last_reason: str | None = None
 
     def resolve(
@@ -204,10 +206,20 @@ class ConflictAgent:
                 return None
             texts[rel] = text
         self._texts = texts
+        total_chars = sum(len(text) for text in self._texts.values())
+        if total_chars > self._max_context_chars:
+            self.last_reason = (
+                f"冲突文件内容过大（合计 {total_chars} 字符，超过上限 "
+                f"{self._max_context_chars}），无法安全自动解决，转人工处理"
+            )
+            return None
+        hint: str | None = None
         for _ in range(self._max_attempts):
             snapshots = _snapshot_bytes(conflict_files, git=wgit)
             try:
-                resolution = self._attempt(commit, conflict_files, git=wgit, target_branch=tgt)
+                resolution, fail_reason = self._attempt(
+                    commit, conflict_files, git=wgit, target_branch=tgt, hint=hint
+                )
             except LLMUnavailable as exc:
                 # 保留 str(exc)：LLM 失败真实原因（退出码/超时/非 JSON）随 reason 透出，
                 # 否则 UI 只显示「冲突解决失败」而无任何缘由（与 classify_build_error 同源）。
@@ -215,6 +227,7 @@ class ConflictAgent:
                 return None
             if resolution is not None:
                 return resolution
+            hint = fail_reason
             self._rollback(conflict_files, snapshots, git=wgit)
         self.last_reason = "冲突自动解决多次尝试均未通过校验，转人工处理"
         return None
@@ -226,7 +239,8 @@ class ConflictAgent:
         *,
         git: GitService,
         target_branch: str | None,
-    ) -> ConflictResolution | None:
+        hint: str | None = None,
+    ) -> tuple[ConflictResolution | None, str | None]:
         markers: dict[str, str] = {}
         for rel in conflict_files:
             if rel in self._texts:
@@ -238,17 +252,20 @@ class ConflictAgent:
             source_branch=commit.source_branch,
             target_branch=target_branch or commit.source_branch,
             worktree=git.repo_path,
+            hint=hint,
         )
         resolution = self._llm.solve_conflict(ctx)
-        if not self._apply(resolution, conflict_files, git=git):
-            return None
+        fail_reason = self._apply(resolution, conflict_files, git=git)
+        if fail_reason is not None:
+            return None, fail_reason
         try:
-            if not self._verified(conflict_files, git=git):
-                return None
+            fail_reason = self._verified(conflict_files, git=git)
+            if fail_reason is not None:
+                return None, fail_reason
             git.stage(conflict_files)
         except InfrastructureError:
-            return None
-        return resolution
+            return None, "git stage 失败"
+        return resolution, None
 
     def _apply(
         self,
@@ -256,28 +273,31 @@ class ConflictAgent:
         conflict_files: list[str],
         *,
         git: GitService,
-    ) -> bool:
+    ) -> str | None:
         allowed = set(conflict_files)
         if not set(resolution.files) <= allowed:
-            return False
+            extra = sorted(set(resolution.files) - allowed)
+            return f"diff 涉及冲突文件之外的文件：{', '.join(extra)}"
         try:
             for path, patch in _diff_files(resolution.diff).items():
                 if path not in allowed:
-                    return False
+                    return f"diff 涉及冲突文件之外的文件：{path}"
                 target = git.repo_path / path
                 current = self._texts.get(path, "")
                 target.parent.mkdir(parents=True, exist_ok=True)
                 # 统一按 UTF-8 写回合入：非 UTF-8 源文件（GBK / 混编）解码后在此转码。
                 target.write_text(_apply_patch(current, patch), encoding="utf-8")
+        except ValueError:
+            return "diff 应用失败（hunk 上下文不匹配）"
         except Exception:
-            return False
+            return "diff 应用失败"
         try:
             self._safety.check_edit_scale(resolution.diff)
         except SafetyViolation:
-            return False
-        return True
+            return "单次改动超过安全上限"
+        return None
 
-    def _verified(self, conflict_files: list[str], *, git: GitService) -> bool:
+    def _verified(self, conflict_files: list[str], *, git: GitService) -> str | None:
         for rel in conflict_files:
             path = git.repo_path / rel
             if not path.is_file():
@@ -285,16 +305,16 @@ class ConflictAgent:
             # _apply 已按 UTF-8 写回，这里用 UTF-8 读回校验冲突标记是否清空。
             for line in path.read_text(encoding="utf-8").splitlines():
                 if line.startswith(_MARKERS):
-                    return False
+                    return f"冲突标记未清空：{rel}"
         if not git.diff_check():
-            return False
+            return "git diff --check 失败（残留空白/冲突痕迹）"
         if not _modified_paths(git.status()) <= set(conflict_files):
-            return False
+            return "工作区改动超出冲突文件范围"
         try:
             self._safety.check_editable(conflict_files)
         except SafetyViolation:
-            return False
-        return True
+            return "命中禁止修改路径"
+        return None
 
     def _rollback(
         self,

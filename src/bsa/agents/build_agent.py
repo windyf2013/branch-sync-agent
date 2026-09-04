@@ -116,6 +116,7 @@ class BuildAgent:
         safety: SafetyEnforcer,
         max_attempts: int = 3,
         *,
+        max_context_chars: int = 50_000,
         target_branch: str | None = None,
         module: str | None = None,
         log_path: Path | None = None,
@@ -126,6 +127,7 @@ class BuildAgent:
         self._runner = runner
         self._safety = safety
         self._max_attempts = max_attempts
+        self._max_context_chars = max_context_chars
         self._target_branch = target_branch
         self._module = module
         self._log_path = log_path
@@ -150,6 +152,16 @@ class BuildAgent:
         """
         wgit = git or self._git
         tgt = target_branch or self._target_branch
+        total_chars = sum(len(e) for e in errors)
+        if total_chars > self._max_context_chars:
+            return BuildAttribution(
+                category="unresolvable",
+                reason=(
+                    f"编译错误输出过大（合计 {total_chars} 字符，超过上限 "
+                    f"{self._max_context_chars}），无法安全自动归因/修复，转人工处理"
+                ),
+                files_to_fix=[],
+            )
         ctx = self._context(commit, errors, model, git=wgit)
         try:
             attribution = self._llm.classify_build_error(ctx)
@@ -177,7 +189,13 @@ class BuildAgent:
         return attribution
 
     def _context(
-        self, commit: CommitInfo, errors: list[str], model: str, *, git: GitService
+        self,
+        commit: CommitInfo,
+        errors: list[str],
+        model: str,
+        *,
+        git: GitService,
+        hint: str | None = None,
     ) -> BuildErrorContext:
         return BuildErrorContext(
             commit=commit,
@@ -185,6 +203,7 @@ class BuildAgent:
             errors=errors,
             log_path=self._log_path or Path(f"build_{model}.log"),
             worktree=git.repo_path,
+            hint=hint,
         )
 
     def _verify_pre_existing(
@@ -264,11 +283,18 @@ class BuildAgent:
         files_to_fix = list(dict.fromkeys(attribution.files_to_fix))
         if not set(files_to_fix) <= allowed:
             return False
+        hint: str | None = None
         for _ in range(self._max_attempts):
             snap = git.snapshot(files_to_fix)
             try:
-                applied = self._attempt_fix(
-                    commit, errors, model, files_to_fix, git=git, module=module
+                applied, fail_reason = self._attempt_fix(
+                    commit,
+                    errors,
+                    model,
+                    files_to_fix,
+                    git=git,
+                    module=module,
+                    hint=hint,
                 )
                 if applied is not None:
                     attribution.fix_diff = applied
@@ -276,6 +302,7 @@ class BuildAgent:
             except LLMUnavailable:
                 git.restore(snap)
                 return False
+            hint = fail_reason
             git.restore(snap)
         return False
 
@@ -288,25 +315,37 @@ class BuildAgent:
         *,
         git: GitService,
         module: str | None = None,
-    ) -> str | None:
-        """Apply one LLM fix and rebuild; returns the applied diff or None."""
-        fix = self._llm.fix_build_error(self._context(commit, errors, model, git=git))
+        hint: str | None = None,
+    ) -> tuple[str | None, str | None]:
+        """Apply one LLM fix and rebuild.
+
+        Returns ``(applied_diff, fail_reason)``: on success ``fail_reason`` is
+        None; on failure ``applied_diff`` is None and ``fail_reason`` names the
+        precise reason (deterministic validator output, not LLM self-report) so
+        the next round can be steered instead of blind-rolled.
+        """
+        fix = self._llm.fix_build_error(
+            self._context(commit, errors, model, git=git, hint=hint)
+        )
         if not set(fix.files) <= set(files_to_fix):
-            return None
+            extra = sorted(set(fix.files) - set(files_to_fix))
+            return None, f"修复 diff 涉及允许范围之外的文件：{', '.join(extra)}"
         try:
             for path, patch in _diff_files(fix.diff).items():
                 if path not in files_to_fix:
-                    return None
+                    return None, f"修复 diff 涉及允许范围之外的文件：{path}"
                 target = git.repo_path / path
                 current = target.read_text(encoding="utf-8") if target.is_file() else ""
                 target.parent.mkdir(parents=True, exist_ok=True)
                 target.write_text(_apply_patch(current, patch), encoding="utf-8")
+        except ValueError:
+            return None, "修复 diff 应用失败（hunk 上下文不匹配）"
         except Exception:
-            return None
+            return None, "修复 diff 应用失败"
         try:
             self._safety.check_edit_scale(fix.diff)
         except SafetyViolation:
-            return None
+            return None, "单次改动超过安全上限"
         try:
             result = self._runner.build_commit(
                 git.repo_path,
@@ -315,7 +354,8 @@ class BuildAgent:
                 module=module if module is not None else self._module,
             )
         except InfrastructureError:
-            return None
+            return None, "重编译执行失败"
         if not self._runner.is_success(result):
-            return None
-        return fix.diff
+            new_errors = "\n".join(result.errors[:5])
+            return None, f"重编译仍未通过，剩余错误：\n{new_errors}"
+        return fix.diff, None

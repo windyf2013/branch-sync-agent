@@ -32,6 +32,7 @@ class ConflictContext(BaseModel):
     source_branch: str
     target_branch: str
     worktree: Path
+    hint: str | None = None
 
 
 class BuildErrorContext(BaseModel):
@@ -40,6 +41,7 @@ class BuildErrorContext(BaseModel):
     errors: list[str]
     log_path: Path
     worktree: Path
+    hint: str | None = None
 
 
 class BuildAttribution(BaseModel):
@@ -284,6 +286,11 @@ class LLMClient:
             '只输出 JSON，格式：{"files": ["..."], "diff": "解决冲突后的 diff", '
             '"agent_reason": "为何如此解决"}'
         )
+        if ctx.hint:
+            prompt += (
+                f"\n上一轮自动解决未通过校验，失败原因：{ctx.hint}\n"
+                "请针对该原因调整方案，不要机械重复上一轮的改动。\n"
+            )
         result = self._complete("solve_conflict", prompt, _ConflictOutput)
         return ConflictResolution(
             files=result.files, diff=result.diff, agent_reason=result.agent_reason
@@ -325,6 +332,11 @@ class LLMClient:
             '"统一格式 diff（--- a/.. b/.. + hunk）", '
             '"agent_reason": "为何如此修复"}'
         )
+        if ctx.hint:
+            prompt += (
+                f"\n上一轮自动修复未通过校验，失败原因：{ctx.hint}\n"
+                "请针对该原因调整修复方案，不要机械重复上一轮的改动。\n"
+            )
         result = self._complete("fix_build_error", prompt, _BuildFixOutput)
         return BuildFix(
             files=result.files, diff=result.diff, agent_reason=result.agent_reason

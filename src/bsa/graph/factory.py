@@ -73,6 +73,7 @@ def build_graph_context(
         git=git,
         safety=safety,
         max_attempts=settings.max_conflict_attempts,
+        max_context_chars=settings.max_conflict_context_chars,
     )
     build_agent = BuildAgent(
         llm=llm,
@@ -80,6 +81,7 @@ def build_graph_context(
         runner=runner,
         safety=safety,
         max_attempts=settings.max_build_attempts,
+        max_context_chars=settings.max_build_context_chars,
     )
 
     return GraphContext(

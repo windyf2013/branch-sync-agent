@@ -617,3 +617,47 @@ def test_oversized_resolution_diff_is_invalid_attempt(tmp_path: Path) -> None:
     assert result is None
     assert git.staged == []
     assert (tmp_path / "src/net.c").read_text(encoding="utf-8") == content
+
+
+def test_oversized_conflict_context_returns_none_manual(tmp_path: Path) -> None:
+    write_conflicted(tmp_path)
+    git = FakeGit(tmp_path, status_text="UU src/net.c\n")
+    llm = FakeLLM([resolved()])
+    agent = ConflictAgent(llm, git, make_safety(), max_context_chars=10)
+
+    result = agent.resolve(make_commit(), CONFLICT_FILES)
+
+    assert result is None
+    assert llm.calls == []
+    assert git.staged == []
+    assert git.snapshots == []
+    assert agent.last_reason is not None and "过大" in agent.last_reason
+    assert "转人工" in agent.last_reason
+
+
+def test_conflict_context_within_limit_proceeds(tmp_path: Path) -> None:
+    write_conflicted(tmp_path)
+    git = FakeGit(tmp_path, status_text="UU src/net.c\n")
+    llm = FakeLLM([resolved()])
+    agent = ConflictAgent(llm, git, make_safety(), max_context_chars=10_000)
+
+    result = agent.resolve(make_commit(), CONFLICT_FILES)
+
+    assert result is not None
+    assert git.staged == [CONFLICT_FILES]
+
+
+def test_retry_passes_previous_failure_reason_as_hint(tmp_path: Path) -> None:
+    write_conflicted(tmp_path)
+    git = FakeGit(tmp_path, status_text="UU src/net.c\n")
+    bad = ConflictResolution(files=["src/net.c"], diff="", agent_reason="no change")
+    llm = FakeLLM([bad, resolved()])
+    agent = ConflictAgent(llm, git, make_safety())
+
+    result = agent.resolve(make_commit(), CONFLICT_FILES)
+
+    assert result is not None
+    assert len(llm.calls) == 2
+    assert llm.calls[0].hint is None
+    assert llm.calls[1].hint is not None
+    assert "冲突标记未清空" in llm.calls[1].hint

@@ -55,8 +55,15 @@ class Settings(BaseSettings):
 
     # --- build ---
     build_script_dir: str
-    max_conflict_attempts: int = 3
+    max_conflict_attempts: int = 5
     max_build_attempts: int = 3
+    # 编译错误输出文本长度之和的上限（字符）。超限即转人工，不截断——截断会丢上下文、
+    # 诱导 LLM 猜，违反「绝不静默猜测」。与 max_conflict_context_chars 同源同阈值。
+    max_build_context_chars: int = 50_000
+    # 冲突文件解码后 Unicode 文本长度之和的上限（字符）。超限即转人工，不截断——
+    # 截断会丢上下文、诱导 LLM 猜，违反「绝不静默猜测」。阈值只影响转人工的快慢与
+    # 归因清晰度，不改变最终结果（超限本就该人工），故保守无害。
+    max_conflict_context_chars: int = 50_000
 
     # --- mail ---
     mail_dry_run: bool = True

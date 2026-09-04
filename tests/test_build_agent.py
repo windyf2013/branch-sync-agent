@@ -536,3 +536,41 @@ def test_pre_existing_verify_new_file_denied_and_fixed(tmp_path: Path) -> None:
     assert runner.build_calls[0]["files"] == []
     assert runner.build_calls[1]["files"] == ["src/newfile.c"]
     assert (tmp_path / "src/newfile.c").read_text(encoding="utf-8") == "int value = 1;\n"
+
+
+def test_oversized_errors_guard_turns_manual_without_llm_or_git(tmp_path: Path) -> None:
+    """编译错误输出超过 max_context_chars → unresolvable 转人工，零 LLM/快照/编译调用。"""
+    git = FakeGit(tmp_path)
+    llm = FakeLLM(make_attribution("introduced_by_commit", ["src/dhcp.c"]))
+    runner = FakeRunner([])
+    agent = BuildAgent(llm, git, runner, make_safety(), max_context_chars=10)
+
+    result = agent.fix(make_commit(), [ERROR_BLOCK], "RTL9617C")
+
+    assert result.category == "unresolvable"
+    assert "过大" in result.reason
+    assert "转人工" in result.reason
+    assert llm.classify_calls == []
+    assert llm.fix_calls == []
+    assert git.snapshots == []
+    assert runner.build_calls == []
+
+
+def test_fix_loop_passes_fail_reason_hint_to_next_round(tmp_path: Path) -> None:
+    """上一轮「重编译仍未通过」的原因作为 hint 传给下一轮，而非盲掷。"""
+    write_file(tmp_path, "src/dhcp.c", "#include <stdlib.h>\nint value = bad;\n")
+    git = FakeGit(tmp_path)
+    llm = FakeLLM(
+        make_attribution("introduced_by_commit", ["src/dhcp.c"]),
+        fixes=[make_fix(), make_fix()],
+    )
+    runner = FakeRunner([([ERROR_BLOCK], False), ([], True)])
+    agent = BuildAgent(llm, git, runner, make_safety())
+
+    result = agent.fix(make_commit(), [ERROR_BLOCK], "RTL9617C")
+
+    assert result.category == "introduced_by_commit"
+    assert len(llm.fix_calls) == 2
+    assert llm.fix_calls[0].hint is None
+    assert llm.fix_calls[1].hint is not None
+    assert "重编译仍未通过" in llm.fix_calls[1].hint
