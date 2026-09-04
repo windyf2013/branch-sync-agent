@@ -8,7 +8,7 @@ from bsa.executor.exceptions import InfrastructureError
 
 MAX_CHANGED_FILES = 500
 MAX_PATCH_LINES = 20_000
-MAX_PATCH_CHARS = 120_000
+MAX_PATCH_CHARS = 2_000_000
 
 _AUTH_ERROR_MARKERS = (
     "permission denied",
