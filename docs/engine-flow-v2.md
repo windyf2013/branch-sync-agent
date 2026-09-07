@@ -37,12 +37,20 @@
 |---|---|---|
 | 自动周期（cron） | 每日 0:00 触发 | detect + decision + 同步内核 |
 | 手动同步（平台） | 用户在页面勾选 commit | 跳过 detect/decision（=人工审核），直接进同步内核 |
+| 重跑（`bsa rerun`） | 对失败目标保留现场续跑；`--fresh` 重建 | 默认续跑；`--fresh` 先对当前远端重判 batch，未全部合入才丢现场重建 |
 
 手动同步要点：
 
 - 批次按合入时间升序重排（用户勾选顺序不可靠，保证依赖顺序正确）
 - 编译型号按目标分支产品线自动解析（未配置 → 报错停止，绝不用错脚本）
 - 与 cron 共用 prepare / 基线编译 / 逐 commit / 回滚 / report 全部逻辑，**零冗余**
+
+`rerun --fresh` 重判语义（`77e0473`，`commands/rerun.py`）：
+
+- 重判只「降级」客观已合入/超范围的 commit（AlreadyIncluded / OutOfScope）；**NeedSync 与
+  ManualReview 一律保留**进 batch——ManualReview 是决策层「无法自动判定」，不是「已合入」的
+  客观证据，不能据此把用户要重同步的 commit 静默丢弃，否则失败分支重跑会假成功。
+- `--fresh` 先判结论再动现场：重判后仍须重同步才丢弃现场重建。
 
 ---
 
@@ -61,12 +69,14 @@ for 主分支（目标）:
         └─ 通过 →
             for commit in 批次（合入时间升序）:
               cherry-pick
-                ├─ EMPTY   → 记录已含，跳过编译        # 基线已证，EMPTY 不改变树
+                ├─ EMPTY   → 跳过编译 → 下一 commit    # 基线已证，EMPTY 不改变树
                 ├─ CONFLICT→ resolve（LLM+安全闸门+字节快照+3轮）
-                └─ OK      → 增量编译（不再批次首 commit 全量，基线已证）
-                               ├─ 通过 → 下一 commit
-                               └─ 失败 → fix_build（归因+最小修复）
-                                           → 3 轮失败 → 回滚
+                └─ OK      → 每 commit 模块编译（resolve_build_modules 按改动文件
+                             │         解析模块；解析不出才回退全量；逐型号串行）
+                             ├─ 通过 → 下一 commit
+                             └─ 失败 → fix_build（归因+护栏+修复循环）
+                                         → 归因非 introduced → UNRESOLVABLE → 停批
+                                         → 3 轮修复失败 → 回滚 → 关联判断
               回滚先行 → 关联判断（文件/区域/LLM/编译兜底）
                         → 相关停批 / 无关继续
             → generate_patch + 状态汇总
@@ -81,6 +91,15 @@ for 主分支（目标）:
 - **build fix 本地化**：只随所在分支 patch 交付，不跨分支作为 bug-fix 同步。
 - **每次 LLM 修改（冲突解决 / build 修复）强制产出独立 diff**，落台账，供事后审核与追责。
 - **LLM 不可用 = 节点失败 = 转人工（action_required）**，统一约定，无"重试恢复"语义。
+- **输入长度护栏，超限即转人工、绝不截断**（`ea46836`）：ConflictAgent / BuildAgent 各自
+  `max_conflict_context_chars` / `max_build_context_chars`（均 50_000），对冲突文件/编译错误
+  文本求总长，超限直接返回人工（不把截断过的输入喂给 LLM——截断会丢上下文、诱导猜测，
+  违反「绝不静默猜测」）。详见 §4.3 / §4.5。
+- **重试反馈回传，防盲掷**（`ea46836`）：Agent 重试循环把「上一轮确定性校验器返回的精确失败
+  原因」作为 `hint` 回填进下一轮 prompt，让 LLM 针对原因调整而非机械重复。失败原因由确定性
+  校验器产出（diff 越界 / hunk 不匹配 / 改了仍不过），**非 LLM 自省**。
+- **LLM 真实失败原因随 reason 透出**（`4b779ed` / `c0d83bb`）：`LLMUnavailable` 的 `str(exc)`
+  （退出码 / 超时 / 非 JSON）保留并透传到判定说明 / UI，避免只见「LLM 调用失败」无归因。
 
 ---
 
@@ -94,6 +113,12 @@ for 主分支（目标）:
   commit → patch-id 去重后分类
 - **只扫业务分支**（CRON_BRANCH_FILE 标题含"业务分支"的 section）：主分支作为目标不被扫描，
   消除 V2 全互联的回声重检与平方级无效工作（V3 写死语义）
+- **人工覆盖判定贯通**：加载 `judgments.json` 传入 classify，override 对机器已判定的 commit
+  同样生效（人工优先级最高）
+- **矩阵为空 = 响亮报错**：`CRON_BRANCH_FILE` 未解析出任何同步边（无主/业务标注章节，多为
+  漏配）→ detect_commits 写 `errors`，周期转 action_required，**绝不静默空跑**
+- **commit patch 抓取上限**：`commit_patch` 默认 `MAX_PATCH_CHARS`（`2256349` 提到 2M），
+  防止大 diff 静默截断；`diff_stat` 单独计算、不设截断上限
 - 历史积压不在周期范围内，由平台手动任务兜底（用户自处理）
 
 ### 4.2 决策模块（sync_decision）
@@ -128,35 +153,60 @@ for 主分支（目标）:
 ### 4.3 冲突解决模块（resolve_conflict / ConflictAgent）
 
 - 安全前置：冲突文件命中 `forbidden_paths` → 直接转人工
-- 编码无损：UTF-8 / GB18030（GBK 超集）可解才处理；真二进制转人工
+- 编码无损：冲突文件先解码为 Unicode 文本，UTF-8 → GB18030（GBK 超集）→ GB18030+replace
+  兜底逐级尝试，所有非 UTF-8 内容解码后统一按 UTF-8 写回（合入统一编码）；含 NUL 字节的
+  真二进制（git 判定 binary 依据）才转人工——RCIOS 常见 GBK 中文注释照常进入 LLM 解决
+  （`720a68b`）
+- **输入长度护栏**（`ea46836`）：冲突文件文本总长 > `max_conflict_context_chars`（50_000）
+  → 直接转人工，**不截断**
 - 校验四关：冲突标记消失 + `git diff --check` 干净 + 只改冲突文件 + 未触安全红线
-- 快照回滚重试，最多 3 轮；每次产出独立 diff
+- **重试反馈**（`ea46836`）：快照回滚重试，最多 3 轮；每轮失败原因（确定性校验器产出：
+  diff 越界 / hunk 不匹配 / 单次超上限 / 校验不过）作为 `hint` 回填下一轮 prompt
+- 每次产出独立 diff；LLM 真实失败原因（`LLMUnavailable` 的 `str(exc)`）随 `last_reason` 透出
 
 ### 4.4 编译模块（build / baseline_build）
 
 - **主分支基线编译（baseline_build）**：prepare_worktree 建好 worktree 后、首个
-  cherry-pick 前，对原始 tip 全量编译（clean）。失败 → 分支 blocked（FAILED +
-  stop_reason），不进入逐 commit。业务分支不经过此步（只当源，不建 worktree）。
-- **批次首 commit 不再重复 clean**（基线已全量验证）；改动公共文件仍降级全量编译
-  （决策 2）。EMPTY 跳过编译；commit 之间增量编译。
+  cherry-pick 前，对原始 tip 逐型号全量编译（clean）。失败 → 分支 blocked（FAILED +
+  stop_reason），不进入逐 commit；业务分支不经过此步（只当源，不建 worktree）。
+  幂等：branch.baseline 已含记录则跳过重建。
+- **每 commit 模块编译**（`720a68b`）：批次首个 commit 不再重复 clean 全量（基线已全量
+  验证）。每个 commit 按 `resolve_build_modules(commit.changed_files, build_rules)` 解析
+  出模块，只编译该模块；解析不出（改动文件落不到任何模块）才回退该 commit 全量。
+  EMPTY 跳过编译（不改变树）。
 - 产品线 → 编译型号随目标分支解析，**不是全局一个型号**；查不到 → 报错停止
-- 多个型号串行编译，任一失败即停该 commit
+- 同一 commit 多个型号经 `build` 节点内 `_next_model` **串行**跑完，任一失败即停该
+  commit 进 fix_build（见 4.5 路由）
 - 成功判定三查：退出码 0 + 成功标志 + 产物存在完整
 
 ### 4.5 编译错误归因与修复（fix_build / BuildAgent）
 
-- 归因三类（基线已证可编译）：`introduced_by_commit` / `environmental` / `unresolvable`
-- environmental 支持重试策略；unresolvable 才判死
+- 归因分类（基线已证可编译）：`introduced_by_commit` / `pre_existing` / `environmental` /
+  `unresolvable`。`pre_existing` 会先经确定性复现校验（`_verify_pre_existing`：把该 commit
+  改动文件还原到目标 tip 再编译，错误签名交集命中才确认），否则按 `introduced_by_commit` 处理
+- **输入长度护栏**（`ea46836`）：编译错误文本总长 > `max_build_context_chars`（50_000）
+  → 归因 `unresolvable`（reason 注明「过大，转人工」），**不截断**；`classify_build_error` 前
+  判定
+- 归因非 `introduced_by_commit`（含 LLM 不可用 / pre_existing / environmental / unresolvable）
+  → **不进修复循环、不重编译**，图节点置 `UNRESOLVABLE` → 路由 `fail_fast` 立即停批
+  （`720a68b` / `ea46836` 之后，见 4.6 / workflow.py `_route_after_fix_build`）
 - 修复边界：仅"本次 commit 改过的文件 + 日志指向文件"，SafetyEnforcer 强制
-- 快照回滚，最多 3 轮；每次修复产出独立 diff
+- **重试反馈**（`ea46836`）：`_fix_loop` 内快照回滚，最多 3 轮；每轮失败原因作为 `hint`
+  回填下一轮 prompt，成功后 `attribution.fix_diff` 捕获实际应用的 diff 落审计
+- 每次修复产出独立 diff
 
 ### 4.6 停批判断模块（fail_fast）
 
+- **入路径**：① 冲突解决失败（`RESOLUTION_FAILED`，ConflictAgent 3 轮耗尽 / 转人工）；
+  ② 编译归因非 introduced（`UNRESOLVABLE`，LLM 不可用 / pre_existing / 护栏超限 → 立即停批，
+  不空转重编译）；③ 修复重试耗尽（`_agent_attempts ≥ max_build_attempts(3)`，修复后 build 仍失败）
 - **前置动作：失败 commit 回滚出树**
 - 三层关联判断：文件级（无 `changed_files` 交集 → 继续）→ 区域级（hunk 行区间相距远 → 继续）
   → LLM（模糊者判断；LLM 不可用 → 保守停批）
 - 编译兜底：判"无关继续"的后续 commit 若编译失败且归因指向前失败 commit 中间态 →
   回滚该中间态或改判停批
+- 路由两态：`FAILFAST_STOP`（后续相关 → 停批）→ generate_patch；`FAILFAST_CONTINUE`
+  （无关 → 继续）→ next_commit
 - 分支内局部，不影响其他目标分支；停批记 `stop_reason`，页面可见
 
 ### 4.7 交付与收尾（generate_patch / report）
@@ -193,8 +243,9 @@ for 主分支（目标）:
 - 写入时机：`generate_patch` 对成功 commit 记 synced、失败 commit 记 failed；
   `baseline_build` 基线失败 → 该分支批次全部记 blocked
 - `record_status` 通用记录（含 reason）；仅 synced 参与幂等短路，failed/blocked 供审计
-- **LLM 修改 diff 归档**：规划中（当前 ledger 不含 llm_diffs；冲突/build 修复的
-  diff 由独立报告落盘，未并入台账）
+- **LLM 修改 diff 归档**：冲突 / build 修复产出的独立 diff 已落审计——`BuildOutcome.fix_diff`
+  捕获实际应用的修复 diff 写入 `build/<target>/<sha>`，冲突 diff 独立落盘；**未并入 ledger**
+  （ledger 每行不含 llm_diffs），因此「并入台账」仍属后续增强方向（规划中）
 
 ### 5.3 互斥（flock，部分实现）
 
@@ -217,10 +268,21 @@ for 主分支（目标）:
 - 实现：`bsa_web/api/push.py`（confirm 回显 + 四道闸 → 受限 `git push` + 审计），
   仅此端点触发推送，无自动/定时推送路径
 
+### 5.6 claude_cli 认证注入（已实现，`cc7a52d`）
+
+- 当 `LLM_BACKEND=claude_cli` 且进程由 systemd 守护（无交互 login shell）时，`claude` 子进程
+  拿不到 `$HOME/.claude` 的认证上下文。解决：`settings.claude_cli_env`（JSON dict）显式注入
+  `claude` 子进程 env，`claude_cli_path` 定位可执行文件，保证守护进程下认证可用。
+
 ---
 
 ## 6. 一句话总结
 
-确定性流程串起「检测 → 决策 → 同步内核（基线编译 + 逐 commit + 回滚 + 关联判断）→ 交付」；
-手动与自动共用内核，零冗余；基线编译前置消解归因；patch-id / fingerprint 双身份；
-台账收口幂等与审计；flock 保证互斥；LLM 修改全部产出独立 diff 供事后审核。
+确定性流程串起「检测 → 决策 → 同步内核（基线编译 + 每 commit 模块编译 + 逐 commit + 回滚 +
+关联判断）→ 交付」；手动与自动共用内核，零冗余；基线编译前置消解归因；每 commit 模块编译代替
+公共文件全量；patch-id / fingerprint 双身份；台账收口幂等与审计；flock 保证互斥；
+Agent 护栏（超限转人工）+ 重试反馈（hint 回传）+ LLM 真实原因透出；LLM 不可用立即停批；
+LLM 修改全部产出独立 diff 供事后审核。
+
+> 流程图见 `docs/diagrams/engine/*.excalidraw`（可用 excalidraw.com / 桌面端打开）：
+> 总览 `engine-overview` + 检测 / 判定 / 冲突解决 / 编译修复四张子图。
