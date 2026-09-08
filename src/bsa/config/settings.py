@@ -69,6 +69,13 @@ class Settings(BaseSettings):
     mail_dry_run: bool = True
     mail_sender: str
     mail_recipients: list[str]
+    # 项目经理名单（周期报告正常收件人）。空则回退 mail_recipients（老部署零改动兼容）；
+    # 非空则正式周期只发此名单。有分支失败/报错时引擎会在此名单外追加失败 commit 的
+    # 合入人邮箱（见 scheduler/recipients.py），二者去重。
+    mail_pm_recipients: list[str] = []
+    # bridge 收件阶段过滤：test/dev 会把 mail_to 硬帽到测试白名单，正式对 PM 发信必须
+    # 配 prod。默认 test 保兼容，升级后若要发非白名单收件人需显式设 MAIL_PHASE=prod。
+    mail_phase: str = "test"
     mail_bridge_path: str = ""
 
     # --- logging ---

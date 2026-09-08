@@ -314,6 +314,63 @@ class TestIsAncestor:
             GitService(executor, tmp_path).is_ancestor("a", "b")
 
 
+class TestCommitterEmail:
+    def test_returns_committer_email(self, tmp_path):
+        executor = FakeExecutor([ok("renjing@raisecom.com\n")])
+        svc = GitService(executor, tmp_path)
+        assert svc.committer_email("abc123") == "renjing@raisecom.com"
+        assert executor.calls[0][0] == ["log", "-1", "--format=%ce", "abc123"]
+        assert executor.calls[0][1]["cwd"] == tmp_path
+
+    def test_nonzero_returncode_returns_empty(self, tmp_path):
+        executor = FakeExecutor([ok(rc=1)])
+        assert GitService(executor, tmp_path).committer_email("abc") == ""
+
+
+class TestMergeCommitterEmails:
+    def _merges_log(self, *shas: str) -> str:
+        return "".join(f"{s}\n" for s in shas) + "\n"
+
+    def test_finds_introducing_merge_committer(self, tmp_path):
+        # 沿 first-parent 从新到旧列 merge;第二个 merge 是引入者(第二父含 sha、第一父不含)
+        executor = FakeExecutor(
+            [
+                ok(self._merges_log("m1", "m2")),  # log --merges
+                ok(rc=0),  # m1^2 含 sha? no
+                ok(rc=0),  # m1^1 含 sha? yes → 跳过 m1
+                ok(rc=0),  # m2^2 含 sha? yes
+                ok(rc=1),  # m2^1 含 sha? no → m2 是引入者
+                ok("zhangyingqi@raisecom.com\n"),  # m2 的 committer email
+            ]
+        )
+        svc = GitService(executor, tmp_path)
+        assert svc.merge_committer_emails("leaf", "br_fttr") == ["zhangyingqi@raisecom.com"]
+        # 命令形状核对:候选限定为 sha 之后的历史(leaf..br_fttr),旧→新
+        assert executor.calls[0][0] == [
+            "log", "--first-parent", "--merges", "--reverse", "--format=%H",
+            "leaf..br_fttr",
+        ]
+        assert executor.calls[1][0] == ["merge-base", "--is-ancestor", "leaf", "m1^2"]
+        assert executor.calls[3][0] == ["merge-base", "--is-ancestor", "leaf", "m2^2"]
+        assert executor.calls[4][0] == ["merge-base", "--is-ancestor", "leaf", "m2^1"]
+        assert executor.calls[5][0] == ["log", "-1", "--format=%ce", "m2"]
+
+    def test_no_introducing_merge_returns_empty(self, tmp_path):
+        # 只有一个 merge 且第一父已含 sha → 无引入 merge
+        executor = FakeExecutor(
+            [
+                ok(self._merges_log("m1")),
+                ok(rc=0),  # m1^2 含 sha? yes
+                ok(rc=0),  # m1^1 含 sha? yes → m1 非引入者
+            ]
+        )
+        assert GitService(executor, tmp_path).merge_committer_emails("leaf", "br") == []
+
+    def test_log_failure_returns_empty(self, tmp_path):
+        executor = FakeExecutor([ok(rc=128)])
+        assert GitService(executor, tmp_path).merge_committer_emails("leaf", "br") == []
+
+
 class TestWorktree:
     def test_add_worktree(self, tmp_path):
         executor = FakeExecutor()

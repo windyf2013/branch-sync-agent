@@ -230,6 +230,56 @@ class GitService:
             f"merge-base --is-ancestor {sha} {ref} failed: {result.stderr.strip()}"
         )
 
+    def committer_email(self, sha: str) -> str:
+        """commit 的提交者邮箱（直提场景 author==committer，即合入人）；取不到返回空串。"""
+        result = self.executor.run(
+            ["log", "-1", "--format=%ce", sha], cwd=self.repo_path
+        )
+        if result.returncode != 0:
+            return ""
+        return result.stdout.strip()
+
+    def merge_committer_emails(self, sha: str, branch: str) -> list[str]:
+        """把 ``sha`` 合入 ``branch`` 主线的 merge 的 committer（真正的「合入人」）。
+
+        git 没有独立「合入人」字段：业务分支上的叶子 commit 常 author==committer（直提），
+        此时合入人就是 committer（调用方用 ``committer_email`` 即可）；而经个人分支 merge
+        进来的 commit，其引入 merge 的 committer 才是合入人。判定：沿 branch first-parent
+        从旧到新，找第一个「第二父含 sha 且第一父不含 sha」的 merge——该 merge 正是把
+        sha 首次带上主线的那个。直提 commit 无引入 merge，返回空（不报错）。
+
+        ``sha..branch`` 把候选 merge 限定为 sha 之后的历史：扫窗口 commit 都在 branch
+        近期，候选 merge 极少；若 sha 是直提（本身已在 first-parent 线上），候选区恒空
+        （无 merge 在其后），零开销。绝不从 branch 顶端扫到根（RCIOS 多年历史数千 merge，
+        逐条 subprocess 判会挂死）。
+        """
+        result = self.executor.run(
+            ["log", "--first-parent", "--merges", "--reverse", "--format=%H", f"{sha}..{branch}"],
+            cwd=self.repo_path,
+        )
+        if result.returncode != 0:
+            return []
+        merges = [line.strip() for line in result.stdout.splitlines() if line.strip()]
+        for merge in merges:  # 旧→新:第一个引入者即 sha 首次上主线之处
+            in_second = (
+                self.executor.run(
+                    ["merge-base", "--is-ancestor", sha, f"{merge}^2"], cwd=self.repo_path
+                ).returncode
+                == 0
+            )
+            if not in_second:
+                continue
+            in_first = (
+                self.executor.run(
+                    ["merge-base", "--is-ancestor", sha, f"{merge}^1"], cwd=self.repo_path
+                ).returncode
+                == 0
+            )
+            if not in_first:
+                email = self.committer_email(merge)
+                return [email] if email else []
+        return []
+
     def add_worktree(self, branch: str, path: Path) -> None:
         self._run(["worktree", "add", str(path), branch], error_msg=f"cannot add worktree {path}")
 

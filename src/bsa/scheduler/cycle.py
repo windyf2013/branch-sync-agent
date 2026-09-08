@@ -24,6 +24,7 @@ from bsa.report import (
     write_decisions_json,
 )
 from bsa.report.projection import write_state_json
+from bsa.scheduler.recipients import resolve_report_recipients
 
 _RUN_LOGGER = logging.getLogger("bsa.cycle")
 
@@ -360,6 +361,10 @@ def _execute_locked(
         write_agent_diffs(final, report)
         subject = f"Branch Sync Agent 周期报告 {cycle_id} [{final_status}]"
         body = build_email_body(report, final)
+        # 收件人：PM 名单（或回退 mail_recipients），有失败/报错时追加失败 commit 的
+        # 合入人邮箱（见 recipients.py）。mail_phase 走配置（默认 test 保兼容，正式
+        # 对 PM 发信需配 prod，否则 bridge 的 test 白名单会滤掉非测试收件人）。
+        recipients = resolve_report_recipients(settings, final, context.git)
         sender = None
         if not settings.mail_dry_run:
             from bsa.mail.bridge_sender import make_bridge_sender
@@ -367,15 +372,17 @@ def _execute_locked(
             sender = make_bridge_sender(
                 workspace_root=Path(settings.log_dir),
                 output_dir=cycle_dir,
-                mail_phase="test",
-                mail_to=list(settings.mail_recipients),
+                mail_phase=settings.mail_phase,
+                mail_to=recipients,
                 bridge_path=Path(settings.mail_bridge_path) if settings.mail_bridge_path else None,
             )
         result = MailService(settings, sender=sender).send_report(
             subject, body, report_path, _patch_attachments(final)
         )
         mail_status = result.status
-        logger.info("report rendered %s; mail=%s", report_path, mail_status)
+        logger.info(
+            "report rendered %s; mail=%s to=%s", report_path, mail_status, recipients
+        )
     else:
         logger.warning("no report produced; status=%s", final_status)
 
