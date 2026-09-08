@@ -335,6 +335,32 @@ def write_agent_diffs(state: dict, report: Report) -> list[Path]:
     return written
 
 
+def _branch_failure_lines(state: dict) -> list[str]:
+    """非 SUCCESS 分支的失败明细（停批 commit / 失败型号 / 首条错误）。
+
+    cron 精简流程「失败不重试直接发邮件」：让收件人不点开 report.html 也能直读
+    哪个分支/commit/型号停批。逐行缩进组织，mail 正文纯文本。
+    """
+    lines: list[str] = []
+    for target in sorted(state.get("branch_results") or {}):
+        branch = state["branch_results"][target]
+        if branch.status == "SUCCESS":
+            continue
+        header = f"- [{target}] {branch.status}"
+        if branch.stop_reason:
+            header += f"（{branch.stop_reason}）"
+        lines.append(header)
+        for commit in branch.commits:
+            if commit.cherry_pick not in ("OK", "EMPTY"):
+                lines.append(f"    {commit.sha[:10]} cherry-pick {commit.cherry_pick}")
+            for model, outcome in (commit.build or {}).items():
+                if outcome.status != "FAILED":
+                    continue
+                err = (outcome.errors or [""])[0]
+                lines.append(f"    {commit.sha[:10]} {model} 编译失败: {err[:200]}")
+    return lines
+
+
 def build_email_body(report: Report, state: dict) -> str:
     """Email body summary (决策 11): window / branch count / commit count / conclusions."""
     counts = _conclusion_counts(state)
@@ -355,6 +381,11 @@ def build_email_body(report: Report, state: dict) -> str:
         lines.append(f"Action Required: {len(report.action_required)} 项")
     if errors:
         lines.append(f"警告: {errors} 条节点错误记录")
+    failures = _branch_failure_lines(state)
+    if failures:
+        lines.append("")
+        lines.append("失败/停批明细:")
+        lines.extend(failures)
     lines.append("")
     lines.append("详细报告: " + str(report.html_path))
     return "\n".join(lines)

@@ -405,93 +405,53 @@ def _build_target_snapshot(
 
 
 def sync_decision(state: dict, ctx: GraphContext) -> dict:
-    """Resolve pending classifications via agent, conclude four-states, freeze batches."""
+    """Cron 精简判定：窗口内同源业务 commit 全量冻结进批次，不做 bug-fix/风险/相似度分类。
+
+    去掉 SyncDecisionAgent/快照/四态判定：凡业务 source 分支检测到的 commit 一律
+    批入同源主 target（决策：cron 只做 同步→编译→通知）。仍保留两条确定性短路
+    （不变量 #1 forbidden 分支 → OutOfScope、#10 台账幂等 is_synced → AlreadyIncluded）。
+    classify 结果仍随 state 保留仅供报告展示，不参与批次门控。
+    """
     detected = list(state.get("detected_commits") or [])
-    classifications = dict(state.get("classifications") or {})
-
-    pending = [
-        commit
-        for commit in detected
-        if (entry := classifications.get(commit.sha)) is not None and entry.needs_agent
-    ]
-    if pending:
-        prior_risks = {
-            commit.sha: classifications[commit.sha].risk
-            for commit in pending
-            if classifications[commit.sha].risk is not None
-        }
-        classifications.update(
-            ctx.sync_decision_agent.run(pending, prior_risks=prior_risks)
-        )
-
-    risk_pending = [
-        commit
-        for commit in detected
-        if (entry := classifications.get(commit.sha)) is not None
-        and not entry.needs_agent
-        and entry.is_bug_fix
-        and entry.risk is None
-    ]
-    if risk_pending:
-        risks = ctx.sync_decision_agent.resolve_risks(risk_pending)
-        for sha, risk in risks.items():
-            classifications[sha] = classifications[sha].model_copy(update={"risk": risk})
-
-    analyses = {
-        commit.sha: _to_analysis(
-            commit, classifications[commit.sha], ctx.decision_rules.branch_mapping
-        )
-        for commit in detected
-        if commit.sha in classifications
-    }
     matrix = _load_matrix(ctx)
-    thresholds = ctx.decision_rules.conclude
+    ledger_dir = Path(ctx.settings.log_dir)
 
     decisions: dict[str, dict[str, Conclusion4]] = {}
+    batches: dict[str, list[str]] = {}
     from bsa.ledger import is_synced
 
-    ledger_dir = Path(ctx.settings.log_dir)
     for hs in matrix:
         source_names = {source.name for source in hs.sources}
         for commit in detected:
-            if commit.sha not in analyses or commit.source_branch not in source_names:
+            if commit.source_branch not in source_names:
                 continue
-            analysis = analyses[commit.sha]
             for target in hs.need_sync_targets:
-                if not ctx.safety.check_sync_branch(target.name):
-                    decisions.setdefault(commit.sha, {})[target.name] = Conclusion4(
+                tname = target.name
+                if not ctx.safety.check_sync_branch(tname):
+                    decisions.setdefault(commit.sha, {})[tname] = Conclusion4(
                         kind="OutOfScope",
-                        evidence=[f"目标分支 {target.name} 命中禁止同步清单，跳过。"],
+                        evidence=[f"目标分支 {tname} 命中禁止同步清单，跳过。"],
                         confidence="high",
                     )
                     continue
                 # 台账短路（决策 5.2）：该 patch-id 对目标分支已同步过 → 直接已含，
-                # 跳过快照构建与相似度/LLM 判定（跨天/跨周期幂等）。
-                if analysis.patch_id and is_synced(
-                    ledger_dir, analysis.patch_id, target.name
-                ):
-                    decisions.setdefault(commit.sha, {})[target.name] = Conclusion4(
+                # 跳过分批（跨天/跨周期幂等）。
+                if commit.patch_id and is_synced(ledger_dir, commit.patch_id, tname):
+                    decisions.setdefault(commit.sha, {})[tname] = Conclusion4(
                         kind="AlreadyIncluded",
                         evidence=[
-                            f"台账记录：patch-id {analysis.patch_id} 已同步到 {target.name}。"
+                            f"台账记录：patch-id {commit.patch_id} 已同步到 {tname}。"
                         ],
                         confidence="high",
                     )
                     continue
-                snapshot = _build_target_snapshot(ctx, analysis, target)
-                conclusion = ctx.conclude(
-                    analysis,
-                    snapshot,
-                    similarity_high=thresholds.similarity_high,
-                    similarity_low=thresholds.similarity_low,
+                # 全量同步：其余一律批入（不再做 bug-fix/风险/相似度四态判定）。
+                decisions.setdefault(commit.sha, {})[tname] = Conclusion4(
+                    kind="NeedSync",
+                    evidence=["全量同步：窗口内同源业务 commit，批入同源主分支。"],
+                    confidence="high",
                 )
-                decisions.setdefault(commit.sha, {})[target.name] = conclusion
-
-    batches: dict[str, list[str]] = {}
-    for sha, per_target in decisions.items():
-        for target_name, conclusion in per_target.items():
-            if conclusion.kind == "NeedSync":
-                batches.setdefault(target_name, []).append(sha)
+                batches.setdefault(tname, []).append(commit.sha)
 
     # 产品线 → 编译型号：每目标解析一次；未配置/未知产品线报错并移出批次，
     # 错误进 errors → action_required（绝不静默用错脚本或静默跳过编译）。
@@ -511,7 +471,7 @@ def sync_decision(state: dict, ctx: GraphContext) -> dict:
             build_models[target_name] = models
 
     update: dict[str, Any] = {
-        "classifications": classifications,
+        "classifications": state.get("classifications") or {},
         "decisions": decisions,
         "batches": batches,
         "build_models": build_models,

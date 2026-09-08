@@ -9,7 +9,7 @@ from bsa.domain.models import (
     ConflictResolution,
     Report,
 )
-from bsa.report.renderer import render_html_report, write_agent_diffs
+from bsa.report.renderer import build_email_body, render_html_report, write_agent_diffs
 from tests.test_graph_nodes import TARGET, base_state
 
 
@@ -180,3 +180,86 @@ class TestWriteAgentDiffs:
 
     def test_skips_when_no_diffs(self, tmp_path):
         assert write_agent_diffs(base_state(), _report(tmp_path)) == []
+
+
+class TestEmailBodyFailureDetail:
+    """cron 精简「失败不重试直接发邮件」：邮件正文应含停批分支/commit/型号明细。"""
+
+    def _state_with_failures(self) -> dict:
+        state = base_state()
+        state["branch_results"] = {
+            TARGET: _branch(
+                "FAILED",
+                commits=[
+                    # 冲突停批的 commit
+                    CommitResult(
+                        sha="aaaa1111",
+                        cherry_pick="CONFLICT",
+                        conflict_resolution=None,
+                        build={},
+                    ),
+                    # 编译失败型号的 commit
+                    CommitResult(
+                        sha="bbbb2222",
+                        cherry_pick="OK",
+                        conflict_resolution=None,
+                        build={
+                            "RTL9617C": BuildOutcome(
+                                model="RTL9617C",
+                                status="FAILED",
+                                log_path="/l",
+                                errors=["compile error: boom"],
+                                agent_attempts=0,
+                                fix_diff=None,
+                            )
+                        },
+                    ),
+                ],
+            )
+        }
+        return state
+
+    def test_failed_branch_lines_list_conflict_and_build(self, tmp_path):
+        from bsa.report.renderer import _branch_failure_lines
+
+        lines = _branch_failure_lines(self._state_with_failures())
+        joined = "\n".join(lines)
+        assert any("aaaa1111" in line and "cherry-pick CONFLICT" in line for line in lines)
+        assert any("bbbb2222" in line and "RTL9617C" in line and "编译失败" in line for line in lines)
+        assert "compile error: boom" in joined
+
+    def test_build_email_body_includes_failure_detail(self, tmp_path):
+        body = build_email_body(_report(tmp_path), self._state_with_failures())
+        assert "失败/停批明细" in body
+        assert "aaaa1111" in body
+        assert "bbbb2222" in body
+        assert "cherry-pick CONFLICT" in body
+        assert "RTL9617C" in body
+
+    def test_success_branch_omits_failure_section(self, tmp_path):
+        state = base_state()
+        state["branch_results"] = {
+            TARGET: _branch(
+                "SUCCESS",
+                commits=[
+                    CommitResult(
+                        sha="cccc3333",
+                        cherry_pick="OK",
+                        conflict_resolution=None,
+                        build={
+                            "RTL9617C": BuildOutcome(
+                                model="RTL9617C",
+                                status="OK",
+                                log_path="/l",
+                                errors=[],
+                                agent_attempts=0,
+                                fix_diff=None,
+                            )
+                        },
+                    )
+                ],
+            )
+        }
+        body = build_email_body(_report(tmp_path), state)
+        assert "失败/停批明细" not in body
+        assert "cccc3333" not in body

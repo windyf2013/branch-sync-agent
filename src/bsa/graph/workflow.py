@@ -23,12 +23,10 @@ from bsa.graph.nodes import (
     build,
     cherry_pick,
     detect_commits,
-    fix_build,
     generate_patch,
     node_wrapper,
     prepare_worktree,
     report,
-    resolve_conflict,
     sync_decision,
 )
 from bsa.graph.state import TaskState
@@ -371,16 +369,49 @@ def _route_after_patch(state: dict) -> str:
     return "next_branch"
 
 
+def _route_after_cherry_pick_cron(state: dict) -> str:
+    """Cron 专用：cherry-pick 后的停批路由（同步→编译→通知，冲突不自动消解）。
+
+    冲突 → 直接停本分支批收尾 generate_patch（不 resolve_conflict）；EMPTY =
+    内容已应用跳过编译去下一 commit（不变量 #17）；非冲突基础设施失败 → 报告。
+    """
+    status = state.get("status", "")
+    if status == "FAILED":
+        return _END_NODE
+    if status == "CHERRY_PICK_CONFLICT":
+        return "generate_patch"
+    if status == "CHERRY_PICK_EMPTY":
+        return "next_commit"
+    if status == "CHERRY_PICK_FAILED":
+        return _END_NODE
+    return "build"
+
+
+def _make_route_after_build_cron(ctx: GraphContext) -> Callable[[dict], str]:
+    def route(state: dict) -> str:
+        """Cron 专用：build 后失败即停批（不 fix_build 自动修复），多型号内循环保留。"""
+        if state.get("status") == "FAILED":
+            return _END_NODE
+        if state.get("status") == "BUILD_OK":
+            if _remaining_models(state, ctx):
+                return "build"
+            return "next_commit"
+        return "generate_patch"
+
+    return route
+
+
 def build_workflow(
     ctx: GraphContext,
     checkpointer: SqliteSaver | None = None,
 ) -> CompiledStateGraph:
-    """Assemble the 9 nodes + selectors into the LangGraph StateGraph.
+    """Assemble the lean cron graph: 同步→编译→通知，无判断/解决类 LLM 节点。
 
-    All loops (branch / commit / model / fix-retry) and fail-fast routing run
-    through state-reading conditional edges — never Python for-loops inside a
-    node. ``checkpointer`` defaults to an in-memory SqliteSaver; production
-    passes a persistent one via ``make_checkpointer``.
+    cron 只做确定性同步链：detect → sync_decision(全量冻结) → prepare → baseline
+    → (cherry_pick → build，型号内循环) → generate_patch → report。冲突与编译失败
+    直接停本分支批收尾（不 resolve_conflict / fix_build / fail_fast 重试）。manual
+    的完整 agent 流程走 single_target.py 的 build_single_target_workflow，不受影响。
+    ``checkpointer`` 默认内存版，生产由调用方传入持久化实例。
     """
     graph = StateGraph(TaskState)
 
@@ -390,9 +421,7 @@ def build_workflow(
         "prepare_worktree": prepare_worktree,
         "baseline_build": baseline_build,
         "cherry_pick": cherry_pick,
-        "resolve_conflict": resolve_conflict,
         "build": build,
-        "fix_build": fix_build,
         "generate_patch": generate_patch,
         "report": report,
     }
@@ -400,7 +429,6 @@ def build_workflow(
         graph.add_node(name, node_wrapper(node, ctx=ctx))
     graph.add_node("next_branch", node_wrapper(next_branch))
     graph.add_node("next_commit", node_wrapper(next_commit))
-    graph.add_node("fail_fast", node_wrapper(fail_fast, ctx=ctx))
 
     graph.add_edge(START, "detect_commits")
     graph.add_edge("detect_commits", "sync_decision")
@@ -435,44 +463,23 @@ def build_workflow(
     )
     graph.add_conditional_edges(
         "cherry_pick",
-        _route_after_cherry_pick,
+        _route_after_cherry_pick_cron,
         {
             "build": "build",
-            "resolve_conflict": "resolve_conflict",
+            "generate_patch": "generate_patch",
             "next_commit": "next_commit",
             _END_NODE: _END_NODE,
         },
-    )
-    graph.add_conditional_edges(
-        "resolve_conflict",
-        _route_after_resolve,
-        {"build": "build", "fail_fast": "fail_fast", _END_NODE: _END_NODE},
     )
     graph.add_conditional_edges(
         "build",
-        _make_route_after_build(ctx),
+        _make_route_after_build_cron(ctx),
         {
             "build": "build",
-            "fix_build": "fix_build",
+            "generate_patch": "generate_patch",
             "next_commit": "next_commit",
             _END_NODE: _END_NODE,
         },
-    )
-    graph.add_conditional_edges(
-        "fix_build",
-        _make_route_after_fix_build(ctx),
-        {
-            "build": "build",
-            "fix_build": "fix_build",
-            "fail_fast": "fail_fast",
-            "next_commit": "next_commit",
-            _END_NODE: _END_NODE,
-        },
-    )
-    graph.add_conditional_edges(
-        "fail_fast",
-        _route_after_failfast,
-        {"generate_patch": "generate_patch", "next_commit": "next_commit", _END_NODE: _END_NODE},
     )
     graph.add_conditional_edges(
         "generate_patch",

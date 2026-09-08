@@ -159,13 +159,20 @@ def test_checkpointer_db_uses_wal(tmp_path):
     assert journal == "wal"
 
 
-def test_empty_check_routes_to_report(tmp_path):
+def test_all_already_included_routes_to_report(tmp_path):
+    """台账已含（全量冻结的 AlreadyIncluded 短路）→ 空批 → 空周期 SUCCESS 收尾。"""
     write_branch_md(tmp_path)
     ctx = make_ctx(tmp_path)
     ctx.llm = FakeLLM()
+    from bsa.ledger import record_synced
+
+    log_dir = Path(ctx.settings.log_dir)
+    log_dir.mkdir(parents=True, exist_ok=True)
+    record_synced(log_dir, "pid-a1", TARGET, "a1")
     ctx.git.window_shas = {f"origin/{DEVELOP}": ["a1"]}
     ctx.git.changed["a1"] = ["plat/demo.c"]
     ctx.git.patches["a1"] = "+x"
+    ctx.git.patch_ids["a1"] = "pid-a1"
     _classify(ctx, "a1")
 
     out = run(build_workflow(ctx), base_state())
@@ -174,6 +181,20 @@ def test_empty_check_routes_to_report(tmp_path):
     assert out["report"] is not None
     assert out["report"].summary["commits_detected"] == 1
     assert out["report"].summary["branches"] == []
+    assert out["status"] == "SUCCESS"
+
+
+def test_no_detected_commits_empty_cycle(tmp_path):
+    """窗口内无 commit → 空批 → 空周期 SUCCESS（绿条）。"""
+    write_branch_md(tmp_path)
+    ctx = make_ctx(tmp_path)
+    ctx.llm = FakeLLM()
+    ctx.git.window_shas = {f"origin/{DEVELOP}": []}
+
+    out = run(build_workflow(ctx), base_state())
+
+    assert out["batches"] == {}
+    assert out["report"] is not None
     assert out["status"] == "SUCCESS"
 
 
@@ -274,11 +295,13 @@ def test_multi_branch_loop_uses_per_branch_worktree_git(tmp_path):
     assert out["report"].summary["branches"] == sorted([TARGET, TARGET2])
 
 
-def test_conflict_resolved_continue_build_patch_success(tmp_path):
+def test_conflict_stops_branch_immediately_and_patches(tmp_path):
+    """cron 精简：cherry-pick 冲突即停本分支批（不 resolve_conflict），出 patch 收尾。"""
     write_branch_md(tmp_path)
-    ctx = batch_ctx(tmp_path, shas=["a1"])
+    ctx = batch_ctx(tmp_path, shas=["a1", "a2"])
     from bsa.domain.models import ConflictResolution
 
+    # 即使配了能解析的 agent，cron 图也不调用它。
     ctx.conflict_agent.resolution = ConflictResolution(
         files=["plat/demo.c"], diff="+fixed", agent_reason="resolved"
     )
@@ -293,21 +316,49 @@ def test_conflict_resolved_continue_build_patch_success(tmp_path):
     out = run(build_workflow(ctx), base_state())
 
     wg = worktree_git_for(ctx, TARGET)
-    assert wg.cherry_pick_continue_calls == 1
+    # resolve 节点未装配：conflict_agent 零调用、无 cherry-pick --continue。
+    assert ctx.conflict_agent.calls == []
+    assert wg.cherry_pick_continue_calls == 0
+    # 只 cherry-pick 到冲突的 a1，后续 a2 停批未尝试。
+    assert cherry_picked(wg) == ["a1"]
     branch = out["branch_results"][TARGET]
-    assert branch.commits[0].cherry_pick == "OK"
-    assert branch.commits[0].conflict_resolution is not None
-    assert branch.commits[0].build["RTL9617C"].status == "OK"
-    assert branch.status == "SUCCESS"
+    assert branch.commits[0].cherry_pick == "CONFLICT"
+    # 冲突即停批 → 分支 FAILED，但仍出 patch 收尾（供人工处理）。
+    assert branch.status == "FAILED"
     assert branch.patch_path is not None
     assert out["report"] is not None
+    assert out["status"] == "FAILED"
 
 
-def test_failfast_related_stops_batch(tmp_path):
+def test_build_failure_stops_branch_immediately(tmp_path):
+    """cron 精简：编译失败即停本分支批（不 fix_build 自动修复），后续 commit 不尝试。"""
     write_branch_md(tmp_path)
     ctx = batch_ctx(tmp_path, shas=["a1", "a2"])
-    ctx.llm = FakeLLM(related=True)
-    ctx.conflict_agent.resolution = None
+    # baseline（第 1 次 build）成功；a1 cherry-pick 后 commit build 失败。
+    ctx.runner = FakeRunner(success_until=1)
+
+    out = run(build_workflow(ctx), base_state())
+
+    # fix_build 节点未装配：build_agent 零调用。
+    assert ctx.build_agent.calls == []
+    assert cherry_picked(worktree_git_for(ctx, TARGET)) == ["a1"]
+    branch = out["branch_results"][TARGET]
+    assert branch.commits[0].build["RTL9617C"].status == "FAILED"
+    assert branch.commits[0].build["RTL9617C"].agent_attempts == 0
+    assert branch.patch_path is not None
+    assert branch.status == "FAILED"
+    assert out["report"] is not None
+
+
+def test_conflict_stop_does_not_leak_to_next_target(tmp_path):
+    """停批只停本分支：TARGET 冲突停批出 patch 后，next_branch 转 TARGET2 正常同步。"""
+    path = tmp_path / "branch.md"
+    path.write_text(BRANCH_MD_TWO, encoding="utf-8")
+    ctx = batch_ctx(tmp_path, shas=["a1"], targets=[TARGET, TARGET2])
+    ctx.conclude.results[("a1", TARGET2)] = Conclusion4(
+        kind="NeedSync", evidence=[], confidence="high"
+    )
+    # TARGET 冲突停批；TARGET2 全程 build 成功（冲突不跨 target 污染）。
     inject_worktree_git(
         ctx,
         FakeWorktreeGit(
@@ -318,125 +369,18 @@ def test_failfast_related_stops_batch(tmp_path):
 
     out = run(build_workflow(ctx), base_state())
 
-    assert cherry_picked(worktree_git_for(ctx, TARGET)) == ["a1"]
-    assert len(ctx.llm.calls) == 1
-    assert out["branch_results"][TARGET].stop_reason is not None
-    assert out["report"] is not None
+    assert ctx.conflict_agent.calls == []
+    # TARGET 冲突停批仍出 patch；TARGET2 正常同步出 patch。
+    assert out["branch_results"][TARGET].patch_path is not None
+    assert out["branch_results"][TARGET].status == "FAILED"
+    assert cherry_picked(worktree_git_for(ctx, TARGET2)) == ["a1"]
+    assert out["branch_results"][TARGET2].patch_path is not None
+    assert out["branch_results"][TARGET2].status == "SUCCESS"
+    # 任一分支 FAILED → 周期 FAILED（分支级 PARTIAL 才是周期 PARTIAL 的前提）。
+    assert out["status"] == "FAILED"
 
 
-def test_failfast_not_related_continues(tmp_path):
-    write_branch_md(tmp_path)
-    ctx = batch_ctx(tmp_path, shas=["a1", "a2"])
-    ctx.llm = FakeLLM(related=False)
-    ctx.conflict_agent.resolution = None
-    inject_worktree_git(
-        ctx,
-        FakeWorktreeGit(
-            results={
-                "a1": CherryPickResult(status="CONFLICT"),
-                "a2": CherryPickResult(status="OK"),
-            },
-            unmerged=["plat/demo.c"],
-        ),
-        TARGET,
-    )
-
-    out = run(build_workflow(ctx), base_state())
-
-    assert cherry_picked(worktree_git_for(ctx, TARGET)) == ["a1", "a2"]
-    assert len(ctx.llm.calls) == 1
-    assert out["branch_results"][TARGET].stop_reason is None
-    assert out["report"] is not None
-
-
-def _conflict_ctx(ctx):
-    ctx.conflict_agent.resolution = None
-    inject_worktree_git(
-        ctx,
-        FakeWorktreeGit(
-            results={"a1": CherryPickResult(status="CONFLICT")}, unmerged=["plat/demo.c"]
-        ),
-        TARGET,
-    )
-    return ctx
-
-
-def test_failfast_layer1_disjoint_files_no_llm(tmp_path):
-    # 决策 3 第 1 层: changed_files 无交集 → 无关，继续，且不触发 LLM。
-    write_branch_md(tmp_path)
-    ctx = batch_ctx(tmp_path, shas=["a1", "a2"])
-    ctx.git.changed = {"a1": ["plat/demo.c"], "a2": ["plat/other.c"]}
-    ctx.llm = FakeLLM(related=True)
-    _conflict_ctx(ctx)
-
-    out = run(build_workflow(ctx), base_state())
-
-    assert cherry_picked(worktree_git_for(ctx, TARGET)) == ["a1", "a2"]
-    assert ctx.llm.calls == []
-    assert out["branch_results"][TARGET].stop_reason is None
-    assert out["report"] is not None
-
-
-def test_failfast_layer2_far_regions_no_llm(tmp_path):
-    # 决策 3 第 2 层: 重叠文件但 hunk 行区间相距 > failfast_region_gap → 无关，继续。
-    write_branch_md(tmp_path)
-    ctx = batch_ctx(tmp_path, shas=["a1", "a2"])
-    ctx.git.changed = {"a1": ["plat/demo.c"], "a2": ["plat/demo.c"]}
-    ctx.git.patches = {
-        "a1": "diff --git a/plat/demo.c b/plat/demo.c\n@@ -1,3 +1,3 @@\n- x\n+ y\n",
-        "a2": "diff --git a/plat/demo.c b/plat/demo.c\n@@ -1000,3 +1000,3 @@\n- x\n+ y\n",
-    }
-    ctx.llm = FakeLLM(related=True)
-    _conflict_ctx(ctx)
-
-    out = run(build_workflow(ctx), base_state())
-
-    assert cherry_picked(worktree_git_for(ctx, TARGET)) == ["a1", "a2"]
-    assert ctx.llm.calls == []
-    assert out["branch_results"][TARGET].stop_reason is None
-
-
-def test_failfast_layer3_llm_only_for_ambiguous(tmp_path):
-    # 决策 3 第 3 层: 仅第 2 层仍模糊的 commit 进 LLM；无关/远区间不进。
-    write_branch_md(tmp_path)
-    ctx = batch_ctx(tmp_path, shas=["a1", "a2", "a3"])
-    ctx.git.changed = {
-        "a1": ["plat/demo.c"],
-        "a2": ["plat/other.c"],
-        "a3": ["plat/demo.c"],
-    }
-    ctx.git.patches = {
-        "a1": "diff --git a/plat/demo.c b/plat/demo.c\n@@ -1,3 +1,3 @@\n- x\n+ y\n",
-        "a2": "+x",
-        "a3": "diff --git a/plat/demo.c b/plat/demo.c\n@@ -5,3 +5,3 @@\n- x\n+ y\n",
-    }
-    ctx.llm = FakeLLM(related=True)
-    _conflict_ctx(ctx)
-
-    out = run(build_workflow(ctx), base_state())
-
-    assert cherry_picked(worktree_git_for(ctx, TARGET)) == ["a1"]
-    assert len(ctx.llm.calls) == 1
-    failed, subsequent = ctx.llm.calls[0]
-    assert failed.sha == "a1"
-    assert [c.sha for c in subsequent] == ["a3"]
-    assert out["branch_results"][TARGET].stop_reason is not None
-
-
-def test_failfast_ambiguous_llm_absent_conservative_stop(tmp_path):
-    # LLM 不可用 → 模糊 commit 保守视为相关 → 停批（决策 7/32）。
-    write_branch_md(tmp_path)
-    ctx = batch_ctx(tmp_path, shas=["a1", "a2"])
-    ctx.llm = None
-    _conflict_ctx(ctx)
-
-    out = run(build_workflow(ctx), base_state())
-
-    assert cherry_picked(worktree_git_for(ctx, TARGET)) == ["a1"]
-    assert out["branch_results"][TARGET].stop_reason is not None
-
-
-def test_cherry_pick_failed_routes_to_report_not_failfast(tmp_path):
+def test_cherry_pick_failed_routes_to_report(tmp_path):
     write_branch_md(tmp_path)
     ctx = batch_ctx(tmp_path, shas=["a1"])
     inject_worktree_git(
@@ -447,27 +391,10 @@ def test_cherry_pick_failed_routes_to_report_not_failfast(tmp_path):
 
     out = run(build_workflow(ctx), base_state())
 
-    assert ctx.llm.calls == []
+    assert ctx.conflict_agent.calls == []
     assert out["status"] == "PARTIAL"
     assert out["branch_results"][TARGET].stop_reason is None
     assert out["branch_results"][TARGET].commits[0].cherry_pick == "FAILED"
-
-
-def test_fix_build_fails_after_max_attempts_then_failfast(tmp_path):
-    write_branch_md(tmp_path)
-    ctx = batch_ctx(tmp_path, shas=["a1", "a2"])
-    ctx.llm = FakeLLM(related=True)
-    # baseline（第 1 次 build）成功；cherry-pick 后 commit build 失败，走 fix_build。
-    ctx.runner = FakeRunner(success_until=1)
-
-    out = run(build_workflow(ctx), base_state())
-
-    assert len(ctx.build_agent.calls) == 3
-    assert len(ctx.llm.calls) == 1
-    assert out["branch_results"][TARGET].stop_reason is not None
-    outcome = out["branch_results"][TARGET].commits[0].build["RTL9617C"]
-    assert outcome.status == "FAILED"
-    assert outcome.agent_attempts == 3
 
 
 def test_checkpoint_resume_reuses_state_not_recomputed(tmp_path):

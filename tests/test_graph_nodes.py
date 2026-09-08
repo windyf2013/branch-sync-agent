@@ -840,7 +840,8 @@ def test_detect_commits_applies_judgments_override_to_machine_classified(tmp_pat
     assert update["classifications"][sha].needs_agent is False
 
 
-def test_sync_decision_resolves_pending_and_builds_batches(tmp_path):
+def test_sync_decision_all_detected_freeze_ignores_classify(tmp_path):
+    """全量冻结：classify 成非 bug-fix / needs_agent 的 commit 也照样进批（分类不打门控）。"""
     write_branch_md(tmp_path)
     ctx = make_ctx(tmp_path)
     c1 = commit("a1", issue_ids=["CQ1"])
@@ -864,28 +865,18 @@ def test_sync_decision_resolves_pending_and_builds_batches(tmp_path):
             ),
         },
     )
-    ctx.sync_decision_agent.results = {
-        "a2": SyncDecision(
-            sha="a2",
-            is_bug_fix=True,
-            reason=None,
-            recognition_source="agent:bug-fix",
-            needs_agent=False,
-        )
-    }
-    ctx.conclude.results = {
-        ("a1", TARGET): Conclusion4(kind="NeedSync", evidence=["x"], confidence="high"),
-        ("a2", TARGET): Conclusion4(kind="AlreadyIncluded", evidence=["y"], confidence="high"),
-    }
 
     update = sync_decision(state, ctx)
 
-    assert [c.sha for c in ctx.sync_decision_agent.calls[0]] == ["a2"]
-    assert [c.sha for c in ctx.sync_decision_agent.risk_calls[0]] == ["a1", "a2"]
-    assert update["classifications"]["a2"].is_bug_fix is True
-    assert update["classifications"]["a2"].needs_agent is False
+    # 不调 agent/risk/conclude：全量同步，不再做 bug-fix/风险补判。
+    assert ctx.sync_decision_agent.calls == []
+    assert ctx.sync_decision_agent.risk_calls == []
+    assert ctx.conclude.calls == []
+    # 两 commit 都进批、都判 NeedSync；is_bug_fix/needs_agent 不影响门控。
     assert update["decisions"]["a1"][TARGET].kind == "NeedSync"
-    assert update["decisions"]["a2"][TARGET].kind == "AlreadyIncluded"
+    assert update["decisions"]["a2"][TARGET].kind == "NeedSync"
+    assert update["batches"] == {TARGET: ["a1", "a2"]}
+    assert update["status"] == "DECIDED"
 
 
 def test_sync_decision_ledger_short_circuits_already_included(tmp_path):
@@ -984,7 +975,8 @@ def test_sync_decision_forbidden_branch_routes_out_of_scope(tmp_path):
     assert update["status"] == "DECIDED"
 
 
-def test_sync_decision_no_pending_skips_is_bugfix_llm(tmp_path):
+def test_sync_decision_no_pending_skips_agents_and_freezes(tmp_path):
+    """全量冻结：risk/ManualReview 的 conclude 结果不再起作用，commit 一律进批。"""
     write_branch_md(tmp_path)
     ctx = make_ctx(tmp_path)
     c1 = commit("a1")
@@ -997,51 +989,24 @@ def test_sync_decision_no_pending_skips_is_bugfix_llm(tmp_path):
                 reason=None,
                 recognition_source="machine:[BUG]",
                 needs_agent=False,
+                risk=None,
             )
         },
     )
+    # 即使 conclide 会判 ManualReview/低置信，全量冻结也忽略之。
     ctx.conclude.results = {
         ("a1", TARGET): Conclusion4(kind="ManualReview", evidence=["z"], confidence="low")
     }
     update = sync_decision(state, ctx)
     assert ctx.sync_decision_agent.calls == []
-    assert [c.sha for c in ctx.sync_decision_agent.risk_calls[0]] == ["a1"]
-    assert update["decisions"]["a1"][TARGET].kind == "ManualReview"
-    assert update["batches"] == {}
-
-
-def test_sync_decision_resolves_risk_and_threads_into_analysis(tmp_path):
-    write_branch_md(tmp_path)
-    ctx = make_ctx(tmp_path)
-    c1 = commit("a1", issue_ids=["CQ1"])
-    state = base_state(
-        detected_commits=[c1],
-        classifications={
-            "a1": SyncDecision(
-                sha="a1",
-                is_bug_fix=True,
-                reason=None,
-                recognition_source="machine:[BUG]",
-                needs_agent=False,
-            )
-        },
-    )
-    ctx.sync_decision_agent.risk_results = {"a1": "high"}
-    ctx.conclude.results = {
-        ("a1", TARGET): Conclusion4(kind="NeedSync", evidence=["x"], confidence="high")
-    }
-
-    update = sync_decision(state, ctx)
-
-    assert ctx.sync_decision_agent.calls == []
-    assert [c.sha for c in ctx.sync_decision_agent.risk_calls[0]] == ["a1"]
-    assert update["classifications"]["a1"].risk == "high"
-    assert ctx.conclude.calls[0][0].risk == "high"
+    assert ctx.sync_decision_agent.risk_calls == []
+    assert ctx.conclude.calls == []
     assert update["decisions"]["a1"][TARGET].kind == "NeedSync"
     assert update["batches"] == {TARGET: ["a1"]}
 
 
-def test_sync_decision_preserves_rule_layer_high_over_llm(tmp_path):
+def test_sync_decision_freezes_ignores_agent_risk_override(tmp_path):
+    """全量冻结：needs_agent/risk 的 commit 不调 agent，原样进批。"""
     write_branch_md(tmp_path)
     ctx = make_ctx(tmp_path)
     c1 = commit("a1")
@@ -1054,7 +1019,7 @@ def test_sync_decision_preserves_rule_layer_high_over_llm(tmp_path):
                 reason=None,
                 recognition_source="pending:claude-agent",
                 needs_agent=True,
-                risk="high",
+                risk=None,
             )
         },
     )
@@ -1068,22 +1033,22 @@ def test_sync_decision_preserves_rule_layer_high_over_llm(tmp_path):
             risk="low",
         )
     }
-    ctx.conclude.results = {
-        ("a1", TARGET): Conclusion4(kind="NeedSync", evidence=["x"], confidence="high")
-    }
 
     update = sync_decision(state, ctx)
 
-    assert [c.sha for c in ctx.sync_decision_agent.calls[0]] == ["a1"]
-    assert update["classifications"]["a1"].risk == "high"
-    assert ctx.conclude.calls[0][0].risk == "high"
+    assert ctx.sync_decision_agent.calls == []
+    assert ctx.sync_decision_agent.risk_calls == []
+    assert ctx.conclude.calls == []
+    assert update["classifications"]["a1"].needs_agent is True  # 原样透传，不覆盖
     assert update["decisions"]["a1"][TARGET].kind == "NeedSync"
+    assert update["batches"] == {TARGET: ["a1"]}
 
 
 # --- sync_decision with real conclude_pair (four-state fidelity, task 3.2a) ---
 
 
-def test_sync_decision_real_conclude_has_source_sha_already_included(tmp_path):
+def test_sync_decision_freezes_without_snapshot_or_conclude(tmp_path):
+    """全量冻结：即使配了 real conclude_pair / snapshot 也不调用（源 sha 已在 target 不拦）。"""
     write_branch_md(tmp_path)
     ctx = make_ctx(tmp_path)
     from bsa.rules.conclude import conclude_pair
@@ -1108,9 +1073,9 @@ def test_sync_decision_real_conclude_has_source_sha_already_included(tmp_path):
 
     update = sync_decision(state, ctx)
 
-    assert update["decisions"]["a1"][TARGET].kind == "AlreadyIncluded"
-    assert update["decisions"]["a1"][TARGET].confidence == "high"
-    assert update["batches"] == {}
+    # 全量同步不做相似度/源 sha 判定——一律 NeedSync 进批（不再 has_source_sha → AlreadyIncluded）。
+    assert update["decisions"]["a1"][TARGET].kind == "NeedSync"
+    assert update["batches"] == {TARGET: ["a1"]}
 
 
 def test_sync_decision_real_conclude_missing_fix_need_sync(tmp_path):
