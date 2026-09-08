@@ -1,5 +1,6 @@
 """周期报告收件人解析（scheduler/recipients.py）的单元测试。"""
 
+import json
 from pathlib import Path
 
 from bsa.config.settings import Settings
@@ -9,7 +10,9 @@ from bsa.scheduler.recipients import resolve_report_recipients
 REPO = "/srv/rcios"
 
 
-def make_settings(tmp_path: Path, *, pm: list[str] | None = None) -> Settings:
+def make_settings(
+    tmp_path: Path, *, pm: list[str] | None = None, owner_map_path: str = ""
+) -> Settings:
     kwargs = dict(
         _env_file=None,
         repo_path=REPO,
@@ -25,6 +28,7 @@ def make_settings(tmp_path: Path, *, pm: list[str] | None = None) -> Settings:
         mail_sender="s",
         mail_recipients=["ops@x.com"],
         log_dir=str(tmp_path / "logs"),
+        module_owner_map_path=owner_map_path,
     )
     if pm is not None:
         kwargs["mail_pm_recipients"] = pm
@@ -32,16 +36,18 @@ def make_settings(tmp_path: Path, *, pm: list[str] | None = None) -> Settings:
 
 
 class _FakeGit:
-    """假 GitService：只记录被追溯的 sha，返回可控邮箱。"""
+    """假 GitService：只记录被追溯的 sha，返回可控邮箱与改动文件。"""
 
     def __init__(
         self,
         *,
         commits: dict[str, str] | None = None,
         merges: dict[str, list[str]] | None = None,
+        files: dict[str, list[str]] | None = None,
     ):
         self.commits = commits or {}
         self.merges = merges or {}
+        self.files = files or {}
         self.asked: list[str] = []
 
     def committer_email(self, sha: str) -> str:
@@ -51,6 +57,10 @@ class _FakeGit:
     def merge_committer_emails(self, sha: str, branch: str) -> list[str]:
         self.asked.append(sha)
         return self.merges.get(sha, [])
+
+    def changed_files(self, sha: str) -> list[str]:
+        self.asked.append(sha)
+        return self.files.get(sha, [])
 
 
 def _commit_info(sha: str, source: str) -> CommitInfo:
@@ -269,6 +279,161 @@ class TestFailureAppend:
         out = resolve_report_recipients(
             s,
             _state([], _branch("FAILED", [_commit_conflict("c1")])),
+            git,
+        )
+        assert out == ["pm@x.com", "renjing@raisecom.com"]
+
+
+def _owner_map_file(tmp_path: Path, mapping: dict[str, list[str]]) -> str:
+    """写一个临时 module_owner_map.json，返回路径。"""
+    p = tmp_path / "owner_map.json"
+    p.write_text(json.dumps({"module_owner_map": mapping}), encoding="utf-8")
+    return str(p)
+
+
+class TestOwnerAppend:
+    """失败时追加模块负责人邮箱（module_owner_map 最长目录前缀匹配）。"""
+
+    SECURITY = "datapath/kernel/rcios/security"
+    WANG = "wanghongbin@raisecom.com"
+
+    def test_owner_hit_appends_owner_email(self, tmp_path):
+        git = _FakeGit(files={"c1": [f"{self.SECURITY}/fw.c"]})
+        s = make_settings(
+            tmp_path,
+            pm=["pm@x.com"],
+            owner_map_path=_owner_map_file(tmp_path, {self.SECURITY: [self.WANG]}),
+        )
+        out = resolve_report_recipients(
+            s,
+            _state([_commit_info("c1", "b1")], _branch("FAILED", [_commit_conflict("c1")])),
+            git,
+        )
+        assert out == ["pm@x.com", self.WANG]
+
+    def test_owner_miss_falls_back_to_committer(self, tmp_path):
+        # 改动路径未命中 owner map → 只留合入人 committer
+        git = _FakeGit(
+            commits={"c1": "renjing@raisecom.com"},
+            files={"c1": ["unknown/area/x.c"]},
+        )
+        s = make_settings(
+            tmp_path,
+            pm=["pm@x.com"],
+            owner_map_path=_owner_map_file(tmp_path, {self.SECURITY: [self.WANG]}),
+        )
+        out = resolve_report_recipients(
+            s,
+            _state([_commit_info("c1", "b1")], _branch("FAILED", [_commit_conflict("c1")])),
+            git,
+        )
+        assert out == ["pm@x.com", "renjing@raisecom.com"]
+
+    def test_owner_and_committer_both_appended(self, tmp_path):
+        # 负责人与合入人并存去重,两者都发
+        git = _FakeGit(
+            commits={"c1": "renjing@raisecom.com"},
+            files={"c1": [f"{self.SECURITY}/fw.c"]},
+        )
+        s = make_settings(
+            tmp_path,
+            pm=["pm@x.com"],
+            owner_map_path=_owner_map_file(tmp_path, {self.SECURITY: [self.WANG]}),
+        )
+        out = resolve_report_recipients(
+            s,
+            _state([_commit_info("c1", "b1")], _branch("FAILED", [_commit_conflict("c1")])),
+            git,
+        )
+        assert out == ["pm@x.com", "renjing@raisecom.com", self.WANG]
+
+    def test_longest_directory_prefix_wins(self, tmp_path):
+        # 父目录与子目录都有 key → 取最长前缀的那个负责人
+        git = _FakeGit(files={"c1": [f"{self.SECURITY}/fw.c"]})
+        s = make_settings(
+            tmp_path,
+            pm=["pm@x.com"],
+            owner_map_path=_owner_map_file(
+                tmp_path,
+                {
+                    "datapath/kernel/rcios": ["root@raisecom.com"],
+                    self.SECURITY: [self.WANG],
+                },
+            ),
+        )
+        out = resolve_report_recipients(
+            s,
+            _state([_commit_info("c1", "b1")], _branch("FAILED", [_commit_conflict("c1")])),
+            git,
+        )
+        assert out == ["pm@x.com", self.WANG]
+
+    def test_directory_boundary_no_false_match(self, tmp_path):
+        # security 不匹配 securityDomain（目录边界,防误配）
+        git = _FakeGit(
+            commits={"c1": "renjing@raisecom.com"},
+            files={"c1": ["datapath/kernel/rcios/securityDomain/sd.c"]},
+        )
+        s = make_settings(
+            tmp_path,
+            pm=["pm@x.com"],
+            owner_map_path=_owner_map_file(tmp_path, {self.SECURITY: [self.WANG]}),
+        )
+        out = resolve_report_recipients(
+            s,
+            _state([_commit_info("c1", "b1")], _branch("FAILED", [_commit_conflict("c1")])),
+            git,
+        )
+        assert out == ["pm@x.com", "renjing@raisecom.com"]
+
+    def test_multiple_owners_all_appended(self, tmp_path):
+        # 改动跨多个负责人模块 → 所有命中负责人都加
+        git = _FakeGit(
+            files={"c1": [f"{self.SECURITY}/fw.c", "plat/route/r.c"]},
+        )
+        s = make_settings(
+            tmp_path,
+            pm=["pm@x.com"],
+            owner_map_path=_owner_map_file(
+                tmp_path,
+                {
+                    self.SECURITY: [self.WANG],
+                    "plat/route": ["renguohui@raisecom.com"],
+                },
+            ),
+        )
+        out = resolve_report_recipients(
+            s,
+            _state([_commit_info("c1", "b1")], _branch("FAILED", [_commit_conflict("c1")])),
+            git,
+        )
+        assert out == ["pm@x.com", self.WANG, "renguohui@raisecom.com"]
+
+    def test_owner_map_disabled_when_empty_path(self, tmp_path):
+        # module_owner_map_path 留空 = 负责人维度关闭,行为同老部署(只合入人)
+        git = _FakeGit(
+            commits={"c1": "renjing@raisecom.com"},
+            files={"c1": [f"{self.SECURITY}/fw.c"]},
+        )
+        s = make_settings(tmp_path, pm=["pm@x.com"])  # owner_map_path 默认 ""
+        out = resolve_report_recipients(
+            s,
+            _state([_commit_info("c1", "b1")], _branch("FAILED", [_commit_conflict("c1")])),
+            git,
+        )
+        assert out == ["pm@x.com", "renjing@raisecom.com"]
+
+    def test_unreadable_owner_map_file_degrades(self, tmp_path):
+        # owner map 文件缺失/损坏 → 不崩,负责人层跳过,合入人仍追加
+        git = _FakeGit(commits={"c1": "renjing@raisecom.com"})
+        s = make_settings(
+            tmp_path,
+            pm=["pm@x.com"],
+            owner_map_path=str(tmp_path / "no_such_owner_map.json"),
+        )
+        out = resolve_report_recipients(
+            s,
+            _state([_commit_info("c1", "b1")], _branch("FAILED", [_commit_conflict("c1")])),
             git,
         )
         assert out == ["pm@x.com", "renjing@raisecom.com"]

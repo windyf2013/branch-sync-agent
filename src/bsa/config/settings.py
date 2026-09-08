@@ -71,8 +71,14 @@ class Settings(BaseSettings):
     mail_recipients: list[str]
     # 项目经理名单（周期报告正常收件人）。空则回退 mail_recipients（老部署零改动兼容）；
     # 非空则正式周期只发此名单。有分支失败/报错时引擎会在此名单外追加失败 commit 的
-    # 合入人邮箱（见 scheduler/recipients.py），二者去重。
+    # 合入人邮箱与模块负责人邮箱（见 scheduler/recipients.py），三者去重。
     mail_pm_recipients: list[str] = []
+    # 模块负责人映射文件（JSON，形如 spec/module_owner_map.json，段 module_owner_map 为
+    # {目录前缀: [负责人邮箱]}）。非空时，周期报告有失败/报错会在 PM 名单、失败 commit
+    # 合入人之外，再追加失败 commit 改动文件路径「最长目录前缀命中」的全部模块负责人邮箱。
+    # 留空 = 负责人维度关闭，行为同老部署（收件人仍含 PM + 合入人）。文件缺失/解析失败
+    # 只告警不崩——收件人宁缺不崩。
+    module_owner_map_path: str = ""
     # bridge 收件阶段过滤：test/dev 会把 mail_to 硬帽到测试白名单，正式对 PM 发信必须
     # 配 prod。默认 test 保兼容，升级后若要发非白名单收件人需显式设 MAIL_PHASE=prod。
     mail_phase: str = "test"

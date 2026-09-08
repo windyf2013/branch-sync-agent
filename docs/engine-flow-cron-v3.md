@@ -2,7 +2,7 @@
 
 > 用途：说明当前定制分支 `feat/v3-eng-custom` 上**每日自动周期（cron）** 的实际引擎流程。
 > 本分支相对主线的核心差异：`689d6cf`（cron 精简为 同步→编译→通知，去掉判断/解决类 LLM
-> 节点）与 `56ed054`（周期邮件收件人支持 PM 名单 + 失败追加合入人邮箱）。
+> 节点）、`56ed054`（周期邮件收件人支持 PM 名单 + 失败追加合入人邮箱）与负责人映射接入。
 > 内容与代码实现一致（`src/bsa/graph/workflow.py` `build_workflow`、`src/bsa/graph/nodes.py`、
 > `src/bsa/scheduler/cycle.py`、`src/bsa/scheduler/recipients.py`）。
 
@@ -188,38 +188,84 @@ build 后路由 `_make_route_after_build_cron`（workflow.py:390）：
 
 ---
 
-## 6. 周期邮件收件人策略（`56ed054` 定制）
+## 6. 邮件推送管理流程（周期报告收件人）
 
-配置（`src/bsa/config/settings.py`）：
+> 谁在什么条件下收到周期邮件、收件人从哪来。统一约定：**成功只发管理收件人（PM）；
+> 失败/报错在 PM 之外，追加两类"相关责任人"——合入人 与 模块负责人**，全部去重保序。
+> 收件人解析实现在 `scheduler/recipients.py: resolve_report_recipients`，发送在
+> `scheduler/cycle.py _execute_locked`（§6.4）。
+
+### 6.1 收件人规则总览
+
+周期报告是**同一封邮件**，但收件人随周期结果不同（`resolve_report_recipients`）：
+
+| 周期结果 | 收件人 | 说明 |
+|---|---|---|
+| 全 SUCCESS | **仅 PM 名单** | 无失败即无"相关责任人"可追加 |
+| 有分支失败/报错 | **PM + 失败 commit 合入人 + 失败 commit 改动模块的负责人** | 追加两类相关人，见 §6.2 |
+| 仅节点 `errors`（无失败 commit） | **仅 PM 名单** | 无 commit 可归属，只保留基础名单 |
+
+基础名单：`mail_pm_recipients`（项目经理，正式收件人）非空用之，空则回退 `mail_recipients`
+（老部署收件人）。**基础名单永远保留**，不被任何追加挤掉。
+
+失败 commit 判据（与报告正文 `_branch_failure_lines` 对齐）：非 `SUCCESS` 分支上
+`cherry_pick ∉ {OK, EMPTY}`，或任一型号 `build == FAILED` 的 commit。
+
+### 6.2 失败时追加的两类相关责任人
+
+两者**并存追加**，不互相替代，全部去重保序：
+
+**① 合入人**（把失败 commit 带进业务分支的人，`git` 反查）：
+- commit 自身 committer（`git.committer_email`，直提场景 author==committer 即合入人）；
+- 若是经个人分支 merge 引入，追引入它的 merge 的 committer
+  （`git.merge_committer_emails`，沿 `sha..branch` first-parent 找「第二父含 sha、第一父不含」
+  的 merge）。
+- git 追溯取不到邮箱 → 不追加也不崩（收件人宁缺不崩）。
+
+**② 模块负责人**（改到谁的模块谁负责，`module_owner_map.json` 驱动）：
+- 对每个失败 commit 取 `git.changed_files(sha)` 的改动文件路径，逐路径做**最长目录前缀匹配**：
+  `path == key 或 path.startswith(key + "/")` 即命中（**目录边界**，防 `security` 误配
+  `securityDomain`）；父目录与子目录都有 key 时取**最长**那个。
+- 命中 key 的全部负责人邮箱都追加——**改动跨多个负责人模块时，所有命中负责人都收信**。
+- owner map 未配置（`module_owner_map_path` 留空）→ 负责人维度整体关闭，只保留 ①，行为同老部署。
+
+### 6.3 配置
+
+（`src/bsa/config/settings.py`）：
 
 | 字段 | env | 默认 | 说明 |
 |---|---|---|---|
 | `mail_pm_recipients` | `MAIL_PM_RECIPIENTS` | `[]` | 项目经理名单（正式收件人）；空则回退 `mail_recipients` |
 | `mail_recipients` | `MAIL_RECIPIENTS` | 必填 | 回退名单 / 老部署收件人 |
+| `module_owner_map_path` | `MODULE_OWNER_MAP_PATH` | `""` | 模块负责人映射 JSON 路径；空 = 负责人维度关闭 |
 | `mail_phase` | `MAIL_PHASE` | `"test"` | bridge 收件阶段过滤；正式对 PM 发信须 `prod` |
 | `mail_dry_run` | `MAIL_DRY_RUN` | `true` | true → 不真发，记 `skipped` |
 | `mail_bridge_path` | `MAIL_BRIDGE_PATH` | `""` | 邮件 bridge 目录（真发必需） |
 
-**收件人解析**（`scheduler/recipients.py: resolve_report_recipients`）：
+`module_owner_map_path` 指向的 JSON（本部署样例 `spec/module_owner_map.json`）：
+- `module_owner_map`：**目录前缀 → [负责人邮箱]**（130+ 条），如
+  `"datapath/kernel/rcios/forward": ["liupengbin@raisecom.com"]`。这是收件人路由消费的唯一段。
+- `group_owner_emails`：**模块组名 → 负责人邮箱**，是 `module_owner_map` 的**同源索引**
+  （如「安全模块」→ wanghongbin，对应下方整组 security 系路径），**替代关系而非叠加**：
+  收件人解析只走 `module_owner_map` 路径级匹配，不消费 `group_owner_emails`。改负责人只改
+  一处即可同时影响组索引与路径映射。
+- `git_blame_enabled` / `git_email_domain`：保留字段，面向行级 blame 归因类消费者，**本
+  周期邮件链路不使用**。
+- 文件缺失/解析失败只告警并关闭负责人维度，不崩（`recipients.py` 内记 warning）。
+- 该文件路径不入 BSA git 追踪语义：BSA 进程按 `MODULE_OWNER_MAP_PATH` 在运行期读取，改完
+  负责人下个周期即生效，无需重启引擎（文件每次读取经 `lru_cache` 缓存）。
 
-1. 基础 = `mail_pm_recipients` 非空 ? 它 : `mail_recipients`。
-2. **有失败/报错时追加失败 commit 的合入人邮箱**：当 `state.errors` 非空 或 任一
-   `branch_results[*].status != SUCCESS`，对每个失败 commit（`cherry_pick ∉ {OK, EMPTY}` 或
-   任一型号 `build == FAILED`）收集合入人邮箱：
-   - commit 自身 committer（`git.committer_email`，直提场景 author==committer 即合入人）；
-   - 若是经个人分支 merge 引入，追引入它的 merge 的 committer
-     （`git.merge_committer_emails`，沿 `sha..branch` first-parent 找「第二父含 sha、第一父不含」
-     的 merge）。
-3. **去重保序**；基础 PM 名单永远保留，不被追加挤掉。
+### 6.4 发送链路
 
-**重要**：`mail_phase` 默认 `test` 时，bridge 的 `recipients_for_phase` 会把 `mail_to` 硬帽过滤
-到测试白名单（`["yangfu@raisecom.com"]`）。因此**正式对非测试收件人（PM）发信必须配
-`MAIL_PHASE=prod`**，否则配了 PM 邮箱也会被滤掉。开发/联调阶段保持 `test` 可只发 yangfu。
+`_execute_locked` 收尾：`report is not None` 时，若 `not mail_dry_run` 构造 bridge sender
+（`make_bridge_sender(mail_phase=settings.mail_phase, mail_to=recipients)`），经
+`MailService.send_report` 发出；**失败不抛异常**，记 `mail_status`。日志记录最终收件人列表
+便于核对。
 
-发送点在 `scheduler/cycle.py`（`_execute_locked` 内）：`report is not None` 时，若
-`not mail_dry_run` 构造 bridge sender（`make_bridge_sender(mail_phase=settings.mail_phase,
-mail_to=recipients)`），经 `MailService.send_report` 发出；失败不抛异常，记 `mail_status`。
-日志记录最终收件人列表便于核对。
+**重要**：`mail_phase` 默认 `test` 时，bridge 的 `recipients_for_phase` 会把 `mail_to` 硬帽
+过滤到测试白名单（`["yangfu@raisecom.com"]`）。因此**正式对非测试收件人（PM / 合入人 /
+负责人）发信必须配 `MAIL_PHASE=prod`**，否则配了也会被滤掉。开发/联调阶段保持 `test` 可只发
+yangfu。
 
 ---
 
