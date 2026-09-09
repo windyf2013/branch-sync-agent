@@ -66,6 +66,10 @@ def make_bridge_sender(
             "mail_to is required (pass settings.mail_recipients); "
             "no default recipient is hardcoded"
         )
+    # 相对 log_dir 部署(LOG_DIR=logs)下 workspace_root/output_dir 是相对路径, bridge 的
+    # subprocess cwd 用相对路径会让子流程相对依赖错位(exit 2 无输出)。这里一律绝对化。
+    workspace_root = workspace_root.resolve()
+    output_dir = output_dir.resolve()
 
     def sender(payload: dict[str, Any]) -> dict[str, Any]:
         bridge = _load_bridge(bridge_path)
