@@ -557,16 +557,20 @@ def _cmd_cleanup_task(args: argparse.Namespace) -> int:
     """回收某周期 keep-alive 编译容器（docker rm -f，best-effort）。
 
     docker 知识留在 V1：容器名与 build/runner.py:_container_name 一致
-    （{docker_container_prefix}-{cycle_id}），docker_prefix（如 sudo）一并继承。
+    （{docker_container_prefix}-{净化后的 cycle_id}），docker_prefix（如 sudo）一并继承。
+    净化复用 runner._sanitize_container_name，保证回收容器名与编译起的名一致
+    （scan-*/显式窗口的 cycle_id 含 ':'/'+'，不净化则 rm 落空）。
     容器不存在/清理失败不报错（幂等），取消任务不能因回收失败而中断。
     """
+    from bsa.build.runner import _sanitize_container_name
+
     try:
         settings = load_settings()
     except Exception as exc:
         print(f"配置错误: {exc}", file=sys.stderr)
         return 2
     prefix = settings.docker_prefix.strip().split()
-    container = f"{settings.docker_container_prefix}-{args.cycle}"
+    container = f"{settings.docker_container_prefix}-{_sanitize_container_name(args.cycle)}"
     proc = subprocess.run(
         [*prefix, "docker", "rm", "-f", container],
         capture_output=True,

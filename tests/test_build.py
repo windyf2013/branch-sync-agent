@@ -3,7 +3,7 @@ from pathlib import Path
 import pytest
 
 from bsa.build.log_parser import extract_errors, has_success_marker
-from bsa.build.runner import BuildResult, BuildRunner
+from bsa.build.runner import BuildResult, BuildRunner, _sanitize_container_name
 from bsa.config.settings import Settings
 from bsa.executor import CompletedProcess, FakeExecutor
 from bsa.executor.exceptions import InfrastructureError
@@ -190,6 +190,62 @@ class TestDockerGitconfigArgs:
         ]
 
 
+class TestContainerNameSanitize:
+    def test_sanitize_replaces_invalid_docker_name_chars(self):
+        # scan-*/显式窗口 cycle_id 是 ISO 时间戳，含 ':'/'+'，是 docker 容器名非法字符。
+        assert _sanitize_container_name(
+            "scan-2026-09-03T22:00:00+08:00-2026-09-08T22:00:00+08:00"
+        ) == "scan-2026-09-03T22-00-00-08-00-2026-09-08T22-00-00-08-00"
+        # 合法字符原样保留
+        assert _sanitize_container_name("cycle-2026-09-08") == "cycle-2026-09-08"
+        assert _sanitize_container_name("") == ""
+
+    def test_container_name_sanitized_when_cycle_id_has_colon_plus(self, tmp_path):
+        # F1 回归：容器名必须净化，否则 docker run --name 直接失败（基线编译根因）。
+        executor = FakeExecutor([ok(), ok(), ok()])
+        runner = BuildRunner(
+            executor,
+            make_settings(tmp_path),
+            cycle_id="scan-2026-09-03T22:00:00+08:00-2026-09-08T22:00:00+08:00",
+        )
+        runner.build_commit(tmp_path / "wt", "5200", clean=False, module="rtk_api")
+        # run --name 与 rm -f 用的是同一个净化后名字，回收不落空
+        name = executor.calls[0][0][executor.calls[0][0].index("--name") + 1]
+        assert name == (
+            "rcios-sync-scan-2026-09-03T22-00-00-08-00-2026-09-08T22-00-00-08-00"
+        )
+        assert executor.calls[2][0][-1] == name
+
+    def test_cleanup_task_reuses_same_sanitized_name(self, tmp_path, monkeypatch):
+        # F1：cli cleanup-task 与 runner 同源净化，回收容器名一致。
+        import argparse
+
+        import bsa.cli
+
+        captured: list[list[str]] = []
+
+        class _Settings:
+            docker_prefix = "sudo"
+            docker_container_prefix = "rcios-sync"
+
+        monkeypatch.setattr(bsa.cli, "load_settings", lambda: _Settings())
+
+        def fake_run(args, **kwargs):
+            captured.append(args)
+            return CompletedProcess(returncode=0, stdout="", stderr="")
+
+        monkeypatch.setattr(bsa.cli.subprocess, "run", fake_run)
+        cycle = "scan-2026-09-03T22:00:00+08:00"
+        assert bsa.cli._cmd_cleanup_task(argparse.Namespace(cycle=cycle)) == 0
+        assert captured[0] == [
+            "sudo",
+            "docker",
+            "rm",
+            "-f",
+            "rcios-sync-" + _sanitize_container_name(cycle),
+        ]
+
+
 class TestBuildCommit:
     def test_docker_sequence_with_sudo_and_module(self, tmp_path):
         settings = make_settings(tmp_path)
@@ -247,6 +303,26 @@ class TestBuildCommit:
         assert executor.calls[2][0] == ["sudo", "docker", "rm", "-f", "rcios-sync-20260821"]
         assert result.model == "5200"
         assert result.log_path.read_text() == "build log"
+
+    def test_docker_run_failure_raises_with_real_stderr(self, tmp_path):
+        # F2 回归：docker run -d 失败(容器名非法/镜像缺失/daemon 挂)必须当场抛出并
+        # 携带真实 stderr，不得被吞成后续 exec 的 "No such container"。
+        from bsa.build.runner import BuildRunner
+
+        executor = FakeExecutor(
+            [
+                CompletedProcess(
+                    returncode=125,
+                    stdout="",
+                    stderr='docker: invalid reference format.\nSee \'docker run --help\'.',
+                ),
+                ok(),
+                ok(),
+            ]
+        )
+        runner = BuildRunner(executor, make_settings(tmp_path), cycle_id="c1")
+        with pytest.raises(InfrastructureError, match="invalid reference format"):
+            runner.build_commit(tmp_path / "wt", "5200", clean=False, module=None)
 
     def test_clean_before_build(self, tmp_path):
         executor = FakeExecutor([ok(), ok(), ok()])

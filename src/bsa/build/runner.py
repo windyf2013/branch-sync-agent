@@ -1,3 +1,4 @@
+import re
 import shlex
 from collections.abc import Callable
 from pathlib import Path
@@ -7,8 +8,21 @@ from pydantic import BaseModel
 from bsa.build.log_parser import artifact_success_marker, extract_errors, has_success_marker
 from bsa.config.settings import Settings
 from bsa.executor.base import CommandExecutor, CompletedProcess
+from bsa.executor.exceptions import InfrastructureError
 
 _BUILD_EXEC_TIMEOUT_SEC = 3600
+# docker 容器名只允许 [A-Za-z0-9][A-Za-z0-9_.-]*；cycle_id（尤其 scan-*/显式窗口的
+# ISO 时间戳）含 ':'/'+' 等非法字符，直接拼进 --name 会让 docker run 静默失败。
+_CONTAINER_NAME_OK = re.compile(r"[^A-Za-z0-9_.-]")
+
+
+def _sanitize_container_name(cycle_id: str) -> str:
+    """把 cycle_id 净化成合法的 docker 容器名尾段（非法字符统一替换为 '-'）。
+
+    供 BuildRunner._container_name 与 cli 的 cleanup-task 同源复用，保证回收容器
+    名与编译起的名一致；空输入返回空串（调用方自行拼前缀）。
+    """
+    return _CONTAINER_NAME_OK.sub("-", cycle_id)
 
 
 def _resolve_build_script(model: str) -> tuple[str, str]:
@@ -131,7 +145,11 @@ class BuildRunner:
 
     def _container_name(self) -> str:
         if self.cycle_id:
-            return f"{self.settings.docker_container_prefix}-{self.cycle_id}"
+            # cycle_id 经净化后拼容器名：scan-*/显式窗口的 ISO 时间戳含 ':'/'+'
+            # 是 docker 容器名非法字符，直接拼会让 docker run 失败（真机基线编译
+            # No such container 根因）。
+            suffix = _sanitize_container_name(self.cycle_id)
+            return f"{self.settings.docker_container_prefix}-{suffix}"
         return self.settings.docker_container_prefix
 
     def _docker_prefix(self) -> list[str]:
@@ -156,7 +174,7 @@ class BuildRunner:
         container = self._container_name()
         prefix = self._docker_prefix()
 
-        self.executor.run(
+        run_result = self.executor.run(
             [
                 *prefix,
                 "docker",
@@ -176,6 +194,14 @@ class BuildRunner:
                 "infinity",
             ]
         )
+        # docker run -d 失败(镜像缺失/daemon 挂/容器名非法/挂载源不存在等)必须当场
+        # 抛出并把真实 stderr 带进日志：此前返回码被丢弃、只留后续 exec 的
+        # "No such container",真因被吞成玄学(真机基线编译失败即此)。
+        if run_result.returncode != 0:
+            raise InfrastructureError(
+                f"docker run failed for container {container}: "
+                f"{run_result.stderr.strip() or run_result.stdout.strip()}"
+            )
 
         script_dir = self.settings.build_script_dir.rstrip("/")
         # docker exec 默认工作目录是容器启动目录(/)；必须显式 -w 到挂载点，
