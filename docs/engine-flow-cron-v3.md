@@ -190,23 +190,27 @@ build 后路由 `_make_route_after_build_cron`（workflow.py:390）：
 
 ## 6. 邮件推送管理流程（周期报告收件人）
 
-> 谁在什么条件下收到周期邮件、收件人从哪来。统一约定：**成功只发管理收件人（PM）；
-> 失败/报错在 PM 之外，追加两类"相关责任人"——合入人 与 模块负责人**，全部去重保序。
-> 收件人解析实现在 `scheduler/recipients.py: resolve_report_recipients`，发送在
-> `scheduler/cycle.py _execute_locked`（§6.4）。
+> 谁在什么条件下收到周期邮件、收件人从哪来。统一约定：**主送（To）= 成功只发管理收件人
+> （PM）；失败/报错在 PM 之外追加两类"相关责任人"——合入人 与 模块负责人**；另设固定
+> **抄送（Cc）= SSE 等需知情但非主责的名单**，To/Cc 全部去重保序。
+> 收件人解析实现在 `scheduler/recipients.py: resolve_report_recipients`，Cc 直配
+> `mail_cc_recipients`，发送在 `scheduler/cycle.py _execute_locked`（§6.4）。
 
 ### 6.1 收件人规则总览
 
-周期报告是**同一封邮件**，但收件人随周期结果不同（`resolve_report_recipients`）：
+周期报告是**同一封邮件**，To 随周期结果不同（`resolve_report_recipients`），Cc 固定：
 
-| 周期结果 | 收件人 | 说明 |
+| 周期结果 | To（主送） | Cc（抄送） |
 |---|---|---|
-| 全 SUCCESS | **仅 PM 名单** | 无失败即无"相关责任人"可追加 |
-| 有分支失败/报错 | **PM + 失败 commit 合入人 + 失败 commit 改动模块的负责人** | 追加两类相关人，见 §6.2 |
-| 仅节点 `errors`（无失败 commit） | **仅 PM 名单** | 无 commit 可归属，只保留基础名单 |
+| 全 SUCCESS | **仅 PM 名单** | `mail_cc_recipients`（如 SSE） |
+| 有分支失败/报错 | **PM + 失败 commit 合入人 + 失败 commit 改动模块的负责人** | 同左（固定，不随失败追加） |
+| 仅节点 `errors`（无失败 commit） | **仅 PM 名单** | 同左 |
 
-基础名单：`mail_pm_recipients`（项目经理，正式收件人）非空用之，空则回退 `mail_recipients`
+To 基础名单：`mail_pm_recipients`（项目经理，正式收件人）非空用之，空则回退 `mail_recipients`
 （老部署收件人）。**基础名单永远保留**，不被任何追加挤掉。
+
+Cc 名单：`mail_cc_recipients`（通常 SSE/管理层），固定抄送，**不参与失败追加**——追加的
+合入人/负责人进主送 To，不重复进 Cc。空则不抄送。
 
 失败 commit 判据（与报告正文 `_branch_failure_lines` 对齐）：非 `SUCCESS` 分支上
 `cherry_pick ∉ {OK, EMPTY}`，或任一型号 `build == FAILED` 的 commit。
@@ -235,7 +239,8 @@ build 后路由 `_make_route_after_build_cron`（workflow.py:390）：
 
 | 字段 | env | 默认 | 说明 |
 |---|---|---|---|
-| `mail_pm_recipients` | `MAIL_PM_RECIPIENTS` | `[]` | 项目经理名单（正式收件人）；空则回退 `mail_recipients` |
+| `mail_pm_recipients` | `MAIL_PM_RECIPIENTS` | `[]` | 项目经理名单（To 正式收件人）；空则回退 `mail_recipients` |
+| `mail_cc_recipients` | `MAIL_CC_RECIPIENTS` | `[]` | 抄送名单（如 SSE，固定抄送，不参与失败追加）；空则不抄送 |
 | `mail_recipients` | `MAIL_RECIPIENTS` | 必填 | 回退名单 / 老部署收件人 |
 | `module_owner_map_path` | `MODULE_OWNER_MAP_PATH` | `""` | 模块负责人映射 JSON 路径；空 = 负责人维度关闭 |
 | `mail_phase` | `MAIL_PHASE` | `"test"` | bridge 收件阶段过滤；正式对 PM 发信须 `prod` |
@@ -258,9 +263,9 @@ build 后路由 `_make_route_after_build_cron`（workflow.py:390）：
 ### 6.4 发送链路
 
 `_execute_locked` 收尾：`report is not None` 时，若 `not mail_dry_run` 构造 bridge sender
-（`make_bridge_sender(mail_phase=settings.mail_phase, mail_to=recipients)`），经
-`MailService.send_report` 发出；**失败不抛异常**，记 `mail_status`。日志记录最终收件人列表
-便于核对。
+（`make_bridge_sender(mail_phase=settings.mail_phase, mail_to=recipients,
+mail_cc=settings.mail_cc_recipients)`），经 `MailService.send_report` 发出；**失败不抛异常**，
+记 `mail_status`。日志记录最终收件人列表便于核对。
 
 **重要**：`mail_phase` 默认 `test` 时，bridge 的 `recipients_for_phase` 会把 `mail_to` 硬帽
 过滤到测试白名单（`["yangfu@raisecom.com"]`）。因此**正式对非测试收件人（PM / 合入人 /

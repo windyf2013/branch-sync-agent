@@ -65,6 +65,33 @@ def test_bridge_sender_maps_payload_and_recipients(stub_bridge: Path, tmp_path: 
     assert result["bridge_result"]["got_report_paths"] == [str(report)]
 
 
+def test_bridge_sender_passes_mail_cc_when_set(stub_bridge: Path, tmp_path: Path) -> None:
+    """mail_cc 透传给 bridge 的 mail_cfg.mail_cc。"""
+    report = tmp_path / "report.html"
+    report.write_text("<html></html>")
+    sender = make_bridge_sender(
+        workspace_root=tmp_path,
+        output_dir=tmp_path,
+        mail_phase="test",
+        mail_to=["recv@raisecom.com"],
+        mail_cc=["cc1@raisecom.com", "cc2@raisecom.com"],
+        bridge_path=stub_bridge,
+    )
+    result = sender(
+        {
+            "html_path": str(report),
+            "subject": "test",
+            "attachments": [str(report)],
+        }
+    )
+    assert result["status"] == "ok"
+    assert result["bridge_result"]["got_mail_cfg"]["mail_to"] == ["recv@raisecom.com"]
+    assert result["bridge_result"]["got_mail_cfg"]["mail_cc"] == [
+        "cc1@raisecom.com",
+        "cc2@raisecom.com",
+    ]
+
+
 def test_send_via_bridge_dry_run_returns_ok(stub_bridge: Path, tmp_path: Path) -> None:
     report = tmp_path / "r.html"
     report.write_text("<html></html>")
@@ -74,11 +101,13 @@ def test_send_via_bridge_dry_run_returns_ok(stub_bridge: Path, tmp_path: Path) -
         workspace_root=tmp_path,
         output_dir=tmp_path,
         mail_to=["recv@raisecom.com"],
+        mail_cc=["cc1@raisecom.com"],
         bridge_path=stub_bridge,
         dry_run=True,
     )
     assert result["status"] == "ok"
     assert result["bridge_result"]["got_mail_cfg"]["mail_to"] == ["recv@raisecom.com"]
+    assert result["bridge_result"]["got_mail_cfg"]["mail_cc"] == ["cc1@raisecom.com"]
 
 
 def _real_bridge():

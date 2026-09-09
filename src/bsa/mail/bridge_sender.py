@@ -42,6 +42,7 @@ def make_bridge_sender(
     output_dir: Path,
     mail_phase: str = "test",
     mail_to: list[str] | None = None,
+    mail_cc: list[str] | None = None,
     bridge_path: Path | None = None,
     dry_run: bool = False,
 ) -> MailSender:
@@ -49,6 +50,7 @@ def make_bridge_sender(
 
     ``mail_to`` is required — recipients come from settings.mail_recipients and
     are passed by the scheduler; no default recipient is hardcoded.
+    ``mail_cc``（可选）抄送人，来自 settings.mail_cc_recipients；空则不抄送。
     ``bridge_path`` locates the reference bridge scripts; when None it falls
     back to the BMA_BRIDGE_PATH env var. bsa payload (subject/body/html_path/
     attachments) is mapped to the bridge's payload shape; the bridge builds the
@@ -68,14 +70,17 @@ def make_bridge_sender(
         if report_path and report_path not in attachments:
             attachments.insert(0, report_path)
         window = payload.get("window_desc") or payload.get("subject") or ""
+        mail_cfg: dict[str, Any] = {
+            "mail_phase": mail_phase,
+            "mail_to": list(mail_to),
+        }
+        if mail_cc:
+            mail_cfg["mail_cc"] = list(mail_cc)
         result = bridge.send_bma_reports_via_mail_send(
             report_paths=[report_path],
             window_desc=window,
             repo_summaries=payload.get("repo_summaries") or [],
-            mail_cfg={
-                "mail_phase": mail_phase,
-                "mail_to": list(mail_to),
-            },
+            mail_cfg=mail_cfg,
             workspace_root=workspace_root,
             output_dir=output_dir,
             dry_run=dry_run,
@@ -107,6 +112,7 @@ def send_via_bridge(
     output_dir: Path,
     mail_phase: str = "test",
     mail_to: list[str] | None = None,
+    mail_cc: list[str] | None = None,
     bridge_path: Path | None = None,
     dry_run: bool = False,
 ) -> dict[str, Any]:
@@ -116,6 +122,7 @@ def send_via_bridge(
         output_dir=output_dir,
         mail_phase=mail_phase,
         mail_to=mail_to,
+        mail_cc=mail_cc,
         bridge_path=bridge_path,
         dry_run=dry_run,
     )(

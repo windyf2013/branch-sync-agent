@@ -374,6 +374,7 @@ def _execute_locked(
                 output_dir=cycle_dir,
                 mail_phase=settings.mail_phase,
                 mail_to=recipients,
+                mail_cc=settings.mail_cc_recipients,
                 bridge_path=Path(settings.mail_bridge_path) if settings.mail_bridge_path else None,
             )
         result = MailService(settings, sender=sender).send_report(

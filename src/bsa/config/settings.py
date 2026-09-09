@@ -79,6 +79,11 @@ class Settings(BaseSettings):
     # 留空 = 负责人维度关闭，行为同老部署（收件人仍含 PM + 合入人）。文件缺失/解析失败
     # 只告警不崩——收件人宁缺不崩。
     module_owner_map_path: str = ""
+    # 周期报告抄送（Cc）名单。通常为 SSE/管理层等需知情但非主责的收件人，固定抄送，
+    # 不参与失败追加（失败追加的合入人/负责人进主送 To）。空则不抄送。真发（prod）才
+    # 会真正到非测试白名单收件人；test 阶段 Cc 也会按 bridge 逻辑放行（不经 test 白名单帽），
+    # 故测试期建议留空。
+    mail_cc_recipients: list[str] = []
     # bridge 收件阶段过滤：test/dev 会把 mail_to 硬帽到测试白名单，正式对 PM 发信必须
     # 配 prod。默认 test 保兼容，升级后若要发非白名单收件人需显式设 MAIL_PHASE=prod。
     mail_phase: str = "test"
