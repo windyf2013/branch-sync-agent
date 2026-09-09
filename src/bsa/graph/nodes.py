@@ -15,7 +15,7 @@ from bsa.agents.base import LLMClient
 from bsa.agents.build_agent import BuildAgent
 from bsa.agents.conflict import ConflictAgent
 from bsa.agents.sync_decision import SyncDecisionAgent
-from bsa.build.runner import BuildRunner
+from bsa.build.runner import BuildRunner, _sanitize_container_name
 from bsa.config.settings import Settings
 from bsa.domain.models import (
     BranchResult,
@@ -613,7 +613,13 @@ def prepare_worktree(state: dict, ctx: GraphContext) -> dict:
     if target is None:
         raise ValueError("current_target is not set")
     resolved, _ = ctx.git.branch_tip(target)
-    worktree_path = Path(ctx.settings.worktree_root) / f"{target}-{state['cycle_id']}"
+    # cycle_id 经净化后再拼 worktree 目录名：scan-*/显式窗口的 cycle_id 是 ISO
+    # 时间戳(含 ':')，直接拼会让 worktree 路径含 ':'，而 docker -v 挂载的
+    # HOST 侧路径含 ':' 会报 "too many colons"（真机 scan 基线编译必败根因）。
+    # 净化与容器名同源(runner._sanitize_container_name)，保证 worktree 名、
+    # 容器名、cleanup 三者一致。
+    wname = f"{target}-{_sanitize_container_name(state['cycle_id'])}"
+    worktree_path = Path(ctx.settings.worktree_root) / wname
     fresh = False
     if worktree_path.exists():
         # 路径存在但可能是残缺 worktree（.git 指向的 gitdir 已删/无效）——

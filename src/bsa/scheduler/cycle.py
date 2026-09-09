@@ -61,14 +61,18 @@ def _stale_worktree(path: Path, root: Path, cycle_id: str) -> bool:
     """True when ``path`` is a linked worktree under ``root`` from an older cycle.
 
     The main repo is never under ``root``; a worktree belonging to the current
-    cycle is named ``<target>-<cycle_id>`` and is kept. ``git worktree list``
-    的首条是主仓库路径（在 root 之外），必须保留，故 root 之外一律返回 False。
+    cycle is named ``<target>-<净化后的 cycle_id>`` and is kept. ``git worktree
+    list`` 的首条是主仓库路径（在 root 之外），必须保留，故 root 之外一律返回
+    False。净化与 prepare_worktree/容器名同源：scan-*/显式窗口 cycle_id 含 ':'，
+    worktree 目录名与容器名都已去 ':'，回收后缀须按净化后名字匹配。
     """
     try:
         path.relative_to(root)
     except ValueError:
         return False
-    return not path.name.endswith(f"-{cycle_id}")
+    from bsa.build.runner import _sanitize_container_name
+
+    return not path.name.endswith(f"-{_sanitize_container_name(cycle_id)}")
 
 
 def cleanup_worktrees(context: GraphContext, cycle_id: str) -> None:

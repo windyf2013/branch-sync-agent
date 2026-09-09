@@ -12,6 +12,7 @@ import re
 import subprocess
 from pathlib import Path
 
+from bsa.build.runner import _sanitize_container_name
 from bsa.executor.base import CompletedProcess
 from bsa.executor.exceptions import SafetyViolation
 from bsa.executor.subprocess import SubprocessExecutor
@@ -93,7 +94,9 @@ def worktree_belongs_to_target(
         return f"worktree 不存在：{worktree}"
     if not _valid_worktree_dir(path):
         return f"worktree 不是有效 git 仓库：{worktree}"
-    if cycle_id is not None and not str(path).endswith(f"{target}-{cycle_id}"):
+    if cycle_id is not None and not str(path).endswith(
+        f"{target}-{_sanitize_container_name(cycle_id)}"
+    ):
         return f"worktree 路径与目标/周期不匹配：{path}"
     branch = _checked_out_branch(worktree)
     if branch and branch != target:

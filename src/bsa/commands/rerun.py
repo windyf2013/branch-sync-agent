@@ -22,8 +22,14 @@ from bsa.scheduler.cycle import list_cycle_records
 
 
 def _worktree_path(ctx: GraphContext, target: str, cycle_id: str) -> Path:
-    """目标分支在某周期的 worktree 路径（与 prepare_worktree 命名保持一致）。"""
-    return Path(ctx.settings.worktree_root) / f"{target}-{cycle_id}"
+    """目标分支在某周期的 worktree 路径（与 prepare_worktree 命名保持一致）。
+
+    cycle_id 经净化后再拼：scan-*/显式窗口的 ISO 时间戳含 ':'，直接拼会让
+    worktree 路径含 ':' 进而 docker -v 挂载报 "too many colons"。
+    """
+    from bsa.build.runner import _sanitize_container_name
+
+    return Path(ctx.settings.worktree_root) / f"{target}-{_sanitize_container_name(cycle_id)}"
 
 
 def _rerun_thread_id(target: str) -> str:

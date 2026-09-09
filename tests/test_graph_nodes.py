@@ -1137,6 +1137,29 @@ def test_prepare_worktree_adds_worktree_and_records_path(tmp_path):
     assert update["status"] == "PREPARED"
 
 
+def test_prepare_worktree_sanitizes_scan_cycle_in_dirname(tmp_path):
+    # F1 延伸回归：scan-*/显式窗口 cycle_id 是 ISO 时间戳(含 ':')，直接拼进
+    # worktree 目录名会让路径含 ':'，docker -v 挂载 host 侧报 "too many colons"
+    # （真机 scan 基线编译必败根因）。目录名必须与容器名同源净化。
+    from bsa.build.runner import _sanitize_container_name
+
+    ctx = make_ctx(tmp_path)
+    git = ctx.git
+    git.tips = {TARGET: ("origin/" + TARGET, "tip1")}
+    scan_cycle = "scan-2026-09-07T22:00:00-2026-09-08T22:00:00"
+    state = base_state(current_target=TARGET, cycle_id=scan_cycle)
+
+    update = prepare_worktree(state, ctx)
+
+    worktree_path = (
+        Path(ctx.settings.worktree_root) / f"{TARGET}-{_sanitize_container_name(scan_cycle)}"
+    )
+    assert ":" not in str(worktree_path)
+    assert ("add_worktree", ("origin/" + TARGET, worktree_path)) in git.calls
+    assert update["branch_results"][TARGET].worktree_path == str(worktree_path)
+    assert ctx.worktree_path == worktree_path
+
+
 def test_prepare_worktree_reuses_existing_worktree(tmp_path):
     ctx = make_ctx(tmp_path)
     git = ctx.git
