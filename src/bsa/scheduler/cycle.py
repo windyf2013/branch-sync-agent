@@ -350,48 +350,56 @@ def _execute_locked(
 
     report = final.get("report")
     final_status = final.get("status", "UNKNOWN")
-    if final:
-        # 投影数据源落盘为结构化 state.json（G11），平台只消费 JSON。
-        write_state_json(log_dir, cycle_id, final)
     report_path: Path | None = None
     mail_status: str | None = None
-    if report is not None:
-        report_path = render_html_report(final, report)
-        write_decisions_json(final, report)
-        write_agent_diffs(final, report)
-        subject = f"Branch Sync Agent 周期报告 {cycle_id} [{final_status}]"
-        body = build_email_body(report, final)
-        # 收件人：PM 名单（或回退 mail_recipients），有失败/报错时追加失败 commit 的
-        # 合入人邮箱（见 recipients.py）。mail_phase 走配置（默认 test 保兼容，正式
-        # 对 PM 发信需配 prod，否则 bridge 的 test 白名单会滤掉非测试收件人）。
-        recipients = resolve_report_recipients(settings, final, context.git)
-        sender = None
-        if not settings.mail_dry_run:
-            from bsa.mail.bridge_sender import make_bridge_sender
+    # 收尾段（投影/HTML/邮件）在图 invoke 之后、写终态之前。任一步抛异常都不得让
+    # cycle.json 停在 running 变僵尸：一律吞下记日志，仍落到下方终态写盘
+    # （状态沿用图终态；收尾产物缺失由日志/无 report_path 反映，不改变周期判定）。
+    try:
+        if final:
+            # 投影数据源落盘为结构化 state.json（G11），平台只消费 JSON。
+            write_state_json(log_dir, cycle_id, final)
+        if report is not None:
+            report_path = render_html_report(final, report)
+            write_decisions_json(final, report)
+            write_agent_diffs(final, report)
+            subject = f"Branch Sync Agent 周期报告 {cycle_id} [{final_status}]"
+            body = build_email_body(report, final)
+            # 收件人：PM 名单（或回退 mail_recipients），有失败/报错时追加失败 commit 的
+            # 合入人邮箱（见 recipients.py）。mail_phase 走配置（默认 test 保兼容，正式
+            # 对 PM 发信需配 prod，否则 bridge 的 test 白名单会滤掉非测试收件人）。
+            recipients = resolve_report_recipients(settings, final, context.git)
+            sender = None
+            if not settings.mail_dry_run:
+                from bsa.mail.bridge_sender import make_bridge_sender
 
-            sender = make_bridge_sender(
-                workspace_root=Path(settings.log_dir),
-                output_dir=cycle_dir,
-                mail_phase=settings.mail_phase,
-                mail_to=recipients,
-                mail_cc=settings.mail_cc_recipients,
-                bridge_path=Path(settings.mail_bridge_path) if settings.mail_bridge_path else None,
+                sender = make_bridge_sender(
+                    workspace_root=Path(settings.log_dir),
+                    output_dir=cycle_dir,
+                    mail_phase=settings.mail_phase,
+                    mail_to=recipients,
+                    mail_cc=settings.mail_cc_recipients,
+                    bridge_path=(
+                        Path(settings.mail_bridge_path) if settings.mail_bridge_path else None
+                    ),
+                )
+            result = MailService(settings, sender=sender).send_report(
+                subject, body, report_path, _patch_attachments(final)
             )
-        result = MailService(settings, sender=sender).send_report(
-            subject, body, report_path, _patch_attachments(final)
-        )
-        mail_status = result.status
-        if mail_status == "failed":
-            logger.warning(
-                "report rendered %s; mail=FAILED to=%s error=%s",
-                report_path, recipients, result.error,
-            )
+            mail_status = result.status
+            if mail_status == "failed":
+                logger.warning(
+                    "report rendered %s; mail=FAILED to=%s error=%s",
+                    report_path, recipients, result.error,
+                )
+            else:
+                logger.info(
+                    "report rendered %s; mail=%s to=%s", report_path, mail_status, recipients
+                )
         else:
-            logger.info(
-                "report rendered %s; mail=%s to=%s", report_path, mail_status, recipients
-            )
-    else:
-        logger.warning("no report produced; status=%s", final_status)
+            logger.warning("no report produced; status=%s", final_status)
+    except Exception:  # noqa: BLE001 — 收尾失败记日志，绝不阻断终态写盘
+        logger.exception("cycle %s post-invoke tail failed", cycle_id)
 
     finished_at = datetime.now().isoformat(timespec="seconds")
     _write_cycle_record(

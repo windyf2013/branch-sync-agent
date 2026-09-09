@@ -90,6 +90,51 @@ def test_cycle_failed_status_overwrites_running(monkeypatch, tmp_path):
     assert seen["final"]["status"] == "FAILED"
 
 
+def test_tail_exception_still_writes_terminal_cycle_json(monkeypatch, tmp_path):
+    """F3 回归：图 invoke 之后的收尾段(render 等)抛异常，不得让 cycle.json 停在
+    running 变僵尸——异常被吞记日志，仍落终态写盘。"""
+    import json
+    from contextlib import contextmanager
+
+    ctx = make_ctx(tmp_path)
+    cycle_dir = Path(ctx.settings.log_dir) / CYCLE_ID
+
+    @contextmanager
+    def fake_open_checkpointer(conn_string):
+        yield _FakeCheckpointer()
+
+    class _FakeGraph:
+        def invoke(self, state, config):
+            return {"status": "COMPLETED", "report": {"cycle_id": CYCLE_ID}}
+
+    def fake_build_workflow(context, *, checkpointer=None):
+        return _FakeGraph()
+
+    def boom_render(final, report):
+        raise RuntimeError("render exploded")
+
+    monkeypatch.setattr("bsa.scheduler.cycle._setup_run_logger", lambda path: _FakeLogger())
+    monkeypatch.setattr("bsa.scheduler.cycle.cleanup_worktrees", lambda ctx_, cid: None)
+    monkeypatch.setattr("bsa.scheduler.cycle.open_checkpointer", fake_open_checkpointer)
+    monkeypatch.setattr("bsa.scheduler.cycle.build_workflow", fake_build_workflow)
+    # 收尾段第一步就炸：write_state_json 后 render_html_report 抛异常
+    monkeypatch.setattr("bsa.scheduler.cycle.render_html_report", boom_render)
+
+    code = _execute_locked(
+        ctx, CYCLE_ID, cycle_dir, since=None, until=None, dry_run=True
+    )
+    final = json.loads((cycle_dir / "cycle.json").read_text(encoding="utf-8"))
+
+    # 不僵尸：终态被写盘，status 沿用图终态 COMPLETED（render 失败不影响周期判定）
+    assert code == 0
+    assert final["status"] == "COMPLETED"
+    assert final["mail_status"] is None
+    assert final["report_path"] is None
+    # cycle.json 仍被 list_cycle_records 枚举
+    records = list_cycle_records(Path(ctx.settings.log_dir))
+    assert any(r["cycle_id"] == CYCLE_ID for r in records)
+
+
 def test_list_cycle_records_sees_running_record(monkeypatch, tmp_path):
     seen, _ = _run_locked(monkeypatch, tmp_path)
 
