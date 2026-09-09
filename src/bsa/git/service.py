@@ -112,7 +112,9 @@ class GitService:
         return [line.strip() for line in result.stdout.splitlines() if line.strip()]
 
     def commit_metadata(self, sha: str) -> tuple[str, str, str]:
-        result = self._run(["log", "-1", "--format=%an|%aI|%B", sha])
+        # %cI = committer date(合入时间),与窗口门控口径一致(doc engine-flow-cron-v3 §4.1);
+        # author date 在 rebase/合入场景会漂移,展示上误导。
+        result = self._run(["log", "-1", "--format=%an|%cI|%B", sha])
         parts = result.stdout.split("|", 2)
         if len(parts) < 3:
             return "", "", result.stdout.strip()

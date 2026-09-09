@@ -135,11 +135,12 @@ class TestCommitsInWindow:
 
 
 class TestCommitMetadata:
-    def test_parses_author_date_message(self, tmp_path):
+    def test_parses_committer_date_message(self, tmp_path):
+        # F4: %cI = committer date(合入时间),与窗口门控口径一致(doc engine-flow-cron-v3 §4.1)
         executor = FakeExecutor([ok("Alice|2026-08-21T10:00:00+08:00|fix the bug\n\nbody\n")])
         result = GitService(executor, tmp_path).commit_metadata("abc")
         assert result == ("Alice", "2026-08-21T10:00:00+08:00", "fix the bug\n\nbody\n")
-        assert executor.calls[0][0] == ["log", "-1", "--format=%an|%aI|%B", "abc"]
+        assert executor.calls[0][0] == ["log", "-1", "--format=%an|%cI|%B", "abc"]
 
     def test_message_may_contain_pipes(self, tmp_path):
         executor = FakeExecutor([ok("Bob|2026-08-21T10:00:00Z|fix | the | thing\n")])
