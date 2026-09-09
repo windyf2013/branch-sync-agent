@@ -29,8 +29,12 @@ def _load_bridge(bridge_path: Path | None = None) -> Any:
             "bridge scripts path is not configured: pass bridge_path "
             f"(settings.mail_bridge_path) or set the {_BRIDGE_PATH_ENV} env var"
         )
-    if str(path) not in sys.path:
-        sys.path.insert(0, str(path))
+    # bridge_path 可能指向 branch_maintenance 目录本身(其父才是可 import 的包父目录),
+    # 也可能已指向父目录。两者都加 sys.path, 保证 `from branch_maintenance import` 成立,
+    # 避免因配置只给子目录而 ModuleNotFoundError。
+    for p in (path, path.parent):
+        if p is not None and str(p) not in sys.path:
+            sys.path.insert(0, str(p))
     from branch_maintenance import mail_send_bridge  # type: ignore[import-not-found]
 
     return mail_send_bridge
