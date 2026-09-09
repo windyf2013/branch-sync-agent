@@ -65,6 +65,40 @@ def test_bridge_sender_maps_payload_and_recipients(stub_bridge: Path, tmp_path: 
     assert result["bridge_result"]["got_report_paths"] == [str(report)]
 
 
+def test_bridge_resolves_relative_report_path(stub_bridge, tmp_path, monkeypatch):
+    """相对附件须绝对化,不能丢给 bridge 用 workspace_root 再拼(否则 logs/logs 双叠)。
+
+    回归: report_path 可能是相对 cwd(如 ``logs/cycle-x/report.html``), bridge 拿
+    workspace_root(=settings.log_dir) 拼接会找不到。bsa 侧必须 resolve 成绝对。
+    """
+    monkeypatch.chdir(tmp_path)  # 使相对路径相对 tmp_path
+    sub = tmp_path / "logs" / "cycle-x"
+    sub.mkdir(parents=True)
+    report = sub / "report.html"
+    report.write_text("<html></html>")
+
+    # 相对路径 payload(模拟引擎传相对 report_path)
+    sender = make_bridge_sender(
+        workspace_root=tmp_path / "logs",  # 模拟相对 log_dir
+        output_dir=tmp_path / "logs" / "cycle-x",
+        mail_phase="prod",
+        mail_to=["pm@raisecom.com"],
+        bridge_path=stub_bridge,
+    )
+    result = sender(
+        {
+            "html_path": "logs/cycle-x/report.html",  # 相对 cwd(=tmp_path)
+            "subject": "t",
+            "attachments": [],
+        }
+    )
+    assert result["status"] == "ok"
+    got = result["bridge_result"]["got_report_paths"]
+    # 传给 bridge 的必须是绝对路径(相对 cwd resolve),而非 "logs/cycle-x/report.html"
+    assert got == [str(report.resolve())]
+    assert all(p.startswith("/") for p in got)
+
+
 def test_bridge_sender_passes_mail_cc_when_set(stub_bridge: Path, tmp_path: Path) -> None:
     """mail_cc 透传给 bridge 的 mail_cfg.mail_cc。"""
     report = tmp_path / "report.html"

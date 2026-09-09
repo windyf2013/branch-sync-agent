@@ -69,6 +69,13 @@ def make_bridge_sender(
         attachments = list(payload.get("attachments") or [])
         if report_path and report_path not in attachments:
             attachments.insert(0, report_path)
+        # bridge 侧对相对附件会拿 workspace_root(=settings.log_dir) 再拼一次 → 相对
+        # log_dir 部署(如 LOG_DIR=logs)下会叠成 logs/logs/... 而找不到文件。这里把所有
+        # 路径绝对化(相对引擎 cwd resolve)后再传 bridge, 消除双拼(参考实现 bridge 不改)。
+        abs_attachments = [
+            str(Path(p).resolve()) if not str(p).startswith("/") else str(p)
+            for p in attachments
+        ]
         window = payload.get("window_desc") or payload.get("subject") or ""
         mail_cfg: dict[str, Any] = {
             "mail_phase": mail_phase,
@@ -77,7 +84,7 @@ def make_bridge_sender(
         if mail_cc:
             mail_cfg["mail_cc"] = list(mail_cc)
         result = bridge.send_bma_reports_via_mail_send(
-            report_paths=[report_path],
+            report_paths=abs_attachments,
             window_desc=window,
             repo_summaries=payload.get("repo_summaries") or [],
             mail_cfg=mail_cfg,

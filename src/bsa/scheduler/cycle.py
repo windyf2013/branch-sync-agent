@@ -381,9 +381,15 @@ def _execute_locked(
             subject, body, report_path, _patch_attachments(final)
         )
         mail_status = result.status
-        logger.info(
-            "report rendered %s; mail=%s to=%s", report_path, mail_status, recipients
-        )
+        if mail_status == "failed":
+            logger.warning(
+                "report rendered %s; mail=FAILED to=%s error=%s",
+                report_path, recipients, result.error,
+            )
+        else:
+            logger.info(
+                "report rendered %s; mail=%s to=%s", report_path, mail_status, recipients
+            )
     else:
         logger.warning("no report produced; status=%s", final_status)
 
