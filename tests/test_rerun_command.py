@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import sqlite3
 from pathlib import Path
 from types import SimpleNamespace
+
+import pytest
 
 from bsa.cli import main
 from bsa.commands.rerun import _batch_from_state, run_rerun_command
@@ -136,6 +139,51 @@ def test_rerun_retained_dirty_worktree_stops(tmp_path, monkeypatch):
     assert result["reason"] == "dirty"
     assert result.get("branch_results") is None
     assert not any(name == "cherry_pick" for name, args in wg.calls)
+
+
+def test_rerun_retained_ignores_build_managed_component_dirt(tmp_path, monkeypatch):
+    """基线编译自己留下的组件目录脚印不算「现场脏」。
+
+    ``code_update.sh -d``（全量编译前置）会 ``rm -rf`` 再 ``git clone``
+    voip_main/xpon/wlan/ac/ponolt，把主仓里被跟踪的 gitlink 一并删掉；克隆
+    回来的新仓库没有该条目，于是 worktree 永远带着一条 `` D``。若照旧拦截，
+    基线编译成功即宣告该分支的保留现场重跑必然失败（task 35 根因）。
+    """
+    ctx = make_ctx(tmp_path)
+    ctx.git.tips = {TARGET: ("origin/" + TARGET, "tip1")}
+    patch_cycle_lookup(monkeypatch, [cycle_record(RETAINED_CYCLE)])
+    wt = make_valid_worktree(ctx, TARGET, RETAINED_CYCLE)
+    wg = ok_worktree_git(
+        status=(
+            " D component/ponolt/mini_olt/50h/FTTR_FIRMWARE\n"
+            " D component/xpon/src/demo.c\n"
+            "?? component/ac/build/\n"
+        )
+    )
+    ctx.worktree_gits[str(wt)] = wg
+
+    result = run_rerun_command(ctx, target=TARGET)
+
+    assert not result.get("stop")
+    assert result["rerun"]["mode"] == "retained"
+    assert [args[0] for name, args in wg.calls if name == "cherry_pick"] == ["a1"]
+
+
+def test_rerun_retained_source_change_still_stops(tmp_path, monkeypatch):
+    """组件脚印之外的真实源码改动仍必须拦截（不能把 dirty 检查整体废掉）。"""
+    ctx = make_ctx(tmp_path)
+    ctx.git.tips = {TARGET: ("origin/" + TARGET, "tip1")}
+    patch_cycle_lookup(monkeypatch, [cycle_record(RETAINED_CYCLE)])
+    wt = make_valid_worktree(ctx, TARGET, RETAINED_CYCLE)
+    wg = ok_worktree_git(
+        status=" D component/ponolt/x.c\n M plat/demo.c\n"
+    )
+    ctx.worktree_gits[str(wt)] = wg
+
+    result = run_rerun_command(ctx, target=TARGET)
+
+    assert result["stop"] is True
+    assert result["reason"] == "dirty"
 
 
 def test_rerun_retained_missing_worktree_stops_with_fresh_hint(tmp_path, monkeypatch):
@@ -433,6 +481,57 @@ def test_rerun_cli_dirty_reports_error(monkeypatch, tmp_path, capsys):
 
     assert code == 1
     assert "现场有未提交修改" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize(
+    ("stop_result", "needles"),
+    [
+        (
+            {"stop": True, "reason": "dirty", "worktree": "/wt", "detail": " M plat/demo.c"},
+            ("现场有未提交修改", "/wt", "plat/demo.c"),
+        ),
+        ({"stop": True, "reason": "no-worktree"}, ("worktree 不存在", TARGET)),
+        ({"stop": True, "reason": "no-cycle"}, ("未找到包含目标分支", TARGET)),
+        (
+            {"stop": True, "reason": "no-batch", "cycle_id": RETAINED_CYCLE},
+            ("无目标分支", TARGET),
+        ),
+    ],
+)
+def test_rerun_cli_stop_reason_reaches_task_row(
+    monkeypatch, tmp_path, capsys, stop_result, needles
+):
+    """被拦截的 stop 也必须把原因落到 tasks.error。
+
+    平台只读 tasks 表渲染任务详情；原因只 print 到 stderr 时，UI 只能显示一个
+    无理由的「失败」——用户无从知道该清理现场还是该用 --fresh（task 35 现象）。
+    """
+    env = valid_env()
+    env["LOG_DIR"] = str(tmp_path / "logs")
+    monkeypatch.setattr("bsa.config.settings.os.environ", env)
+    monkeypatch.setattr(
+        "bsa.cli.build_graph_context",
+        lambda settings, **kw: SimpleNamespace(settings=settings),
+    )
+    monkeypatch.setattr(
+        "bsa.cli.run_rerun_command",
+        lambda ctx, *, target, cycle, fresh, checkpointer, thread_id=None: dict(
+            stop_result
+        ),
+    )
+
+    code = main(["rerun", TARGET])
+    capsys.readouterr()
+
+    assert code == 1
+    conn = sqlite3.connect(str(tmp_path / "logs" / "platform.sqlite3"))
+    conn.row_factory = sqlite3.Row
+    row = conn.execute(
+        "SELECT state, error FROM tasks ORDER BY id DESC LIMIT 1"
+    ).fetchone()
+    assert row["state"] == "failed"
+    for needle in needles:
+        assert needle in (row["error"] or "")
 
 
 def test_rerun_cli_conclusion_now_included_exits_zero(monkeypatch, tmp_path, capsys):

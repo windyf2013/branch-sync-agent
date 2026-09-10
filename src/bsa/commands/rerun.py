@@ -123,6 +123,39 @@ def _worktree_git_for(ctx: GraphContext, worktree_path: Path) -> GitService:
     return git
 
 
+# 全量编译前置 ``code_update.sh -d`` 会把这几个独立组件目录 ``rm -rf`` 后重新
+# ``git clone``（见 bsa/build/runner.py 的 is_full 分支）。它们当中有被主仓
+# 跟踪的 gitlink（如 component/ponolt/mini_olt/50h/FTTR_FIRMWARE），删目录即
+# 删 gitlink，克隆回来的新仓库又没有该条目 —— 于是 worktree 永远挂着一条 `` D``。
+# 这是引擎自己的编译脚印，不是用户的未提交修改，不能用来拦截保留现场重跑。
+_BUILD_MANAGED_COMPONENT_PREFIXES = (
+    "component/voice/voip_main/",
+    "component/xpon/",
+    "component/wlan/",
+    "component/ac/",
+    "component/ponolt/",
+)
+
+
+def _is_build_managed_component_path(path: str) -> bool:
+    normalized = path.replace("\\", "/").strip('"')
+    return any(
+        normalized.startswith(prefix)
+        or normalized == prefix.rstrip("/")
+        for prefix in _BUILD_MANAGED_COMPONENT_PREFIXES
+    )
+
+
+def _source_side_dirt(status: str) -> str:
+    """``git status --porcelain`` 里排除编译脚印后的真实未提交修改（无则空串）。"""
+    kept = [
+        line
+        for line in status.splitlines()
+        if line.strip() and not _is_build_managed_component_path(line[3:])
+    ]
+    return "\n".join(kept)
+
+
 def _batch_from_state(state: dict, target: str) -> list[CommitInfo]:
     """从周期冻结 state 还原 target 的待同步批次（detected_commits ∩ batches）。"""
     by_sha = {commit.sha: commit for commit in state.get("detected_commits") or []}
@@ -212,13 +245,15 @@ def _rerun_retained(
             "cycle_id": cycle_id,
         }
     wg = _worktree_git_for(ctx, worktree_path)
-    if wg.status().strip():
+    dirt = _source_side_dirt(wg.status())
+    if dirt.strip():
         return {
             "stop": True,
             "reason": "dirty",
             "target": target,
             "cycle_id": cycle_id,
             "worktree": str(worktree_path),
+            "detail": dirt,
         }
     batch = _batch_from_state(state, target)
     if not batch:
