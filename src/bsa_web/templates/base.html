@@ -8,19 +8,14 @@
   {% block extra_head %}{% endblock %}
 </head>
 <body>
-  <header class="topbar">
-    <div class="topbar-inner">
-      <div class="brand-mark">
+  <div class="app">
+    <aside class="sidebar">
+      <div class="sidebar-brand">
         <div class="brand-logo">BSA</div>
         <div class="brand-copy">
           <h1>分支维护工作台</h1>
         </div>
       </div>
-    </div>
-  </header>
-
-  <div class="app">
-    <aside class="sidebar">
       <nav class="sidebar-nav">
         <div class="nav-group-label">工作台</div>
         <a href="/" class="{% if request.url.path == '/' %}active{% endif %}">

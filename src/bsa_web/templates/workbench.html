@@ -3,10 +3,12 @@
 {% macro cycle_summary_row() %}
 <tr class="task-row-cycle-summary" data-kind="cycle" data-section="">
   <td>
-    <span class="cell-primary"><span class="badge neutral">周期</span>
-      <a href="/cycle/{{ current_cycle_id }}" class="branch-link">{{ current_cycle_id }}</a></span>
+    <span class="cell-primary">
+      <a href="/cycle/{{ current_cycle_id }}" class="branch-link">{{ current_cycle_id }}</a>
+      <span class="task-more" aria-hidden="true">›</span></span>
     <span class="cell-sub">系统</span>
   </td>
+  <td class="cell-kind"><span class="badge neutral">周期</span></td>
   <td><span class="badge {{ cycle_status | lower }}">{{ cycle_status_label }}</span></td>
   <td class="num sync-skip"><span class="sync-num">同步 {{ cycle_synced }}</span> · <span class="skip-num">跳过 {{ cycle_skipped }}</span></td>
   <td class="muted">本周期无可同步任务
@@ -51,55 +53,72 @@
 <!-- 当前周期上下文 -->
 <section class="panel period-bar period-bar-prominent">
   <div class="period-bar-left">
-    <div class="period-bar-status">
+    <span class="cycle-ico" aria-hidden="true">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="18" rx="2"/><path d="M16 2v4M8 2v4M3 10h18"/></svg>
+    </span>
+    <div class="cycle-info">
       <span class="context-label">当前周期</span>
-      {% if agent_status == "running" %}
-        <span class="badge running period-badge-lg">进行中</span>
-      {% elif agent_status == "failed" %}
-        <span class="badge failed period-badge-lg">失败</span>
-      {% elif agent_status == "unavailable" %}
-        <span class="badge failed period-badge-lg">数据不可用</span>
-      {% elif agent_status == "done" %}
-        <span class="badge success period-badge-lg">完成{% if review_pending %}<span class="period-review-badge"> · {{ review_pending | length }} 待人工</span>{% endif %}</span>
-      {% else %}
-        <span class="badge neutral period-badge-lg">暂无周期</span>
-      {% endif %}
-      {% if current_cycle_id or running_cycle_id %}
-        <code class="mono period-chip period-chip-lg">{{ current_cycle_id or running_cycle_id }}</code>
-      {% endif %}
-    </div>
-    <div class="period-bar-stats">
+      <div class="cycle-line">
+        {% if current_cycle_id or running_cycle_id %}
+          <code class="mono period-chip period-chip-lg">{{ current_cycle_id or running_cycle_id }}</code>
+        {% endif %}
+        {% if agent_status == "running" %}
+          <span class="badge running period-badge-lg">进行中</span>
+        {% elif agent_status == "failed" %}
+          <span class="badge failed period-badge-lg">失败</span>
+        {% elif agent_status == "unavailable" %}
+          <span class="badge failed period-badge-lg">数据不可用</span>
+        {% elif agent_status == "done" %}
+          <span class="badge success period-badge-lg">完成{% if review_pending %}<span class="period-review-badge"> · {{ review_pending | length }} 待人工</span>{% endif %}</span>
+        {% else %}
+          <span class="badge neutral period-badge-lg">暂无周期</span>
+        {% endif %}
+      </div>
       {% if payload and payload.get("scan_window") %}
-        <span class="context-item">窗口 {{ (payload["scan_window"] | first) or "—" }} → {{ (payload["scan_window"] | last) or "—" }}</span>
-      {% endif %}
-      {% if cycle_detected is defined %}
-        <span class="context-item period-stat">
-          <span class="period-stat-num sync-num">{{ cycle_detected }}</span> 检测
-          <span class="period-stat-num sync-num">{{ cycle_synced }}</span> 同步
-          <span class="period-stat-num skip-num">{{ cycle_skipped }}</span> 跳过
-          <span class="period-stat-num review-num">{{ review_pending | length }}</span> 待确认
-        </span>
-      {% endif %}
-      {% if (agent_status == "done" or agent_status == "failed") and current_cycle_id %}
-        <span class="context-item"><a href="/cycle/{{ current_cycle_id }}">查看周期概览 →</a></span>
+        <span class="cycle-window">窗口时间 {{ (payload["scan_window"] | first) or "—" }} ~ {{ (payload["scan_window"] | last) or "—" }}</span>
       {% endif %}
     </div>
   </div>
   <div class="period-bar-right">
-    {% if cycle_task %}
-      <span class="context-item">周期任务 {{ cycle_task.cycle_id }} · 来源 {{ cycle_task.source }}</span>
-      {% if cycle_task.state in ("queued", "running") %}
-        <span class="context-item"><a href="/tasks/{{ cycle_task.id }}">进度</a></span>
-      {% endif %}
-      {% if cycle_task.state == "interrupted" %}
-        <span class="badge interrupted">已中断 · 现场已保留</span>
-        {% if user.is_operator %}
-        <button type="button" id="cycle-resume" data-resume-cycle="{{ cycle_task.cycle_id }}">续跑</button>
-        <span id="cycle-resume-result"></span>
-        {% endif %}
+    {% if cycle_detected is defined %}
+    <div class="period-bar-stats">
+      <span class="context-item period-stat">
+        <span class="period-stat-num sync-num">{{ cycle_detected }}</span>
+        <span class="period-stat-label">检测 commit</span>
+      </span>
+      <span class="context-item period-stat">
+        <span class="period-stat-num sync-num">{{ cycle_synced }}</span>
+        <span class="period-stat-label">同步</span>
+      </span>
+      <span class="context-item period-stat">
+        <span class="period-stat-num skip-num">{{ cycle_skipped }}</span>
+        <span class="period-stat-label">跳过</span>
+      </span>
+      <span class="context-item period-stat">
+        <span class="period-stat-num review-num">{{ review_pending | length }}</span>
+        <span class="period-stat-label">待确认</span>
+      </span>
+    </div>
+    {% endif %}
+    {% if (agent_status == "done" or agent_status == "failed") and current_cycle_id %}
+      <a class="cycle-more" href="/cycle/{{ current_cycle_id }}">查看周期概览 →</a>
+    {% endif %}
+  </div>
+  {% if cycle_task %}
+  <div class="period-extra">
+    <span class="context-item">周期任务 {{ cycle_task.cycle_id }} · 来源 {{ cycle_task.source }}</span>
+    {% if cycle_task.state in ("queued", "running") %}
+      <span class="context-item"><a href="/tasks/{{ cycle_task.id }}">进度</a></span>
+    {% endif %}
+    {% if cycle_task.state == "interrupted" %}
+      <span class="badge interrupted">已中断 · 现场已保留</span>
+      {% if user.is_operator %}
+      <button type="button" id="cycle-resume" data-resume-cycle="{{ cycle_task.cycle_id }}">续跑</button>
+      <span id="cycle-resume-result"></span>
       {% endif %}
     {% endif %}
   </div>
+  {% endif %}
 </section>
 
 <!-- KPI 总览（恒显 5 卡） -->
@@ -205,15 +224,16 @@
     {% elif auto_tasks or standalone_manual %}
       <div class="table-wrap">
       <table class="task-table">
-        <thead><tr><th>目标分支</th><th>状态</th><th>处理情况</th><th>失败原因</th><th>操作</th></tr></thead>
+        <thead><tr><th>目标分支</th><th>类型</th><th>状态</th><th>处理情况</th><th>失败原因</th><th>操作</th></tr></thead>
         <tbody>
           {% if not auto_tasks and payload and current_cycle_id %}{{ cycle_summary_row() }}{% endif %}
           {% for t in auto_tasks %}
           <tr class="task-row-auto" data-section="{{ t.section }}" data-kind="cycle">
             <td>
-              <span class="cell-primary"><span class="badge neutral">周期</span> <a href="/task/{{ t.cycle_id }}/{{ t.target }}" class="branch-link">{{ t.target }}</a></span>
+              <span class="cell-primary"><a href="/task/{{ t.cycle_id }}/{{ t.target }}" class="branch-link">{{ t.target }}</a></span>
               <span class="cell-sub">系统</span>
             </td>
+            <td class="cell-kind"><span class="badge neutral">周期</span></td>
             <td><span class="badge {{ t.status | lower }}">{{ t.badge }}</span>
               {% if t.abandoned %}<span class="badge abandoned">已放弃</span>{% endif %}
             </td>
@@ -240,7 +260,7 @@
           {% for c in t.children %}
           <tr class="task-row-sub" data-section="{{ t.section }}" data-kind="manual" data-parent="cycle">
             <td class="sub-cell">
-              <span class="cell-primary"><span class="sub-indent">↳</span><span class="badge review">重跑</span>
+              <span class="cell-primary"><span class="sub-indent">↳</span>
               {% if c.state in ("queued", "running") %}
               <a href="/tasks/{{ c.task_id }}" class="branch-link">{{ c.target }}</a>
               {% elif c.cycle_id %}
@@ -251,6 +271,7 @@
               {% if c.task_id %}<span class="muted">#{{ c.task_id }}</span>{% endif %}</span>
               <span class="cell-sub">{{ c.user or "—" }}{% if c.created_at %} · {{ c.created_at | localtime }}{% endif %}</span>
             </td>
+            <td class="cell-kind"><span class="badge review">重跑</span></td>
             <td><span class="badge {{ c.status | lower }}">{{ c.badge }}</span></td>
             <td class="num"><span class="muted">commits</span> {{ c.commits or "—" }}</td>
             <td class="cell-reason{% if not c.reason %} empty{% endif %}">{{ c.reason or "—" }}</td>
@@ -265,9 +286,9 @@
           {% endfor %}
           {% endfor %}
           {% for t in standalone_manual %}
-          <tr class="task-row-manual" data-section="{{ t.section }}" data-kind="manual">
+          <tr class="task-row-manual{% if t.kind == 'rerun' %} row-kind-rerun{% endif %}" data-section="{{ t.section }}" data-kind="manual">
             <td>
-              <span class="cell-primary"><span class="badge {{ 'review' if t.kind == 'rerun' else 'scope' }}">{{ "重跑" if t.kind == "rerun" else "同步" }}{% if t.fresh %}·重建{% endif %}</span>
+              <span class="cell-primary">
               {% if t.state in ("queued", "running") %}
               <a href="/tasks/{{ t.task_id }}" class="branch-link">{{ t.target }}</a>
               {% elif t.cycle_id %}
@@ -278,6 +299,7 @@
               {% if t.task_id %}<span class="muted">#{{ t.task_id }}</span>{% endif %}</span>
               <span class="cell-sub">{{ t.user or "—" }}{% if t.created_at %} · {{ t.created_at | localtime }}{% endif %}</span>
             </td>
+            <td class="cell-kind"><span class="badge {{ 'review' if t.kind == 'rerun' else 'scope' }}">{{ "重跑" if t.kind == "rerun" else "同步" }}{% if t.fresh %}·重建{% endif %}</span></td>
             <td><span class="badge {{ t.status | lower }}">{{ t.badge }}</span></td>
             <td class="num"><span class="muted">commits</span> {{ t.commits or "—" }}</td>
             <td class="cell-reason{% if not t.reason %} empty{% endif %}">{{ t.reason or "—" }}</td>
@@ -323,7 +345,7 @@
     {% elif payload %}
       <div class="table-wrap">
       <table class="task-table">
-        <thead><tr><th>目标分支</th><th>状态</th><th>处理情况</th><th>失败原因</th><th>操作</th></tr></thead>
+        <thead><tr><th>目标分支</th><th>类型</th><th>状态</th><th>处理情况</th><th>失败原因</th><th>操作</th></tr></thead>
         <tbody>
           {% if current_cycle_id %}{{ cycle_summary_row() }}{% endif %}
         </tbody>
