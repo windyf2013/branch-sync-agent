@@ -12,6 +12,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from pydantic import ValidationError
 
+from bsa.domain.labels import FOUR_STATE_ZH, STATUS_ZH
 from bsa_web import failure
 from bsa_web.api.abandon import router as abandon_api_router
 from bsa_web.api.manual_review import router as manual_review_api_router
@@ -88,20 +89,9 @@ templates.env.filters["localtime"] = _localtime
 
 # 面向人类的状态值/四态 → 中文映射（统一收敛在过滤器，模板只写 `| status_zh` /
 # `| kind_zh`，避免散落各页的硬编码英→中 if/else）。值不在表内则原样返回（兜底）。
-_STATUS_ZH = {
-    "SUCCESS": "成功",
-    "FAILED": "失败",
-    # 见 views/workbench.py 同名表：PARTIAL = 这批没走完，「停批」专属 FAILFAST_STOP。
-    "PARTIAL": "未完成",
-    "MANUAL": "待处理",
-    "UNKNOWN": "未知",
-    "RUNNING": "进行中",
-    "REPORTED": "已报告",
-    "OK": "通过",
-    "EMPTY": "已应用",
-    "CONFLICT": "冲突",
-    "SKIPPED": "已跳过",
-}
+# 定义已移至 bsa.domain.labels：引擎渲染报告/邮件要用同一套映射，而 bsa 不能反向
+# import bsa_web。此处是同一对象（非复制），过滤器行为逐字不变。
+_STATUS_ZH = STATUS_ZH
 
 # 进度步骤徽章（progress.jsonl 的节点终态 → 中文）。与 _STATUS_ZH 分离：这些值
 # 只出现在步骤清单（_steps.html），不参与分支/commit/build 的既有 status_zh 展示。
@@ -130,12 +120,7 @@ _STEP_ZH = {
     "MANUAL": "需人工处理",
 }
 
-_FOUR_STATE_ZH = {
-    "NeedSync": "待同步",
-    "AlreadyIncluded": "已包含",
-    "OutOfScope": "不适用",
-    "ManualReview": "待人工",
-}
+_FOUR_STATE_ZH = FOUR_STATE_ZH
 
 
 templates.env.filters["status_zh"] = lambda v: _STATUS_ZH.get(str(v), v)

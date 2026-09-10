@@ -1,0 +1,76 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>{{SUBJECT}}</title>
+</head>
+<body style="margin:0;padding:0;background:#f5f7fa;">
+    <!--
+      邮件正文摘要。硬约束（与 report.html 不同，后者是给浏览器看的多页文档）：
+      · 不写样式块、不用 CSS 自定义属性、不用伪元素、不用弹性/网格布局 ——
+        Gmail 的第三方账户会剥掉样式块，Outlook 桌面不认自定义属性与伪元素，
+        弹性/网格在老旧客户端会退化成块级堆叠。
+      · 全部样式写在内联属性里；布局一律用 role=presentation 的表格。
+      · 颜色写字面 hex，取值与 report.html / 平台 style.css 的令牌一致（人工同步）。
+      · 不引用任何外部资源（远程资源常被客户端拦截）。
+      完整报告在附件 report.html 里。
+    -->
+    <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%"
+           style="background:#f5f7fa;">
+        <tr>
+            <td align="center" style="padding:20px 12px;">
+                <table role="presentation" cellpadding="0" cellspacing="0" border="0"
+                       width="100%" style="max-width:720px;background:#ffffff;border:1px solid #e9edf4;
+                       border-radius:12px;overflow:hidden;">
+
+                    <!-- 周期条：平台 .period-bar-prominent 的邮件适配（淡蓝底 + 品牌边框） -->
+                    <tr>
+                        <td style="background:#f2f7ff;border-bottom:1px solid #d7e4ff;
+                                   padding:20px 24px;">
+                            <div style="font-family:'Segoe UI','PingFang SC','Microsoft YaHei',
+                                        sans-serif;font-size:12px;font-weight:600;color:#64748b;
+                                        letter-spacing:.14em;text-transform:uppercase;
+                                        margin-bottom:6px;">Branch Sync Agent</div>
+                            <div style="font-family:'Segoe UI','PingFang SC','Microsoft YaHei',
+                                        sans-serif;font-size:20px;font-weight:700;color:#0f172a;">
+                                {{TITLE}}
+                            </div>
+                            <div style="font-family:'Segoe UI','PingFang SC','Microsoft YaHei',
+                                        sans-serif;font-size:13px;color:#334155;margin-top:8px;">
+                                {{CYCLE_LINE}}
+                            </div>
+                        </td>
+                    </tr>
+
+                    <!-- 源 → 目标拓扑：报告「一眼看出源目分支」的正面解法 -->
+                    {{TOPOLOGY_ROWS}}
+
+                    <!-- 统计条 -->
+                    <tr>
+                        <td style="padding:16px 24px 0;">
+                            <table role="presentation" cellpadding="0" cellspacing="0" border="0"
+                                   width="100%" style="border:1px solid #e9edf4;
+                                   border-radius:12px;">
+                                <tr>{{STAT_ROWS}}</tr>
+                            </table>
+                        </td>
+                    </tr>
+
+                    {{SECTIONS}}
+
+                    <tr>
+                        <td style="padding:16px 24px 20px;border-top:1px solid #e9edf4;
+                                   font-family:'Segoe UI','PingFang SC','Microsoft YaHei',
+                                   sans-serif;font-size:12px;color:#64748b;line-height:1.7;">
+                            完整报告见附件 <b>report.html</b>（含逐 commit 明细、编译日志与审计 diff）。<br>
+                            Branch Sync Agent · 自动执行交付 · 推送永远人工 · 所有代码修改事后审核
+                        </td>
+                    </tr>
+
+                </table>
+            </td>
+        </tr>
+    </table>
+</body>
+</html>

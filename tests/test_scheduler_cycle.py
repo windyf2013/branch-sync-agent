@@ -214,3 +214,89 @@ def test_list_cycle_records_ignores_manual_dir_without_cycle_json(tmp_path):
     records = list_cycle_records(log_dir)
 
     assert [r["cycle_id"] for r in records] == ["cycle-2026-09-01"]
+
+
+class TestEmailAssembly:
+    """收尾段把 HTML 摘要装进邮件 payload（阶段 E 的装配点回归）。
+
+    只测 build_email_html/build_message 各管各的不够 —— 真正要证明的是
+    「cycle 收尾段确实调了它并把结果透传给 MailService」，否则改回纯文本正文
+    而所有单测仍然全绿。
+    """
+
+    def _capture_payload(self, monkeypatch, tmp_path) -> dict:
+        import bsa.scheduler.cycle as cycle_mod
+        from bsa.domain.models import Report
+
+        ctx = make_ctx(tmp_path)
+        cycle_dir = Path(ctx.settings.log_dir) / CYCLE_ID
+        seen: dict = {}
+
+        class _FakeGraph:
+            def invoke(self, state, config):
+                return {
+                    "status": "COMPLETED",
+                    "cycle_id": CYCLE_ID,
+                    "scan_window": ("S", "U"),
+                    "detected_commits": [],
+                    "branch_results": {},
+                    "topology": [
+                        {"section": "4.34", "sources": ["br_src"], "targets": ["br_main"]}
+                    ],
+                    "sources": ["br_src"],
+                    "targets": ["br_main"],
+                    "decisions": {},
+                    "errors": {},
+                    "report": Report(
+                        cycle_id=CYCLE_ID,
+                        html_path=cycle_dir / "report.html",
+                        summary={"status": "COMPLETED"},
+                        action_required=[],
+                        decisions_json_path=cycle_dir / "decisions.json",
+                    ),
+                }
+
+        _install_fakes(monkeypatch, ctx, cycle_dir, seen)
+        monkeypatch.setattr(
+            "bsa.scheduler.cycle.build_workflow", lambda context, *, checkpointer=None: _FakeGraph()
+        )
+
+        class _FakeMailService:
+            def __init__(self, settings, sender=None) -> None:
+                pass
+
+            def send_report(self, subject, body, html_path, attachments, *, body_html=None):
+                seen["subject"] = subject
+                seen["body"] = body
+                seen["body_html"] = body_html
+                from bsa.mail.service import MailResult
+
+                return MailResult(status="skipped", error="dry-run")
+
+        monkeypatch.setattr(cycle_mod, "MailService", _FakeMailService)
+        seen["code"] = _execute_locked(
+            ctx, CYCLE_ID, cycle_dir, since=None, until=None, dry_run=True
+        )
+        return seen
+
+    def test_summary_html_is_passed_to_mail_service(self, monkeypatch, tmp_path):
+        seen = self._capture_payload(monkeypatch, tmp_path)
+
+        assert seen["code"] == 0
+        html = seen["body_html"]
+        assert html, "收尾段必须构造 HTML 摘要并传给 MailService"
+        # 摘要要含核心事实，而不是把完整 report.html 原样当正文。
+        assert "br_src" in html and "br_main" in html
+
+    def test_subject_carries_chinese_status(self, monkeypatch, tmp_path):
+        seen = self._capture_payload(monkeypatch, tmp_path)
+
+        # 主题里的终态用中文，收件箱列表即可读出成没成。
+        assert "已完成" in seen["subject"]
+
+    def test_plain_text_body_still_present(self, monkeypatch, tmp_path):
+        # 无 HTML 能力的客户端读纯文本正文，它必须仍然独立完整。
+        seen = self._capture_payload(monkeypatch, tmp_path)
+
+        assert CYCLE_ID in seen["body"]
+        assert "同步拓扑:" in seen["body"]

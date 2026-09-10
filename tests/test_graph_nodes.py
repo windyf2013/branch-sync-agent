@@ -429,6 +429,7 @@ def base_state(**overrides: object) -> dict:
         "detected_commits": [],
         "classifications": {},
         "decisions": {},
+        "topology": [],
         "batches": {},
         "current_target": None,
         "current_commit": None,

@@ -30,14 +30,23 @@ class MailService:
         self.sender = sender
 
     def send_report(
-        self, subject: str, body: str, html_path: Path, attachments: list[Path]
+        self,
+        subject: str,
+        body: str,
+        html_path: Path,
+        attachments: list[Path],
+        *,
+        body_html: str | None = None,
     ) -> MailResult:
+        """``body_html`` 是邮件正文的 HTML 摘要；缺省（None）时发信方回退到把
+        ``html_path`` 全文当正文（改造前的行为，老调用方零改动）。"""
         payload = {
             "subject": subject,
             "body": body,
             "html_path": str(html_path),
             "attachments": [str(p) for p in attachments],
             "report_path": str(html_path),
+            "body_html": body_html,
         }
 
         if self.settings.mail_dry_run:

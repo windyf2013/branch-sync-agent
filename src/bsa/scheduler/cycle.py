@@ -7,6 +7,7 @@ from datetime import UTC, date, datetime
 from pathlib import Path
 
 from bsa.config.settings import load_settings
+from bsa.domain.labels import report_status_label
 from bsa.executor.exceptions import InfrastructureError
 from bsa.executor.lock import flock_acquire
 from bsa.graph import (
@@ -19,6 +20,7 @@ from bsa.graph import (
 from bsa.mail import MailService
 from bsa.report import (
     build_email_body,
+    build_email_html,
     render_html_report,
     write_agent_diffs,
     write_decisions_json,
@@ -107,6 +109,7 @@ def _initial_state(cycle_id: str) -> dict:
         "build_models": {},
         "sources": [],
         "targets": [],
+        "topology": [],
         "current_target": None,
         "current_commit": None,
         "branch_results": {},
@@ -367,8 +370,14 @@ def _execute_locked(
             report_path = render_html_report(final, report)
             write_decisions_json(final, report)
             write_agent_diffs(final, report)
-            subject = f"Branch Sync Agent 周期报告 {cycle_id} [{final_status}]"
+            # 主题里的终态用中文：收件箱列表里就能读出成没成，不必点开。
+            subject = (
+                f"Branch Sync Agent 周期报告 {cycle_id} "
+                f"[{report_status_label(final_status)}]"
+            )
             body = build_email_body(report, final)
+            # 正文摘要（HTML）与完整报告分工：摘要进正文，report.html 作附件归档。
+            body_html = build_email_html(final, report, subject)
             # 收件人：PM 名单（或回退 mail_recipients），有失败/报错时追加失败 commit 的
             # 合入人邮箱（见 recipients.py）。mail_phase 走配置（默认 test 保兼容，正式
             # 对 PM 发信需配 prod，否则 test 白名单会滤掉非测试收件人）。
@@ -384,7 +393,11 @@ def _execute_locked(
                     mail_cc=settings.mail_cc_recipients,
                 )
             result = MailService(settings, sender=sender).send_report(
-                subject, body, report_path, _patch_attachments(final)
+                subject,
+                body,
+                report_path,
+                _patch_attachments(final),
+                body_html=body_html,
             )
             mail_status = result.status
             if mail_status == "failed":

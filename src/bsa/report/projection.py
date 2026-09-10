@@ -44,6 +44,9 @@ def projection_payload(state: dict[str, Any]) -> dict[str, Any]:
         "scan_window": state.get("scan_window"),
         "sources": state.get("sources") or [],
         "targets": state.get("targets") or [],
+        # 源 → 目标配对。sources/targets 只是两个无配对列表，说不出「哪个业务分支
+        # 喂哪个主分支」；报告与平台要呈现同步拓扑只能靠它。旧周期无此键 → 空列表。
+        "topology": state.get("topology") or [],
         "detected_commits": [c.model_dump() for c in state.get("detected_commits") or []],
         "decisions": {
             sha: {t: c.model_dump() for t, c in per.items()}

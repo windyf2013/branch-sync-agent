@@ -224,7 +224,11 @@ class TestEmailBodyFailureDetail:
 
         lines = _branch_failure_lines(self._state_with_failures())
         joined = "\n".join(lines)
-        assert any("aaaa1111" in line and "cherry-pick CONFLICT" in line for line in lines)
+        # 中文主 + 英文副标：断言两者同现，英文枚举是给自动化对接的机器 token。
+        assert any(
+            "aaaa1111" in line and "cherry-pick" in line and "CONFLICT" in line for line in lines
+        )
+        assert any("冲突" in line for line in lines)
         assert any("bbbb2222" in line and "RTL9617C" in line and "编译失败" in line for line in lines)
         assert "compile error: boom" in joined
 
@@ -233,7 +237,7 @@ class TestEmailBodyFailureDetail:
         assert "失败/停批明细" in body
         assert "aaaa1111" in body
         assert "bbbb2222" in body
-        assert "cherry-pick CONFLICT" in body
+        assert "cherry-pick" in body and "CONFLICT" in body
         assert "RTL9617C" in body
 
     def test_success_branch_omits_failure_section(self, tmp_path):

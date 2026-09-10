@@ -6,37 +6,57 @@
     <meta name="generator" content="Branch Sync Agent">
     <title>Branch Sync Agent 周期报告 — {{CYCLE_ID}}</title>
     <style>
+        /* 令牌与平台 src/bsa_web/static/style.css 的 :root 同值 —— 报告是同一系统的
+           交付件，不该有第二套视觉语言。刻意全内联：报告要能离线单文件打开，并作为
+           邮件附件（外链 CSS 在离线与邮件场景下都会失效）。 */
         :root {
-            --ink: #0f172a;
-            --ink-2: #1e293b;
-            --muted: #64748b;
-            --line: #e2e8f0;
-            --line-strong: #cbd5e1;
+            --bg: #f5f7fa;
             --surface: #ffffff;
-            --canvas: #f1f5f9;
-            --canvas-2: #e8eef5;
-            --brand: #0b3d5c;
-            --brand-2: #125a82;
-            --brand-soft: #e8f1f7;
-            --accent: #0e7490;
-            --need: #b91c1c;
-            --need-bg: #fef2f2;
-            --need-bd: #fecaca;
-            --review: #a16207;
-            --review-bg: #fffbeb;
-            --review-bd: #fde68a;
-            --ok: #166534;
+            --surface-2: #f7f9fc;
+            --surface-3: #eef2f7;
+
+            --ink: #0f172a;
+            --ink-2: #334155;
+            --muted: #64748b;
+            --faint: #94a3b8;
+
+            --line: #e9edf4;
+            --line-strong: #d8e0ea;
+
+            --brand: #2f6bfb;
+            --brand-2: #4f8bff;
+            --brand-deep: #1d4ed8;
+            --brand-soft: #eef4ff;
+            --brand-line: #d7e4ff;
+            --accent: #06b6d4;
+
+            --ok: #16a34a;
             --ok-bg: #f0fdf4;
             --ok-bd: #bbf7d0;
-            --scope: #475569;
-            --scope-bg: #f8fafc;
-            --pending: #0369a1;
+            --need: #dc2626;
+            --need-bg: #fef2f2;
+            --need-bd: #fecaca;
+            --review: #d97706;
+            --review-bg: #fffbeb;
+            --review-bd: #fde68a;
+            --pending: #0284c7;
             --pending-bg: #f0f9ff;
             --pending-bd: #bae6fd;
-            --shadow: 0 1px 2px rgba(15, 23, 42, 0.06), 0 8px 24px rgba(15, 23, 42, 0.04);
-            --radius: 10px;
-            --sans: "Segoe UI", "PingFang SC", "Microsoft YaHei", "Noto Sans SC", sans-serif;
-            --mono: "Cascadia Code", "Sarasa Mono SC", Consolas, "Courier New", monospace;
+            --scope: #475569;
+            --scope-bg: #f8fafc;
+
+            /* 投影刻意压轻：平台靠留白与淡边框分层，不靠阴影。 */
+            --shadow: 0 1px 2px rgba(15, 23, 42, 0.03), 0 4px 16px rgba(15, 23, 42, 0.04);
+
+            --radius-sm: 8px;
+            --radius: 12px;
+            --radius-lg: 14px;
+            --radius-pill: 999px;
+
+            --sans: "Segoe UI", "Inter", -apple-system, "PingFang SC", "Microsoft YaHei",
+                "Noto Sans SC", sans-serif;
+            --mono: "Cascadia Code", "JetBrains Mono", "SFMono-Regular", "Sarasa Mono SC",
+                Consolas, "Courier New", monospace;
             --max: 1180px;
         }
 
@@ -47,118 +67,198 @@
         body {
             margin: 0;
             color: var(--ink);
-            background:
-                radial-gradient(1200px 420px at 12% -10%, #dbeafe 0%, transparent 55%),
-                linear-gradient(180deg, var(--canvas-2) 0%, var(--canvas) 220px, var(--canvas) 100%);
+            background: var(--bg);
             font-family: var(--sans);
             font-size: 14px;
-            line-height: 1.55;
+            line-height: 1.6;
             -webkit-font-smoothing: antialiased;
         }
 
-        a { color: var(--brand-2); text-decoration: none; }
+        a { color: var(--brand); text-decoration: none; }
         a:hover { text-decoration: underline; }
+
+        h1, h2, h3 { margin: 0; line-height: 1.3; }
+        p { margin: 0.4rem 0; }
 
         .page {
             max-width: var(--max);
             margin: 0 auto;
-            padding: 0 20px 48px;
+            padding: 24px 20px 48px;
         }
 
-        .masthead {
-            background: linear-gradient(135deg, var(--brand) 0%, var(--brand-2) 58%, #0e7490 100%);
-            color: #f8fafc;
-            box-shadow: 0 10px 30px rgba(11, 61, 92, 0.28);
-        }
-
-        .masthead-inner {
-            max-width: var(--max);
-            margin: 0 auto;
-            padding: 28px 20px 22px;
-            display: grid;
-            gap: 18px;
-        }
-
-        .brand-row {
+        /* ---------- 页头：品牌 + 标题（平台 page-head 形态，无彩色横幅） ---------- */
+        .page-head {
             display: flex;
             flex-wrap: wrap;
-            align-items: flex-start;
+            align-items: center;
             justify-content: space-between;
             gap: 12px 24px;
+            margin-bottom: 18px;
         }
 
         .brand-mark { display: flex; align-items: center; gap: 14px; }
 
-        .brand-mark .logo {
+        .brand-logo {
             width: 44px;
             height: 44px;
-            border-radius: 10px;
-            background: rgba(255, 255, 255, 0.14);
-            border: 1px solid rgba(255, 255, 255, 0.28);
+            flex: 0 0 44px;
+            border-radius: var(--radius);
+            background: var(--brand);
+            color: #fff;
             display: grid;
             place-items: center;
-            font-weight: 700;
-            font-size: 13px;
-            letter-spacing: 0.04em;
+            font-weight: 800;
+            font-size: 15px;
+            letter-spacing: 0.02em;
         }
 
         .brand-copy .eyebrow {
-            margin: 0 0 4px;
+            margin: 0 0 2px;
+            color: var(--muted);
             font-size: 12px;
             letter-spacing: 0.14em;
             text-transform: uppercase;
-            opacity: 0.82;
             font-weight: 600;
         }
 
         .brand-copy h1 {
-            margin: 0;
-            font-size: clamp(1.35rem, 2.2vw, 1.75rem);
+            font-size: 20px;
             font-weight: 700;
-            letter-spacing: 0.01em;
-            line-height: 1.25;
+            color: var(--ink);
         }
 
-        .brand-copy .subtitle {
-            margin: 6px 0 0;
+        .page-sub {
+            margin: 0;
+            color: var(--muted);
             font-size: 13px;
-            opacity: 0.88;
             max-width: 46rem;
         }
 
-        .meta-chip-row { display: flex; flex-wrap: wrap; gap: 8px; }
+        /* ---------- 周期条：对齐平台 .period-bar-prominent（淡蓝渐变 + 品牌边框） ---------- */
+        .cycle-bar {
+            background: linear-gradient(135deg, #f2f7ff 0%, #eaf2ff 100%);
+            border: 1px solid var(--brand-line);
+            border-radius: var(--radius-lg);
+            box-shadow: var(--shadow);
+            padding: 16px 22px;
+            margin-bottom: 20px;
+            display: grid;
+            gap: 12px;
+        }
 
-        .meta-chip {
-            display: inline-flex;
+        .cycle-bar-top {
+            display: flex;
+            flex-wrap: wrap;
             align-items: center;
-            gap: 6px;
-            padding: 6px 12px;
-            border-radius: 999px;
-            background: rgba(255, 255, 255, 0.12);
-            border: 1px solid rgba(255, 255, 255, 0.22);
-            font-size: 12px;
-            backdrop-filter: blur(6px);
+            justify-content: space-between;
+            gap: 12px 18px;
         }
 
-        .meta-chip strong {
+        .cycle-left { display: flex; align-items: center; gap: 14px; }
+
+        .cycle-ico {
+            width: 40px;
+            height: 40px;
+            flex: 0 0 40px;
+            border-radius: 10px;
+            background: var(--surface);
+            border: 1px solid var(--brand-line);
+            color: var(--brand);
+            display: grid;
+            place-items: center;
+        }
+
+        .cycle-ico svg { width: 20px; height: 20px; }
+
+        .context-label {
+            display: block;
+            color: var(--muted);
+            font-size: 12px;
             font-weight: 600;
-            font-family: var(--mono);
-            font-size: 12px;
+            margin-bottom: 4px;
         }
 
+        .cycle-line { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
+
+        .period-chip {
+            background: var(--surface);
+            border: 1px solid var(--brand-line);
+            border-radius: var(--radius-sm);
+            padding: 3px 10px;
+            font-size: 13px;
+            font-weight: 600;
+            color: var(--brand-deep);
+        }
+
+        .cycle-window { display: block; color: var(--muted); font-size: 13px; margin-top: 4px; }
+
+        .cycle-stats { display: flex; flex-wrap: wrap; gap: 0; align-items: center; }
+
+        .stat {
+            display: inline-flex;
+            align-items: baseline;
+            gap: 6px;
+            padding: 0 14px;
+            border-left: 1px solid var(--brand-line);
+        }
+
+        .stat:first-child { border-left: none; padding-left: 0; }
+
+        .stat-num {
+            font-size: 18px;
+            font-weight: 700;
+            font-variant-numeric: tabular-nums;
+            color: var(--ink);
+        }
+
+        .stat-label { color: var(--muted); font-size: 12px; }
+        .stat-ok .stat-num { color: var(--ok); }
+        .stat-review .stat-num { color: var(--review); }
+        .stat-skip .stat-num { color: var(--faint); }
+
+        .cycle-topology {
+            display: flex;
+            flex-wrap: wrap;
+            align-items: center;
+            gap: 8px;
+            margin: 0;
+            padding-top: 10px;
+            border-top: 1px solid var(--brand-line);
+            font-size: 13px;
+            color: var(--ink-2);
+        }
+
+        .topo-pair { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+        .topo-pair b { font-family: var(--mono); font-size: 12.5px; font-weight: 600; }
+
+        .topo-section {
+            background: var(--surface);
+            border: 1px solid var(--brand-line);
+            border-radius: var(--radius-pill);
+            padding: 1px 8px;
+            font-size: 11.5px;
+            color: var(--brand-deep);
+        }
+
+        .arrow { color: var(--brand); font-weight: 700; }
+
+        .cycle-meta { margin: 0; color: var(--muted); font-size: 12px; }
+
+        /* ---------- 导航 ---------- */
         .toc {
             position: sticky;
             top: 0;
             z-index: 40;
-            background: rgba(248, 250, 252, 0.92);
-            backdrop-filter: blur(10px);
+            background: var(--surface);
             border-bottom: 1px solid var(--line);
+            margin: 0 -20px 20px;
+            padding: 0 20px;
         }
 
         .toc-inner {
             max-width: var(--max);
             margin: 0 auto;
-            padding: 10px 20px;
+            padding: 10px 0;
             display: flex;
             flex-wrap: wrap;
             gap: 8px;
@@ -170,21 +270,22 @@
             font-size: 13px;
             font-weight: 600;
             padding: 6px 12px;
-            border-radius: 8px;
+            border-radius: var(--radius-sm);
             border: 1px solid transparent;
         }
 
         .toc a:hover {
             background: var(--brand-soft);
-            border-color: #c5d9e8;
+            border-color: var(--brand-line);
             text-decoration: none;
         }
 
+        /* ---------- 面板 ---------- */
         section.panel {
-            margin-top: 22px;
+            margin-top: 20px;
             background: var(--surface);
             border: 1px solid var(--line);
-            border-radius: var(--radius);
+            border-radius: var(--radius-lg);
             box-shadow: var(--shadow);
             overflow: hidden;
         }
@@ -195,14 +296,13 @@
             align-items: baseline;
             justify-content: space-between;
             gap: 8px 16px;
-            padding: 16px 20px;
+            padding: 14px 20px;
             border-bottom: 1px solid var(--line);
-            background: linear-gradient(180deg, #fbfcfe 0%, #f8fafc 100%);
+            background: var(--surface-2);
         }
 
         .panel-head h2 {
-            margin: 0;
-            font-size: 1.05rem;
+            font-size: 15px;
             font-weight: 700;
             color: var(--ink);
             display: flex;
@@ -223,18 +323,14 @@
             font-weight: 700;
         }
 
-        .panel-head .panel-note {
-            margin: 0;
-            color: var(--muted);
-            font-size: 12px;
-        }
+        .panel-head .panel-note { margin: 0; color: var(--muted); font-size: 12px; }
 
         .panel-body { padding: 18px 20px 20px; }
 
         .panel-body > h3,
         .panel-body .subhead {
             margin: 18px 0 10px;
-            font-size: 0.92rem;
+            font-size: 13px;
             font-weight: 700;
             color: var(--ink-2);
         }
@@ -242,93 +338,80 @@
         .panel-body > h3:first-child,
         .panel-body .subhead:first-child { margin-top: 0; }
 
+        /* ---------- KPI：平台形态（一整块面板，卡片间竖线分隔） ---------- */
         .kpi-grid {
+            /* 报告有 7 个 KPI（平台恰好 5 个，故用固定 5 列）。150px 下限保证
+               1180px 视口下 7 个同排 —— 否则末位会独占一整行被拉成通栏。 */
             display: grid;
-            grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
-            gap: 12px;
-            margin: 0 0 18px;
-        }
-
-        .kpi {
+            grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+            gap: 0;
+            margin: 0 0 16px;
             border: 1px solid var(--line);
-            border-radius: 10px;
-            padding: 14px 14px 12px;
-            background: #fff;
-            position: relative;
+            border-radius: var(--radius-lg);
+            box-shadow: var(--shadow);
+            background: var(--surface);
             overflow: hidden;
         }
 
-        .kpi::before {
-            content: "";
-            position: absolute;
-            left: 0;
-            top: 0;
-            bottom: 0;
-            width: 3px;
-            background: var(--line-strong);
+        .kpi {
+            padding: 16px 20px;
+            background: var(--surface);
+            border-left: 1px solid var(--line);
         }
+
+        .kpi:first-child { border-left: none; }
 
         .kpi .label {
             display: block;
             color: var(--muted);
-            font-size: 12px;
-            font-weight: 600;
+            font-size: 13px;
+            font-weight: 500;
             margin-bottom: 6px;
         }
 
         .kpi .value {
-            font-size: 1.5rem;
-            font-weight: 750;
+            font-size: 30px;
+            font-weight: 700;
             letter-spacing: -0.02em;
             line-height: 1.1;
             font-variant-numeric: tabular-nums;
+            color: var(--ink);
         }
 
-        .kpi.kpi-need::before { background: var(--need); }
         .kpi.kpi-need .value { color: var(--need); }
-        .kpi.kpi-review::before { background: var(--review); }
         .kpi.kpi-review .value { color: var(--review); }
-        .kpi.kpi-pending::before { background: var(--pending); }
         .kpi.kpi-pending .value { color: var(--pending); }
-        .kpi.kpi-ok::before { background: var(--ok); }
         .kpi.kpi-ok .value { color: var(--ok); }
-        .kpi.kpi-neutral::before { background: var(--brand-2); }
-        .kpi.kpi-neutral .value { color: var(--ink); }
 
+        /* ---------- 风险横幅 ---------- */
         .risk-banner {
             display: flex;
             flex-wrap: wrap;
             gap: 12px 20px;
             align-items: center;
             padding: 14px 16px;
-            border-radius: 10px;
+            border-radius: var(--radius);
             border: 1px solid var(--need-bd);
-            background: linear-gradient(90deg, var(--need-bg), #fff);
+            background: var(--need-bg);
             margin-top: 14px;
         }
 
-        .risk-banner.ok {
-            border-color: var(--ok-bd);
-            background: linear-gradient(90deg, var(--ok-bg), #fff);
-        }
+        .risk-banner.ok { border-color: var(--ok-bd); background: var(--ok-bg); }
 
         .risk-banner .risk-title { font-weight: 700; color: var(--ink); }
 
         .risk-banner .risk-metric {
-            font-size: 1.2rem;
-            font-weight: 750;
+            font-size: 20px;
+            font-weight: 700;
             color: var(--need);
             font-variant-numeric: tabular-nums;
         }
 
         .risk-banner.ok .risk-metric { color: var(--ok); }
 
-        .risk-banner .risk-note {
-            color: var(--muted);
-            font-size: 12px;
-            margin-left: auto;
-        }
+        .risk-banner .risk-note { color: var(--muted); font-size: 12px; margin-left: auto; }
 
+        /* ---------- 信息网格 ---------- */
         .info-grid {
             display: grid;
             grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
@@ -339,86 +422,102 @@
         .info-item {
             padding: 10px 12px;
             border: 1px solid var(--line);
-            border-radius: 8px;
-            background: #fbfdff;
+            border-radius: var(--radius-sm);
+            background: var(--surface-2);
         }
 
         .info-item .k {
             display: block;
             font-size: 11px;
             font-weight: 700;
-            color: var(--muted);
-            letter-spacing: 0.04em;
+            color: var(--faint);
+            letter-spacing: 0.06em;
             text-transform: uppercase;
             margin-bottom: 4px;
         }
 
-        .info-item .v {
-            font-size: 13px;
-            word-break: break-all;
-        }
+        .info-item .v { font-size: 13px; word-break: break-all; }
 
+        /* ---------- 表格 ---------- */
         .table-wrap {
             overflow-x: auto;
             border: 1px solid var(--line);
-            border-radius: 8px;
+            border-radius: var(--radius);
         }
 
         table {
             border-collapse: collapse;
             width: 100%;
             margin: 0;
-            min-width: 560px;
+            min-width: 640px;
             background: #fff;
         }
 
         th, td {
-            padding: 10px 12px;
+            padding: 11px 16px;
             text-align: left;
+            /* 报告是附件/打印场景，无 hover；top 对齐更适合多行提交说明。 */
             vertical-align: top;
             border-bottom: 1px solid var(--line);
         }
 
         th {
-            background: #f1f5f9;
-            color: var(--ink-2);
-            font-size: 12px;
-            font-weight: 700;
+            background: var(--surface-2);
+            color: var(--muted);
+            font-size: 12.5px;
+            font-weight: 600;
+            letter-spacing: 0.01em;
             white-space: nowrap;
         }
 
-        tbody tr:nth-child(even) { background: #fafbfc; }
+        /* 斑马纹刻意保留（平台用 hover 高亮，但附件/打印没有 hover）。 */
+        tbody tr:nth-child(even) { background: var(--surface-2); }
         tbody tr:last-child td { border-bottom: none; }
 
+        td.arrow { color: var(--brand); font-weight: 700; text-align: center; }
+
         .mono, code { font-family: var(--mono); font-size: 12px; }
+
+        .muted { color: var(--muted); font-size: 12.5px; }
 
         .hint {
             display: inline-block;
             margin-top: 6px;
             padding: 6px 10px;
-            background: #0f172a;
-            color: #e2e8f0;
-            border-radius: 6px;
+            background: var(--brand-soft);
+            color: var(--brand-deep);
+            border: 1px solid var(--brand-line);
+            border-radius: var(--radius-sm);
+            font-family: var(--mono);
+            font-size: 12px;
             word-break: break-all;
         }
 
-        .evidence { font-size: 0.9rem; color: #334155; }
+        .evidence { font-size: 13px; color: var(--ink-2); }
 
-        ul.compact {
-            margin: 0.25rem 0;
-            padding-left: 1.25rem;
-        }
+        ul.compact { margin: 0.25rem 0; padding-left: 1.25rem; }
 
+        /* ---------- 徽章：平台形态（pill + 圆点） ---------- */
         .badge {
             display: inline-flex;
             align-items: center;
-            gap: 4px;
-            padding: 3px 9px;
-            border-radius: 6px;
-            font-size: 12px;
-            font-weight: 700;
+            gap: 6px;
+            padding: 3px 10px;
+            border-radius: var(--radius-pill);
+            font-size: 12.5px;
+            font-weight: 600;
+            letter-spacing: 0.01em;
             border: 1px solid transparent;
             white-space: nowrap;
+        }
+
+        .badge::before {
+            content: "";
+            width: 6px;
+            height: 6px;
+            border-radius: 50%;
+            background: currentColor;
+            flex: 0 0 6px;
         }
 
         .kind-NeedSync,
@@ -426,7 +525,6 @@
             color: var(--need);
             background: var(--need-bg);
             border-color: var(--need-bd);
-            font-weight: 700;
         }
 
         .kind-ManualReview,
@@ -434,7 +532,6 @@
             color: var(--review);
             background: var(--review-bg);
             border-color: var(--review-bd);
-            font-weight: 700;
         }
 
         .badge-ok {
@@ -445,9 +542,9 @@
 
         .kind-AlreadyIncluded,
         .badge-included {
-            color: #0f766e;
-            background: #f0fdfa;
-            border-color: #99f6e4;
+            color: var(--pending);
+            background: var(--pending-bg);
+            border-color: var(--pending-bd);
         }
 
         .kind-OutOfScope,
@@ -461,12 +558,11 @@
             color: var(--pending);
             background: var(--pending-bg);
             border-color: var(--pending-bd);
-            font-weight: 700;
         }
 
         .badge-skip {
-            color: var(--muted);
-            background: #f8fafc;
+            color: var(--faint);
+            background: var(--surface-2);
             border-color: var(--line);
         }
 
@@ -482,22 +578,21 @@
             text-align: center;
             color: var(--muted);
             border: 1px dashed var(--line-strong);
-            border-radius: 8px;
-            background: #fafbfc;
+            border-radius: var(--radius);
+            background: var(--surface-2);
         }
 
         article.target-card {
             border: 1px solid var(--line);
-            border-radius: 10px;
+            border-radius: var(--radius);
             margin-bottom: 14px;
             overflow: hidden;
         }
 
         article.target-card h3 {
-            margin: 0;
             padding: 12px 16px;
-            font-size: 0.95rem;
-            background: #f8fafc;
+            font-size: 14px;
+            background: var(--surface-2);
             border-bottom: 1px solid var(--line);
             display: flex;
             flex-wrap: wrap;
@@ -505,16 +600,13 @@
             align-items: center;
         }
 
-        article.target-card .table-wrap {
-            border: none;
-            border-radius: 0;
-        }
+        article.target-card .table-wrap { border: none; border-radius: 0; }
 
         .callout {
             padding: 12px 14px;
-            border-radius: 8px;
+            border-radius: var(--radius-sm);
             border: 1px solid var(--line);
-            background: #f8fafc;
+            background: var(--surface-2);
             color: var(--muted);
             font-size: 13px;
         }
@@ -522,7 +614,7 @@
         .callout.pending {
             background: var(--pending-bg);
             border-color: var(--pending-bd);
-            color: #0c4a6e;
+            color: #075985;
         }
 
         .footer {
@@ -549,7 +641,7 @@
             border-radius: 50%;
             background: var(--brand);
             color: #fff;
-            box-shadow: 0 8px 20px rgba(11, 61, 92, 0.35);
+            box-shadow: 0 8px 20px rgba(47, 107, 251, 0.35);
             cursor: pointer;
             display: flex;
             align-items: center;
@@ -566,23 +658,20 @@
             transform: translateY(0);
         }
 
-        .back-to-top:hover { background: var(--brand-2); }
+        .back-to-top:hover { background: var(--brand-deep); }
 
-        .back-to-top svg {
-            width: 22px;
-            height: 22px;
-            display: block;
-        }
+        .back-to-top svg { width: 22px; height: 22px; display: block; }
 
         @media (max-width: 720px) {
-            .masthead-inner { padding: 22px 16px 18px; }
+            .page { padding: 18px 14px 36px; }
             .panel-body { padding: 14px; }
+            .stat { padding: 0 10px; }
         }
 
         @media print {
             body { background: #fff; }
             .toc, .back-to-top { display: none !important; }
-            .masthead { box-shadow: none; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+            .cycle-bar { box-shadow: none; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
             section.panel { box-shadow: none; break-inside: avoid; }
             article.target-card { break-inside: avoid; }
             a { color: inherit; text-decoration: none; }
@@ -590,70 +679,88 @@
     </style>
 </head>
 <body>
-    <header class="masthead">
-        <div class="masthead-inner">
-            <div class="brand-row">
-                <div class="brand-mark">
-                    <div class="logo" aria-hidden="true">BSA</div>
-                    <div class="brand-copy">
-                        <p class="eyebrow">Branch Sync Agent</p>
-                        <h1>分支同步周期报告</h1>
-                        <p class="subtitle">跨同源分支 Bug Fix 同步执行交付件：检测 → 决策 → cherry-pick → 编译验证 → patch。</p>
+    <div class="page">
+        <div class="page-head">
+            <div class="brand-mark">
+                <div class="brand-logo" aria-hidden="true">BSA</div>
+                <div class="brand-copy">
+                    <p class="eyebrow">Branch Sync Agent</p>
+                    <h1>分支同步周期报告</h1>
+                </div>
+            </div>
+            <p class="page-sub">跨同源分支 Bug Fix 同步执行交付件：检测 → 决策 → cherry-pick → 编译验证 → patch</p>
+        </div>
+
+        <header class="cycle-bar">
+            <div class="cycle-bar-top">
+                <div class="cycle-left">
+                    <span class="cycle-ico" aria-hidden="true">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+                             stroke-linecap="round" stroke-linejoin="round">
+                            <rect x="3" y="4" width="18" height="18" rx="2"/>
+                            <path d="M16 2v4M8 2v4M3 10h18"/>
+                        </svg>
+                    </span>
+                    <div>
+                        <span class="context-label">当前周期</span>
+                        <div class="cycle-line">
+                            <code class="mono period-chip">{{CYCLE_ID}}</code>
+                            <span class="badge {{STATUS_CLASS}}">{{STATUS_LABEL}}</span>
+                        </div>
+                        <span class="cycle-window">窗口时间 {{SCAN_WINDOW}}</span>
                     </div>
                 </div>
-                <div class="meta-chip-row">
-                    <span class="meta-chip">周期 <strong>{{CYCLE_ID}}</strong></span>
-                    <span class="meta-chip">扫描窗口 <strong>{{SCAN_WINDOW}}</strong></span>
-                    <span class="meta-chip">生成时间 <strong>{{GENERATED_AT}}</strong></span>
+                <div class="cycle-stats">{{HERO_STATS}}</div>
+            </div>
+            <p class="cycle-topology">{{HERO_TOPOLOGY}}</p>
+            <p class="cycle-meta">生成时间 {{GENERATED_AT}}</p>
+        </header>
+
+        <nav class="toc" aria-label="报告导航">
+            <div class="toc-inner">
+                <a href="#bsa-detection">01 检测信息</a>
+                <a href="#bsa-action">02 Action Required</a>
+                <a href="#bsa-sync">03 同步执行结果</a>
+            </div>
+        </nav>
+
+        <main>
+            <section class="panel" id="bsa-detection">
+                <div class="panel-head">
+                    <h2><span class="idx">01</span>检测信息</h2>
+                    <p class="panel-note">扫描窗口 · 分类统计 · 决策汇总</p>
                 </div>
-            </div>
-        </div>
-    </header>
+                <div class="panel-body">
+                    {{DETECTION_BODY}}
+                </div>
+            </section>
 
-    <nav class="toc" aria-label="报告导航">
-        <div class="toc-inner">
-            <a href="#bsa-detection">01 检测信息</a>
-            <a href="#bsa-action">02 Action Required</a>
-            <a href="#bsa-sync">03 同步执行结果</a>
-        </div>
-    </nav>
+            <section class="panel" id="bsa-action">
+                <div class="panel-head">
+                    <h2><span class="idx">02</span>Action Required</h2>
+                    <p class="panel-note">人工确认项与错误记录（推送永远人工，决策 1）</p>
+                </div>
+                <div class="panel-body">
+                    {{ACTION_BODY}}
+                </div>
+            </section>
 
-    <main class="page">
-        <section class="panel" id="bsa-detection">
-            <div class="panel-head">
-                <h2><span class="idx">01</span>检测信息</h2>
-                <p class="panel-note">扫描窗口 · 分类统计 · 决策汇总</p>
-            </div>
-            <div class="panel-body">
-                {{DETECTION_BODY}}
-            </div>
-        </section>
+            <section class="panel" id="bsa-sync">
+                <div class="panel-head">
+                    <h2><span class="idx">03</span>同步执行结果</h2>
+                    <p class="panel-note">逐目标分支执行结果、失败明细与补丁产物</p>
+                </div>
+                <div class="panel-body">
+                    {{SYNC_BODY}}
+                </div>
+            </section>
+        </main>
 
-        <section class="panel" id="bsa-action">
-            <div class="panel-head">
-                <h2><span class="idx">02</span>Action Required</h2>
-                <p class="panel-note">人工确认项与错误记录（推送永远人工，决策 1）</p>
-            </div>
-            <div class="panel-body">
-                {{ACTION_BODY}}
-            </div>
-        </section>
-
-        <section class="panel" id="bsa-sync">
-            <div class="panel-head">
-                <h2><span class="idx">03</span>同步执行结果</h2>
-                <p class="panel-note">逐目标分支执行结果、失败明细与补丁产物</p>
-            </div>
-            <div class="panel-body">
-                {{SYNC_BODY}}
-            </div>
-        </section>
-    </main>
-
-    <footer class="footer">
-        <div>Branch Sync Agent · 自动执行交付 · 推送永远人工 · 所有代码修改事后审核</div>
-        <div>结论代码保留英文枚举（NeedSync / AlreadyIncluded / ManualReview / OutOfScope）便于自动化对接</div>
-    </footer>
+        <footer class="footer">
+            <div>Branch Sync Agent · 自动执行交付 · 推送永远人工 · 所有代码修改事后审核</div>
+            <div>结论代码保留英文枚举（NeedSync / AlreadyIncluded / ManualReview / OutOfScope）便于自动化对接</div>
+        </footer>
+    </div>
 
     <button type="button" class="back-to-top" id="bsa-back-to-top" aria-label="返回顶部" title="返回顶部">
         <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">

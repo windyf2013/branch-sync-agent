@@ -14,73 +14,21 @@ history / detail）与 executor 终态富化共用，可单测直接 import。
 
 from __future__ import annotations
 
-import re
+# 节点名 / stop_reason 的中文映射已收敛到 bsa.domain.labels（引擎的报告渲染也要用，
+# 而 bsa 不能反向 import bsa_web）。此处 import 后即为本模块的公开 API —— 与搬移前
+# 同名同对象，`app.py` 的过滤器注册与既有导入点因此零改动，两处映射也不会各自漂移。
+from bsa.domain.labels import humanize_stop_reason, node_label
+
+__all__ = [
+    "_UNATTRIBUTABLE_BUILD_REASON",
+    "humanize_stop_reason",
+    "node_label",
+]
 
 # 旧版引擎写死的「LLM 不可用」占位 reason（无真实失败信息）：仅兼容旧记录，
 # 命中时改由日志定位（build_labels.extract_build_errors）提取真实错误。新引擎
 # 已让 reason 携带真实失败原因（「LLM 调用失败：…」），会作为正常归因展示。
 _UNATTRIBUTABLE_BUILD_REASON = "LLM 不可用，无法归因"
-
-# 节点名 → 中文标签（页面展示用）。与引擎 progress.py 的 NODE_LABELS 语义一致，
-# 但这里覆盖更全（含 decide / branch_matrix 等只在错误路径出现的节点），
-# 未知节点原样返回兜底，绝不吞掉信息。
-_NODE_ZH: dict[str, str] = {
-    "detect_commits": "代码迁出",
-    "sync_decision": "同步判定",
-    "decide": "同步判定",
-    "branch_matrix": "分支拓扑解析",
-    "prepare_worktree": "建立 worktree",
-    "baseline_build": "基线编译",
-    "cherry_pick": "cherry-pick",
-    "resolve_conflict": "解决冲突",
-    "build": "编译",
-    "fix_build": "修复重编译",
-    "generate_patch": "生成 patch",
-    "report": "生成报告",
-    "fail_fast": "失败关联判定",
-    "next_branch": "切换目标分支",
-    "next_commit": "切换提交",
-}
-
-# 引擎写死的英文 stop_reason → 自然中文。按 (正则, 格式化函数) 顺序匹配，
-# 命中即替换；未命中原样透传（历史数据或未来新增文案不会因此丢失）。
-_STOP_REASON_PATTERNS: list[tuple[re.Pattern, object]] = [
-    (
-        re.compile(r"^baseline build failed on (.+)$"),
-        lambda m: f"型号 {m.group(1)} 基线编译失败",
-    ),
-    # 同步中断 ≠ 冲突：前者是引擎/工具链没能完成 cherry-pick（无需人工解代码），
-    # 后者才需要人工裁决。措辞刻意避开「冲突」二字，避免误导响应方向。
-    (
-        re.compile(r"^cherry-pick failed on (\S+)$"),
-        lambda m: f"提交 {m.group(1)} 同步中断（cherry-pick 未能完成）",
-    ),
-    (
-        re.compile(r"^fail-fast: (\S+) failed; subsequent commits judged related$"),
-        lambda m: f"{m.group(1)} 失败，后续关联提交已一并停批",
-    ),
-    (
-        re.compile(r"^fail-fast: (\S+) failed$"),
-        lambda m: f"{m.group(1)} 失败",
-    ),
-]
-
-
-def node_label(node: str | None) -> str:
-    """节点名 → 中文标签；未知节点原样返回（兜底不吞）。"""
-    return _NODE_ZH.get(str(node or ""), node or "")
-
-
-def humanize_stop_reason(text: str | None) -> str | None:
-    """把引擎写死的英文 stop_reason 转成自然中文；未知内容原样透传。"""
-    if not isinstance(text, str) or not text.strip():
-        return text
-    t = text.strip()
-    for pattern, fmt in _STOP_REASON_PATTERNS:
-        m = pattern.match(t)
-        if m:
-            return fmt(m)
-    return t
 
 
 def failure_summary(payload: dict, target: str | None = None) -> list[str]:

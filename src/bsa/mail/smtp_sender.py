@@ -89,11 +89,17 @@ def build_message(
     cc: list[str],
     attachments: list[Path],
     html_path: Path | None = None,
+    body_html: str | None = None,
 ) -> EmailMessage:
     """组装 MIME：纯文本正文 + 可选 HTML alternative + 附件。
 
-    HTML 报告若存在则作为 ``text/html`` alternative（客户端优先渲染）；同时仍附
-    原件作附件，保证交付物可归档。
+    ``text/html`` alternative 的取值优先级：
+
+    1. ``body_html`` —— 邮件正文摘要（收件人不点开附件就能读核心信息）；
+    2. ``html_path`` —— 回退：把该文件全文当正文（改造前的行为，保持向后兼容）。
+
+    ``html_path`` 指向的报告即便降为纯附件，仍由 sender 侧插入附件列表归档
+    （见 ``make_smtp_sender``），交付物不丢。
     """
     from_addr = str(settings.mail_sender or _smtp_user(settings)).strip()
     from_name = str(settings.mail_from_name or "").strip()
@@ -106,7 +112,9 @@ def build_message(
     msg["Subject"] = subject
     msg.set_content(body or "", subtype="plain", charset="utf-8")
 
-    if html_path is not None and html_path.is_file():
+    if body_html is not None:
+        msg.add_alternative(body_html, subtype="html", charset="utf-8")
+    elif html_path is not None and html_path.is_file():
         try:
             msg.add_alternative(
                 html_path.read_text(encoding="utf-8", errors="replace"),
@@ -239,6 +247,7 @@ def make_smtp_sender(
                 cc=cc,
                 attachments=attachments,
                 html_path=html_abs,
+                body_html=payload.get("body_html"),
             )
             _send(msg, settings, to + cc)
         except Exception as exc:  # noqa: BLE001 — 发信失败记结果并降级，绝不炸周期

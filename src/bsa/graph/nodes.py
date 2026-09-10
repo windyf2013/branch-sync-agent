@@ -31,6 +31,7 @@ from bsa.executor.base import CommandExecutor
 from bsa.executor.exceptions import InfrastructureError
 from bsa.git.service import GitService
 from bsa.graph.progress import NODE_LABELS, ProgressJournal
+from bsa.report.topology import matrix_to_topology
 from bsa.rules import (
     BuildConfigError,
     BuildRules,
@@ -348,6 +349,9 @@ def detect_commits(state: dict, ctx: GraphContext) -> dict:
         "classifications": classifications,
         "sources": sorted({s.name for hs in ctx.matrix for s in hs.sources}),
         "targets": sorted({t.name for hs in ctx.matrix for t in hs.need_sync_targets}),
+        # 这里是唯一还持有 ctx.matrix 的地方（invoke 结束它随 ctx 丢弃）。
+        # 不投影出去，报告就说不出「哪个业务分支喂哪个主分支」。
+        "topology": matrix_to_topology(ctx.matrix),
         "status": "DETECTED",
     }
     # 零同步边 = 扫描面为空 = 周期静默空跑。最常见成因是 CRON_BRANCH_FILE 漏配，
