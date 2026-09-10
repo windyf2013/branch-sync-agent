@@ -16,7 +16,7 @@
       {% set _part = all_branches | selectattr("status", "equalto", "PARTIAL") | list | length %}
       {% set _fail = all_branches | selectattr("status", "equalto", "FAILED") | list | length %}
       {% set _man = all_branches | selectattr("status", "equalto", "MANUAL") | list | length %}
-      <span class="muted">分支：成功 {{ _succ }} · 停批 {{ _part }} · 失败 {{ _fail }} · 待处理 {{ _man }}</span>
+      <span class="muted">分支：成功 {{ _succ }} · 未完成 {{ _part }} · 失败 {{ _fail }} · 待处理 {{ _man }}</span>
     {% endif %}
   </div>
   {% endif %}
@@ -81,7 +81,7 @@
 {% endif %}
 
 {% if step_groups %}
-<section class="panel">
+<section class="panel" id="steps">
 <div class="panel-head"><h2>处理过程</h2><span class="panel-note">按执行顺序：周期流程与各目标分支的处理流水，冲突 / 编译失败 / 修复可展开查看</span></div>
   <div class="panel-body">
     {% include "_steps_grouped.html" %}
@@ -219,7 +219,11 @@
 <section class="panel">
 <div class="panel-head"><h2>基本信息</h2></div>
   <div class="panel-body">
-<p class="commit-message">{{ commit.message }}</p>
+{# 提交说明是**提交作者写的元数据**，不是引擎结论。曾与系统诊断视觉同级渲染，
+   cycle-2026-09-10 的一句「merge from P200 (编译错误待yuanhuaili修改)」因此被
+   当成编译失败结论。此处显式标注来源，把它降级为引文。 #}
+  <div class="muted commit-message-source">提交说明（来自提交作者 {{ commit.author }}，非系统结论）</div>
+  <blockquote class="commit-message">{{ commit.message }}</blockquote>
   <p class="muted">改动文件：{{ commit.changed_files | join(", ") }}</p>
   </div>
 </section>

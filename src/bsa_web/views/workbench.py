@@ -26,7 +26,10 @@ _RERUN_STATUSES = ("FAILED", "PARTIAL", "MANUAL")
 _STATUS_LABELS = {
     "SUCCESS": "成功",
     "FAILED": "失败",
-    "PARTIAL": "停批",
+    # PARTIAL 只表示「这批没走完」，不表示引擎做了停批决定。「停批」一词专属
+    # FAILFAST_STOP（引擎判定后续 commit 关联、主动停止），二者不可混用：
+    # cycle-2026-09-10 显示「停批」而 fail_fast 根本没执行，误导了响应方向。
+    "PARTIAL": "未完成",
     "MANUAL": "待处理",
     "UNKNOWN": "未知",
     "RUNNING": "进行中",
@@ -48,6 +51,22 @@ _TASK_STATE_STATUS = {
 _ACTIVE_STATES = ("queued", "running")
 # interrupted 任务需保留展示（用户据此续跑），窗口过滤时视作活动。
 _KEEP_STATES = _ACTIVE_STATES + ("interrupted",)
+
+
+_NO_REASON_HINT = "未记录原因 · 查看处理过程"
+
+
+def _agent_status(cycle_status: str | None) -> str:
+    """周期终态 → 首屏周期徽章的展示态。
+
+    PARTIAL 单列 ``partial``，不再与 FAILED 合并：它表示「周期跑完了，但有分支没
+    走完」，而不是「周期执行失败」。
+    """
+    if cycle_status == "FAILED":
+        return "failed"
+    if cycle_status == "PARTIAL":
+        return "partial"
+    return "done"
 
 
 def _branch_options(settings) -> list[str]:
@@ -205,7 +224,11 @@ def _auto_tasks(
                 "target": target,
                 "status": status,
                 "badge": _STATUS_LABELS.get(status, status),
-                "reason": reasons[0] if reasons else "",
+                # 状态非 SUCCESS 却说不出原因时，不能留空：空白会把读者推向 commit
+                # message 之类的无关文本（cycle-2026-09-10「编译错误待 xxx 修改」
+                # 的误读即由此而来）。显式指向可下钻的步骤流。
+                "reason": reasons[0] if reasons else _NO_REASON_HINT,
+                "reason_unknown": not reasons,
                 "commits": len(commits),
                 "synced": synced,
                 "skipped": skipped,
@@ -450,7 +473,10 @@ def workbench(request: Request, user: Annotated[dict, Depends(require_login)]):
         user=user,
         csrf=csrf,
         current_cycle_id=cycle_id,
-        agent_status="failed" if payload.get("status") in ("FAILED", "PARTIAL") else "done",
+        # 三态分离：FAILED 才是真失败；PARTIAL 是「跑完了但有分支没走完」。
+        # 二者曾一起折进 "failed"，导致首屏只显示「失败」而分支行同时显示「停批」
+        # —— 同一个 PARTIAL 在同一屏出现两个词，是复盘时最主要的困惑来源。
+        agent_status=_agent_status(payload.get("status")),
         cycle_status=payload.get("status"),
         cycle_status_label=_STATUS_LABELS.get(
             payload.get("status") or "UNKNOWN", "未知"

@@ -148,6 +148,14 @@ def task_detail(
     # ManualReview 成因 cause 从 payload.decisions[sha][target].cause 补进 review_item，
     # 供模板按成因精确渲染 override 控件（pending→标记 bug fix、severity_gate/
     # fix_missing→风险、其余/缺失→无 override，仅确认继续/放弃）。
+    # CONFLICT commit 有两种截然不同的处境，必须分开陈述：
+    #   - resolve_conflict 跑过且失败（action_required 有该节点的错误）→「冲突解决失败」；
+    #   - cron 链路遇冲突直接收尾、从不尝试消解 →「待人工解决冲突」。
+    # 旧版无条件显示前者，把「从没试过」说成了「试过但失败」。
+    resolve_attempted_failed = any(
+        item.get("node") == "resolve_conflict" and item.get("branch") in (None, target)
+        for item in (payload.get("action_required") or [])
+    )
     decisions = payload.get("decisions") or {}
     review_items = []
     for item in (payload.get("action_required") or []):
@@ -164,6 +172,7 @@ def task_detail(
         payload=payload,
         cycle_id=cycle_id,
         target=target,
+        resolve_attempted_failed=resolve_attempted_failed,
         branch=branch,
         status=status,
         task_error=task_error,

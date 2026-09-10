@@ -12,6 +12,79 @@ from bsa_web.failure import (
 )
 
 
+def test_cherry_pick_failed_surfaces_git_reason():
+    """cycle-2026-09-10 现场：merge commit 缺 ``-m`` 致 cherry-pick FAILED。
+
+    修复前该状态在 failure_summary 里**完全没有分支**，首屏「失败原因」列因此为
+    空，把人推向 commit message 里的无关文本（「编译错误待 xxx 修改」）。
+    """
+    payload = {
+        "branch_results": {
+            "br_main": {
+                "target_branch": "br_main",
+                "stop_reason": "cherry-pick failed on 2167067440",
+                "commits": [
+                    {
+                        "sha": "2167067440d9fcdbfabc1e82caf3434f7ce767bc",
+                        "cherry_pick": "FAILED",
+                        "build": {},
+                        "reason": (
+                            "error: commit 2167067440 is a merge but no -m option was given.\n"
+                            "fatal: cherry-pick failed"
+                        ),
+                    }
+                ],
+            }
+        },
+        "action_required": [],
+    }
+    reasons = failure_summary(payload)
+    assert "br_main: 提交 2167067440 同步中断（cherry-pick 未能完成）" in reasons
+    # 只取首行：完整原文留在 commit 详情里，摘要不刷屏
+    assert "21670674 同步中断（cherry-pick 未能完成）：error: commit" in reasons[1]
+    assert not any("fatal: cherry-pick failed" in r for r in reasons)
+
+
+def test_cherry_pick_failed_without_reason_still_reports():
+    """引擎没留原因时也必须说话，不能安静地空着。"""
+    payload = {
+        "branch_results": {
+            "br_main": {
+                "target_branch": "br_main",
+                "commits": [{"sha": "abcdef1234", "cherry_pick": "FAILED", "build": {}}],
+            }
+        },
+        "action_required": [],
+    }
+    assert failure_summary(payload) == ["abcdef12 同步中断（cherry-pick 未能完成，引擎未记录原因）"]
+
+
+def test_cycle_errors_fallback_when_nothing_else():
+    """字段全缺（历史数据）时，用周期级 errors 兜底，绝不返回空。"""
+    payload = {
+        "branch_results": {},
+        "action_required": [],
+        "errors": {"cherry_pick": {"node": "cherry_pick", "error": "a1: fatal: boom"}},
+    }
+    assert failure_summary(payload) == ["cherry-pick 节点错误：a1: fatal: boom"]
+
+
+def test_cycle_errors_not_used_when_specific_reason_exists():
+    """有更具体的归因时，兜底不应抢戏（避免同一失败重复列出）。"""
+    payload = {
+        "branch_results": {
+            "br_main": {
+                "target_branch": "br_main",
+                "stop_reason": "cherry-pick failed on a1",
+                "commits": [],
+            }
+        },
+        "action_required": [],
+        "errors": {"cherry_pick": {"node": "cherry_pick", "error": "冗余"}},
+    }
+    assert failure_summary(payload) == ["br_main: 提交 a1 同步中断（cherry-pick 未能完成）"]
+
+
 def test_node_failure_action_required():
     payload = {
         "branch_results": {},

@@ -789,6 +789,56 @@ class TestTaskDetail:
         assert "冲突解决失败" in r.text
         assert "解决冲突" in r.text
 
+    def test_detail_cron_conflict_does_not_claim_resolution_failed(self, tmp_path, monkeypatch):
+        """cron 链路遇冲突直接收尾，从不尝试消解 → 不得显示「冲突解决失败」。
+
+        回归：旧版对 CONFLICT 无条件断言「冲突解决失败」，把「从没试过」说成了
+        「试过但失败」，误导响应方向。
+        """
+        app = _make_app(tmp_path)
+        client = _client(app)
+        _login(client)
+        branch = _branch(
+            "feat/x",
+            "未完成",
+            commits=[{"sha": "a1", "cherry_pick": "CONFLICT", "conflict_resolution": None, "build": {}}],
+        )
+        payload = _payload(status="PARTIAL", branch_results={"feat/x": branch}, action_required=[])
+        _mount_cycle(monkeypatch, payload)
+        r = client.get(f"/task/{_CYCLE}/feat/x")
+        assert r.status_code == 200
+        assert "冲突解决失败" not in r.text
+        assert "待人工解决冲突" in r.text
+
+    def test_detail_cherry_pick_failed_shows_engine_reason(self, tmp_path, monkeypatch):
+        """cherry-pick FAILED 的 git 诊断必须能在详情页展开看到。
+
+        回归：cycle-2026-09-10 的失败原因的源头就断了（stderr 被丢弃），
+        「处理明细」展开后只有一句「无展开详情」。
+        """
+        app = _make_app(tmp_path)
+        client = _client(app)
+        _login(client)
+        branch = _branch(
+            "feat/x",
+            "未完成",
+            commits=[
+                {
+                    "sha": "2167067440d9fcdbfabc1e82caf3434f7ce767bc",
+                    "cherry_pick": "FAILED",
+                    "conflict_resolution": None,
+                    "build": {},
+                    "reason": "error: commit 2167067440 is a merge but no -m option was given.",
+                }
+            ],
+        )
+        payload = _payload(status="FAILED", branch_results={"feat/x": branch}, action_required=[])
+        _mount_cycle(monkeypatch, payload)
+        r = client.get(f"/task/{_CYCLE}/feat/x")
+        assert r.status_code == 200
+        assert "no -m option was given" in r.text
+        assert "无展开详情。" not in r.text
+
     def test_detail_running_task_redirects_to_status_page(self, tmp_path, monkeypatch):
         # 竞态回归：cycle_id 已回写但 state.json 未落盘（任务仍在跑），详情页投影未就绪
         # → 重定向到任务状态页，不再 404 "目标分支不存在"

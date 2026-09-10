@@ -125,7 +125,11 @@ def _detection_body(state: dict, report: Report) -> str:
         parts.append(
             '<h3>提交与决策</h3>'
             '<div class="table-wrap"><table>'
-            "<thead><tr><th>SHA</th><th>源分支</th><th>提交说明</th><th>决策</th></tr></thead>"
+            # 「作者原文」是刻意标注：提交说明是元数据，不是引擎结论。
+            # cycle-2026-09-10 的一句「编译错误待yuanhuaili修改」被当成系统诊断，
+            # 因为这一列与引擎判定视觉同级。
+            "<thead><tr><th>SHA</th><th>源分支</th><th>提交说明（作者原文）</th>"
+            "<th>决策</th></tr></thead>"
             f"<tbody>{''.join(rows)}</tbody>"
             "</table></div>"
         )

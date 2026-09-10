@@ -915,6 +915,16 @@ li.task-panel a { font-weight: 600; }
 /* diff / 日志预览（深色代码块） */
 .commit-message { white-space: pre-wrap; word-break: break-word; }
 
+/* 提交说明是引文（作者元数据），不是引擎结论 —— 视觉上明确降级。 */
+.commit-message-source { font-size: 12px; margin-bottom: 6px; }
+blockquote.commit-message {
+    margin: 0 0 10px;
+    padding: 8px 12px;
+    border-left: 3px solid var(--line, #d8dee9);
+    background: var(--surface-2, #f6f8fa);
+    color: var(--text-2, #4b5563);
+}
+
 .diff-pre {
     background: #0d1526;
     color: #dbe4f4;

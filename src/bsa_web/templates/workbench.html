@@ -66,6 +66,8 @@
           <span class="badge running period-badge-lg">进行中</span>
         {% elif agent_status == "failed" %}
           <span class="badge failed period-badge-lg">失败</span>
+        {% elif agent_status == "partial" %}
+          <span class="badge partial period-badge-lg">未完成</span>
         {% elif agent_status == "unavailable" %}
           <span class="badge failed period-badge-lg">数据不可用</span>
         {% elif agent_status == "done" %}
@@ -238,7 +240,7 @@
               {% if t.abandoned %}<span class="badge abandoned">已放弃</span>{% endif %}
             </td>
             <td class="num sync-skip"><span class="sync-num">同步 {{ t.synced }}</span> · <span class="skip-num">跳过 {{ t.skipped }}</span></td>
-            <td class="cell-reason{% if not t.reason %} empty{% endif %}">{{ t.reason or "—" }}</td>
+            <td class="cell-reason{% if t.reason_unknown %} empty{% endif %}">{% if t.reason_unknown %}<a href="/cycle/{{ t.cycle_id }}#steps" class="muted">{{ t.reason }}</a>{% else %}{{ t.reason }}{% endif %}</td>
             <td>
               {% if t.abandoned %}
                 {% if user.is_operator %}

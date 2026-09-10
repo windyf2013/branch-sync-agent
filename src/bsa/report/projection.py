@@ -53,6 +53,9 @@ def projection_payload(state: dict[str, Any]) -> dict[str, Any]:
             t: b.model_dump() for t, b in (state.get("branch_results") or {}).items()
         },
         "action_required": (rep.action_required if rep is not None else []) or [],
+        # 节点级失败原文（含 cherry-pick 的 git 诊断）。不导出它，平台就只剩一串
+        # 无因的枚举可显示 —— 「失败但说不出为什么」正是本次复盘的主要痛点。
+        "errors": {k: e.model_dump() for k, e in (state.get("errors") or {}).items()},
     }
 
 

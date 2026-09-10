@@ -49,6 +49,12 @@ _STOP_REASON_PATTERNS: list[tuple[re.Pattern, object]] = [
         re.compile(r"^baseline build failed on (.+)$"),
         lambda m: f"型号 {m.group(1)} 基线编译失败",
     ),
+    # 同步中断 ≠ 冲突：前者是引擎/工具链没能完成 cherry-pick（无需人工解代码），
+    # 后者才需要人工裁决。措辞刻意避开「冲突」二字，避免误导响应方向。
+    (
+        re.compile(r"^cherry-pick failed on (\S+)$"),
+        lambda m: f"提交 {m.group(1)} 同步中断（cherry-pick 未能完成）",
+    ),
     (
         re.compile(r"^fail-fast: (\S+) failed; subsequent commits judged related$"),
         lambda m: f"{m.group(1)} 失败，后续关联提交已一并停批",
@@ -88,8 +94,10 @@ def failure_summary(payload: dict, target: str | None = None) -> list[str]:
     1. branch_results[target].stop_reason
     2. action_required 节点失败的 node:error（带 branch 的节点失败按分支过滤，
        周期级失败在 target=None 时始终透出）
-    3. commit 级 resolution_error（冲突解决失败）
-    4. build outcome 的 o.reason / 编译失败占位标记
+    3. commit 级 reason（cherry-pick 未能完成，多为引擎/工具链问题）
+    4. commit 级 resolution_error（冲突解决失败，需人工裁决）
+    5. 周期级 errors 兜底（节点失败原文）
+    6. build outcome 的 o.reason / 编译失败占位标记
 
     返回空列表 = 无执行失败（周期可能因 MANUAL/待人工而终态非 SUCCESS，
     此时由调用方据 action_required 给出「无执行失败」的旁注，见 detail.py）。
@@ -126,12 +134,20 @@ def failure_summary(payload: dict, target: str | None = None) -> list[str]:
             reason = f"{node_branch}: {reason}"
         reasons.append(reason)
 
-    # 3. commit 级 resolution_error + build 失败
+    # 3. commit 级 cherry-pick 失败 / resolution_error + build 失败
     for branch_name, branch in branches.items():
         if target is not None and branch_name != target:
             continue
         for cr in branch.get("commits") or []:
             short = (cr.get("sha") or "")[:8]
+            if cr.get("cherry_pick") == "FAILED":
+                detail = _first_line(cr.get("reason"))
+                reasons.append(
+                    f"{short} 同步中断（cherry-pick 未能完成）：{detail}"
+                    if detail
+                    else f"{short} 同步中断（cherry-pick 未能完成，引擎未记录原因）"
+                )
+                continue
             resolution_error = cr.get("resolution_error")
             if resolution_error:
                 reasons.append(f"{short} 冲突解决失败：{resolution_error}")
@@ -144,6 +160,15 @@ def failure_summary(payload: dict, target: str | None = None) -> list[str]:
                     reasons.append(f"{short} {model} 编译失败：{reason}")
                 else:
                     reasons.append(f"{short} {model} 编译失败")
+
+    # 4. 周期级 errors 兜底：即便上面的字段都缺（历史数据 / 未覆盖的节点），
+    #    也不能让「失败原因」安静地空着 —— 空着会把人推向 commit message 之类的
+    #    无关文本（cycle-2026-09-10 的误读正是这么发生的）。
+    if not reasons:
+        for node, rec in sorted((payload.get("errors") or {}).items()):
+            message = _first_line((rec or {}).get("error"))
+            if message:
+                reasons.append(f"{node_label(node)} 节点错误：{message}")
 
     # 去重保序
     seen: set[str] = set()
@@ -301,3 +326,17 @@ def _append_if_text(reasons: list[str], value: object) -> None:
     """value 非空则追加（strip 后仍非空）。"""
     if isinstance(value, str) and value.strip():
         reasons.append(value.strip())
+
+
+def _first_line(value: object) -> str:
+    """取多行诊断的首个非空行。
+
+    git 的诊断常是多行（``error: …`` + ``fatal: cherry-pick failed``）；摘要里
+    只留第一行，完整原文仍在 commit 详情/errors 里可查。
+    """
+    if not isinstance(value, str):
+        return ""
+    for line in value.splitlines():
+        if line.strip():
+            return line.strip()
+    return ""

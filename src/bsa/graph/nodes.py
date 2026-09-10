@@ -653,7 +653,14 @@ def prepare_worktree(state: dict, ctx: GraphContext) -> dict:
 
 
 def cherry_pick(state: dict, ctx: GraphContext) -> dict:
-    """Cherry-pick current_commit into the current worktree."""
+    """Cherry-pick current_commit into the current worktree.
+
+    ``FAILED``（非冲突、non-zero）时中止整条分支批次。cron 路由对该状态直接走
+    report，绕过 ``generate_patch`` —— 而那正是唯一会用 ``_final_branch_status``
+    重算分支状态、并写 stop_reason 的地方。若不在此处补一次收尾，分支状态会停在
+    ``prepare_worktree`` 写的初值 ``PARTIAL``，UI 只能显示一个没有原因的「未完成」，
+    且 git 的诊断（如 merge commit 缺 ``-m``）完全无处可查。
+    """
     target = state["current_target"]
     sha = state["current_commit"]
     wg = _worktree_git(state, ctx)
@@ -670,14 +677,34 @@ def cherry_pick(state: dict, ctx: GraphContext) -> dict:
         cherry_pick=result.status,
         conflict_resolution=current.conflict_resolution if current else None,
         build=dict(current.build) if current else {},
+        resolution_error=current.resolution_error if current else None,
+        reason=result.error,
     )
     commits = list(branch.commits)
     if current is None:
         commits.append(commit_result)
     else:
         commits[index] = commit_result
-    results[target] = branch.model_copy(update={"commits": commits})
-    return {"branch_results": results, "status": f"CHERRY_PICK_{result.status}"}
+    update: dict[str, Any] = {"status": f"CHERRY_PICK_{result.status}"}
+    if result.status == "FAILED":
+        results[target] = branch.model_copy(
+            update={
+                "commits": commits,
+                "status": _final_branch_status(commits),
+                "stop_reason": f"cherry-pick failed on {sha[:10]}",
+            }
+        )
+        errors = dict(state.get("errors") or {})
+        errors["cherry_pick"] = ErrorRecord(
+            node="cherry_pick",
+            error=f"{sha[:10]}: {result.error or 'git cherry-pick 未返回诊断信息'}",
+            ts=_now_iso(),
+        )
+        update["errors"] = errors
+    else:
+        results[target] = branch.model_copy(update={"commits": commits})
+    update["branch_results"] = results
+    return update
 
 
 def resolve_conflict(state: dict, ctx: GraphContext) -> dict:

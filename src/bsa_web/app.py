@@ -91,7 +91,8 @@ templates.env.filters["localtime"] = _localtime
 _STATUS_ZH = {
     "SUCCESS": "成功",
     "FAILED": "失败",
-    "PARTIAL": "停批",
+    # 见 views/workbench.py 同名表：PARTIAL = 这批没走完，「停批」专属 FAILFAST_STOP。
+    "PARTIAL": "未完成",
     "MANUAL": "待处理",
     "UNKNOWN": "未知",
     "RUNNING": "进行中",
@@ -108,7 +109,9 @@ _STEP_ZH = {
     "CHERRY_PICK_OK": "已应用",
     "CHERRY_PICK_EMPTY": "已在目标",
     "CHERRY_PICK_CONFLICT": "冲突",
-    "CHERRY_PICK_FAILED": "cherry-pick 失败",
+    # 「cherry-pick 失败」会被读成「有冲突、去解代码」，而 FAILED 恰恰是**非冲突**
+    # 的工具链失败（如 merge commit 缺 -m）。措辞必须指向正确的响应方向。
+    "CHERRY_PICK_FAILED": "同步中断",
     "BUILD_OK": "编译通过",
     "BUILD_FAILED": "编译失败",
     "BASELINE_OK": "基线通过",
@@ -123,7 +126,7 @@ _STEP_ZH = {
     "UNRESOLVABLE": "无法修复",
     "SUCCESS": "成功",
     "FAILED": "失败",
-    "PARTIAL": "停批",
+    "PARTIAL": "未完成",
     "MANUAL": "需人工处理",
 }
 

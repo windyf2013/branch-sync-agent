@@ -381,20 +381,35 @@ def test_conflict_stop_does_not_leak_to_next_target(tmp_path):
 
 
 def test_cherry_pick_failed_routes_to_report(tmp_path):
+    """FAILED 必须留下可归因的终态。
+
+    回归：cron 路由 ``CHERRY_PICK_FAILED → report`` 绕过了 ``generate_patch``，
+    分支状态曾停在 prepare 初值 PARTIAL、stop_reason 为 None、git 诊断被丢弃 ——
+    `cycle-2026-09-10` 的「停了但说不出为什么」即由此而来。
+    """
     write_branch_md(tmp_path)
     ctx = batch_ctx(tmp_path, shas=["a1"])
     inject_worktree_git(
         ctx,
-        FakeWorktreeGit(results={"a1": CherryPickResult(status="FAILED")}),
+        FakeWorktreeGit(
+            results={
+                "a1": CherryPickResult(
+                    status="FAILED", error="error: commit a1 is a merge but no -m option was given."
+                )
+            }
+        ),
         TARGET,
     )
 
     out = run(build_workflow(ctx), base_state())
 
     assert ctx.conflict_agent.calls == []
-    assert out["status"] == "PARTIAL"
-    assert out["branch_results"][TARGET].stop_reason is None
-    assert out["branch_results"][TARGET].commits[0].cherry_pick == "FAILED"
+    assert out["status"] == "FAILED"  # 全批次无成功 commit，不是「部分成功」
+    assert out["branch_results"][TARGET].stop_reason == "cherry-pick failed on a1"
+    commit = out["branch_results"][TARGET].commits[0]
+    assert commit.cherry_pick == "FAILED"
+    assert "no -m option" in commit.reason
+    assert "cherry_pick" in out["errors"]
 
 
 def test_checkpoint_resume_reuses_state_not_recomputed(tmp_path):

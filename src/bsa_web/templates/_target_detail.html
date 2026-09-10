@@ -83,8 +83,18 @@
             <div class="muted">冲突文件：{{ cr.conflict_resolution.files | join(", ") }}</div>
             {% if cr.conflict_resolution.agent_reason %}<div class="muted">智能体说明：{{ cr.conflict_resolution.agent_reason }}</div>{% endif %}
           {% elif cr.cherry_pick == "CONFLICT" %}
-            <span class="badge failed">冲突解决失败</span>
-            {% if cr.resolution_error %}<div class="muted">原因：{{ cr.resolution_error }}</div>{% endif %}
+            {# 只有真的尝试过消解才谈得上「解决失败」。cron 链路遇冲突直接收尾、
+               根本不走 resolve_conflict，此处曾无条件断言「冲突解决失败」。 #}
+            {% if cr.resolution_error %}
+              <span class="badge failed">冲突解决失败</span>
+              <div class="muted">原因：{{ cr.resolution_error }}</div>
+            {% elif resolve_attempted_failed %}
+              <span class="badge failed">冲突解决失败</span>
+            {% else %}
+              <span class="badge review">待人工解决冲突</span>
+            {% endif %}
+          {% elif cr.cherry_pick == "FAILED" %}
+            <span class="badge failed">同步中断</span>
           {% else %}<span class="muted">无</span>{% endif %}
         </td>
         <td>
@@ -98,9 +108,20 @@
           {% if not cr.build %}<span class="muted">无 build 记录</span>{% endif %}
         </td>
       </tr>
-      <tr class="commit-detail" data-sha="{{ cr.sha }}" hidden>
+      {# 失败行默认展开：让真因不必靠点击才能被发现。 #}
+      <tr class="commit-detail" data-sha="{{ cr.sha }}"{% if cr.cherry_pick not in ("FAILED", "CONFLICT") and not (cr.build | selectattr("status", "equalto", "FAILED") | list) %} hidden{% endif %}>
         <td colspan="5">
           <div class="commit-detail-body">
+          {% if cr.cherry_pick == "FAILED" %}
+            <div class="llm-diff">
+              <div class="llm-diff-title">同步中断 —— cherry-pick 未能完成</div>
+              {% if cr.reason %}
+                <pre class="diff-pre">{{ cr.reason }}</pre>
+              {% else %}
+                <div class="muted">引擎未记录 git 诊断原文（旧数据）。完整执行流水见周期概览「处理过程」。</div>
+              {% endif %}
+            </div>
+          {% endif %}
           {% if cr.conflict_resolution and cr.conflict_resolution.diff %}
             <div class="llm-diff">
               <div class="llm-diff-title">冲突解决 diff（智能体产出）</div>
@@ -147,8 +168,8 @@
               </div>
             {% endif %}
           {% endfor %}
-          {% if not cr.conflict_resolution and cr.cherry_pick != "CONFLICT" and not cr.build %}
-            <span class="muted">无展开详情。</span>
+          {% if not cr.conflict_resolution and cr.cherry_pick != "CONFLICT" and cr.cherry_pick != "FAILED" and not cr.build %}
+            <span class="muted">无展开详情 —— 该 commit 未产生冲突、编译或失败记录（多为「已在目标」跳过）。</span>
           {% endif %}
           </div>
         </td>
@@ -161,9 +182,11 @@
   (function () {
     // 行内展开/收起（chevron 旋转动画）
     document.querySelectorAll(".row-toggle-btn").forEach(function (btn) {
+      var row = btn.closest(".commit-row");
+      var detail = document.querySelector('.commit-detail[data-sha="' + row.getAttribute("data-sha") + '"]');
+      // 失败行服务端默认展开，chevron 需与之同步，否则首次点击会「先收起再展开」。
+      if (detail && !detail.hidden) btn.classList.add("open");
       btn.addEventListener("click", function () {
-        var row = btn.closest(".commit-row");
-        var detail = document.querySelector('.commit-detail[data-sha="' + row.getAttribute("data-sha") + '"]');
         var open = detail.hidden;
         detail.hidden = !open;
         btn.classList.toggle("open", open);
