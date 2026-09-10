@@ -477,41 +477,33 @@ def _cmd_rerun(args: argparse.Namespace) -> int:
         return 1
     if result.get("stop"):
         reason = result.get("reason")
+        # 拦截原因必须同时进 tasks.error：平台只读 tasks 表渲染任务详情，
+        # 只 print 到 stderr 的话 UI 只能显示一个无理由的「失败」，
+        # 用户无从知道该清理现场、该加 --fresh，还是该先跑同步。
+        detail = result.get("detail")
         if reason == "dirty":
-            print(
-                f"现场有未提交修改，请先提交或清理: {result.get('worktree')}",
-                file=sys.stderr,
-            )
-            register_finish(log_dir, task_id, state="failed", cycle_id=pre_cycle_id)
-            return 1
-        if reason == "no-worktree":
-            print(
+            msg = f"现场有未提交修改，请先提交或清理: {result.get('worktree')}"
+            if detail:
+                msg = f"{msg}\n{detail}"
+        elif reason == "no-worktree":
+            msg = (
                 f"目标分支 {args.target} 的活 worktree 不存在（可能已过期清理），"
-                "请使用 --fresh 重新同步。",
-                file=sys.stderr,
+                "请使用 --fresh 重新同步。"
             )
-            register_finish(log_dir, task_id, state="failed", cycle_id=pre_cycle_id)
-            return 1
-        if reason == "no-cycle":
-            print(
-                f"未找到包含目标分支 {args.target} 的已完成周期，请先使用 bsa sync 同步。",
-                file=sys.stderr,
-            )
-            register_finish(log_dir, task_id, state="failed", cycle_id=pre_cycle_id)
-            return 1
-        if reason == "no-batch":
-            print(
-                f"来源周期 {result.get('cycle_id')} 无目标分支 {args.target} 的待同步批次。",
-                file=sys.stderr,
-            )
-            register_finish(log_dir, task_id, state="failed", cycle_id=pre_cycle_id)
-            return 1
-        if reason == "conclusion-now-included":
+        elif reason == "no-cycle":
+            msg = f"未找到包含目标分支 {args.target} 的已完成周期，请先使用 bsa sync 同步。"
+        elif reason == "no-batch":
+            msg = f"来源周期 {result.get('cycle_id')} 无目标分支 {args.target} 的待同步批次。"
+        elif reason == "conclusion-now-included":
             print("该修复已被合入/超出范围，无需重同步。", file=sys.stderr)
             register_finish(log_dir, task_id, state="succeeded", cycle_id=pre_cycle_id)
             return 0
-        print(f"重跑被拦截: {reason}", file=sys.stderr)
-        register_finish(log_dir, task_id, state="failed", cycle_id=pre_cycle_id)
+        else:
+            msg = f"重跑被拦截: {reason}"
+        print(msg, file=sys.stderr)
+        register_finish(
+            log_dir, task_id, state="failed", cycle_id=pre_cycle_id, error=msg
+        )
         return 1
     rerun = result.get("rerun") or {}
     branch = (result.get("branch_results") or {}).get(args.target)
