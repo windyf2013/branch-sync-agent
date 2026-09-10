@@ -18,7 +18,11 @@ _TAIL_KEEP_ERRORS = 100
 
 
 def _artifact_pattern(model: str) -> re.Pattern[str]:
-    return re.compile(rf"MSG{re.escape(model)}_(?:[^\s]*_)?SYSTEM_[^\s]*\.bin")
+    # 产物名大小写由构建工具决定（如 product "2600m" 产出 MSG2600M_*.bin），引擎
+    # 不可控 → 大小写不敏感匹配，否则真成功会被误判失败（真机 2600m 基线根因）。
+    return re.compile(
+        rf"MSG{re.escape(model)}_(?:[^\s]*_)?SYSTEM_[^\s]*\.bin", re.IGNORECASE
+    )
 
 
 def extract_errors(
@@ -63,8 +67,9 @@ def has_success_marker(log: str, model: str) -> bool:
     """True when the log shows a compile-success marker (decision 26).
 
     Matches ``Make rootfs success`` or an artifact name
-    ``MSG<model>_*_SYSTEM_*.bin`` in a convert line. Multi-segment artifact
-    names (e.g. ``MSG<model>_<X>_SYSTEM_*``) are not currently matched; extend
+    ``MSG<model>_*_SYSTEM_*.bin`` in a convert line (大小写不敏感——构建工具可能
+    把 product 大写产出 MSG<MODEL>_*.bin)。Multi-segment artifact names
+    (e.g. ``MSG<model>_<X>_SYSTEM_*``) are not currently matched; extend
     `_artifact_pattern` if real logs need them.
     """
     if _ROOTFS_MARKER in log:
@@ -73,5 +78,6 @@ def has_success_marker(log: str, model: str) -> bool:
 
 
 def artifact_success_marker(log: str, model: str) -> bool:
-    """True when a ``MSG<model>_*_SYSTEM_*.bin`` artifact appears in the log."""
+    """True when a ``MSG<model>_*_SYSTEM_*.bin`` artifact appears in the log
+    (大小写不敏感)。"""
     return _artifact_pattern(model).search(log) is not None

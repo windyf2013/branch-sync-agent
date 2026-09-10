@@ -2,7 +2,11 @@ from pathlib import Path
 
 import pytest
 
-from bsa.build.log_parser import extract_errors, has_success_marker
+from bsa.build.log_parser import (
+    artifact_success_marker,
+    extract_errors,
+    has_success_marker,
+)
 from bsa.build.runner import BuildResult, BuildRunner, _sanitize_container_name
 from bsa.config.settings import Settings
 from bsa.executor import CompletedProcess, FakeExecutor
@@ -125,6 +129,16 @@ class TestHasSuccessMarker:
     def test_success_bang_convert_marker(self):
         log = "convert file a.bin to MSG5200_DECRYPT_SYSTEM_4.33.204_20260820.bin success!\n"
         assert has_success_marker(log, "5200") is True
+
+    def test_artifact_case_insensitive_2600m(self):
+        # 真机基线根因：model="2600m"(小写) 但构建工具产出 MSG2600M_*.bin(大写)，
+        # 大小写敏感正则匹配不上 → 真成功误判失败。必须大小写不敏感。
+        log = (
+            "convert file rcios.bin to MSG2600M_CI_SYSTEM_4.34.539_20260909.bin "
+            "success!\n"
+        )
+        assert artifact_success_marker(log, "2600m") is True
+        assert has_success_marker(log, "2600m") is True
 
     def test_failure_log_is_not_success(self):
         log = "/x/foo.c:12: error: implicit declaration of function 'bar'\n"
