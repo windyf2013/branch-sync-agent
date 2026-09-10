@@ -55,6 +55,9 @@ class ConflictResolution(BaseModel):
 class CherryPickResult(BaseModel):
     status: Literal["OK", "CONFLICT", "EMPTY", "FAILED"]
     conflict_files: list[str] = []
+    # git 的诊断原文（FAILED/CONFLICT 时有值）。没有它，失败就只剩一个无因的枚举，
+    # 平台只能显示「失败」而无从归因 —— 见 CommitResult.reason 的说明。
+    error: str | None = None
 
 
 class BuildOutcome(BaseModel):
@@ -75,6 +78,9 @@ class CommitResult(BaseModel):
     # 冲突解决失败原因（如冲突文件疑似二进制无法安全自动解决）；随 commit 落投影，
     # 供目标详情/commit 详情透出，避免转人工原因只藏在周期级 action_required 里。
     resolution_error: str | None = None
+    # cherry-pick 本身的失败原因（git 诊断原文）。与 resolution_error 分开：前者是
+    # 同步没做成（多为引擎/工具链问题），后者是冲突没解掉（需人工裁决），处置方式不同。
+    reason: str | None = None
 
 
 class BranchResult(BaseModel):

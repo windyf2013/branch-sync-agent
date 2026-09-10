@@ -386,54 +386,119 @@ class TestWorktree:
         assert executor.calls[0][0] == ["worktree", "remove", "--force", str(tmp_path / "wt")]
 
 
+SINGLE_PARENT = "aaaa1111\n"
+MERGE_PARENTS = "aaaa1111 bbbb2222\n"
+_NOT_A_COMMIT = CompletedProcess(returncode=128, stdout="", stderr="fatal: Needed a single revision")
+
+
+def pick_responses(*rest, parents=SINGLE_PARENT):
+    """``cherry_pick`` 的前两步固定开销：probe（rev-parse）→ 读父（log %P）。
+
+    两个分支足以区分 merge 与普通 commit，故所有用例共用。
+    """
+    return [ok(), ok(parents), *rest]
+
+
 class TestCherryPick:
     def test_ok(self, tmp_path):
-        executor = FakeExecutor([ok()])
+        executor = FakeExecutor(pick_responses(ok()))
         assert GitService(executor, tmp_path).cherry_pick("abc") == CherryPickResult(status="OK")
-        assert executor.calls[0][0] == ["cherry-pick", "abc"]
+        assert executor.calls[2][0] == ["cherry-pick", "abc"]
 
     def test_empty(self, tmp_path):
         empty_stderr = CompletedProcess(
             returncode=1, stdout="", stderr="The previous cherry-pick is now empty"
         )
-        executor = FakeExecutor([empty_stderr, ok()])
+        executor = FakeExecutor(pick_responses(empty_stderr, ok()))
         result = GitService(executor, tmp_path).cherry_pick("abc")
         assert result == CherryPickResult(status="EMPTY")
-        assert executor.calls[1][0] == ["cherry-pick", "--skip"]
-        assert len(executor.calls) == 2
+        assert executor.calls[3][0] == ["cherry-pick", "--skip"]
+        assert len(executor.calls) == 4
+
+    @pytest.mark.parametrize("rev", ["--no-replay", "-x"])
+    def test_arbitrary_rev_options_ignored(self, tmp_path, rev):
+        """``git rev-parse --verify`` 的选项不得被误判成 commit sha。
+
+        probe 失败即短路为「非 merge」，不再去读父 —— 也避免把 ``-x`` 这类串
+        送进 ``git log``。
+        """
+        executor = FakeExecutor(
+            [
+                _NOT_A_COMMIT,
+                CompletedProcess(returncode=128, stdout="", stderr="error: unknown option"),
+                ok(),
+            ]
+        )
+        result = GitService(executor, tmp_path).cherry_pick(rev)
+        assert result.status == "FAILED"
+        assert executor.calls[1][0] == ["cherry-pick", rev]
+        assert len(executor.calls) == 3
 
     def test_empty_skip_failure_raises(self, tmp_path):
         empty_stderr = CompletedProcess(
             returncode=1, stdout="", stderr="The previous cherry-pick is now empty"
         )
         executor = FakeExecutor(
-            [empty_stderr, CompletedProcess(returncode=128, stdout="", stderr="fatal")]
+            pick_responses(empty_stderr, CompletedProcess(returncode=128, stdout="", stderr="fatal"))
         )
         with pytest.raises(InfrastructureError):
             GitService(executor, tmp_path).cherry_pick("abc")
 
     def test_conflict_reports_unmerged_files(self, tmp_path):
         executor = FakeExecutor(
-            [
-                CompletedProcess(
-                    returncode=1, stdout="", stderr="CONFLICT (content): Merge conflict in f.c"
-                ),
+            pick_responses(
+                CompletedProcess(returncode=1, stdout="", stderr="CONFLICT in f.c"),
                 ok("f.c\ndir/g.h\n"),
-            ]
+            )
         )
         result = GitService(executor, tmp_path).cherry_pick("abc")
-        assert result == CherryPickResult(status="CONFLICT", conflict_files=["f.c", "dir/g.h"])
-        assert executor.calls[1][0] == ["diff", "--name-only", "--diff-filter=U"]
+        assert result.status == "CONFLICT"
+        assert result.conflict_files == ["f.c", "dir/g.h"]
+        assert executor.calls[3][0] == ["diff", "--name-only", "--diff-filter=U"]
 
-    def test_failed(self, tmp_path):
+    def test_failed_keeps_git_error_for_forensics(self, tmp_path):
+        """失败原因必须随结果带出：本次事故里 stderr 被丢弃，UI 因而无法归因。"""
         executor = FakeExecutor(
-            [
-                CompletedProcess(returncode=128, stdout="", stderr="fatal: bad revision 'abc'"),
-                ok(),
-            ]
+            pick_responses(
+                CompletedProcess(returncode=128, stdout="", stderr="fatal: bad revision 'abc'")
+            )
         )
         result = GitService(executor, tmp_path).cherry_pick("abc")
-        assert result == CherryPickResult(status="FAILED")
+        assert result.status == "FAILED"
+        assert "bad revision" in (result.error or "")
+
+    def test_error_truncated(self, tmp_path):
+        executor = FakeExecutor(
+            pick_responses(
+                CompletedProcess(returncode=128, stdout="x" * 5000, stderr="y" * 5000)
+            )
+        )
+        result = GitService(executor, tmp_path).cherry_pick("abc")
+        assert result.error is not None
+        assert len(result.error) <= 2000
+
+
+class TestCherryPickMergeCommit:
+    """merge commit 必须带 ``-m 1``：缺它 git 直接拒绝（真机 exit 128），
+    引擎记 FAILED 且丢掉 stderr —— cycle-2026-09-10 停批的真因。"""
+
+    def test_merge_commit_passes_m1(self, tmp_path):
+        executor = FakeExecutor(pick_responses(ok(), parents=MERGE_PARENTS))
+        assert GitService(executor, tmp_path).cherry_pick("abc") == CherryPickResult(status="OK")
+        assert executor.calls[0][0] == ["rev-parse", "--verify", "--quiet", "abc^{commit}"]
+        assert executor.calls[2][0] == ["cherry-pick", "-m", "1", "abc"]
+
+    def test_single_parent_commit_omits_m(self, tmp_path):
+        """对非 merge commit 传 ``-m 1`` 会被 git 拒绝，必须不传。"""
+        executor = FakeExecutor(pick_responses(ok(), parents=SINGLE_PARENT))
+        assert GitService(executor, tmp_path).cherry_pick("abc") == CherryPickResult(status="OK")
+        assert executor.calls[2][0] == ["cherry-pick", "abc"]
+
+    def test_root_commit_omits_m(self, tmp_path):
+        """根 commit 无父（``%P`` 空），同样不能传 ``-m``。"""
+        executor = FakeExecutor(pick_responses(ok(), parents="\n"))
+        assert GitService(executor, tmp_path).cherry_pick("abc") == CherryPickResult(status="OK")
+        assert executor.calls[2][0] == ["cherry-pick", "abc"]
 
 
 class TestWorktreeList:

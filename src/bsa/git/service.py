@@ -9,6 +9,7 @@ from bsa.executor.exceptions import InfrastructureError
 MAX_CHANGED_FILES = 500
 MAX_PATCH_LINES = 20_000
 MAX_PATCH_CHARS = 2_000_000
+MAX_ERROR_CHARS = 2_000
 
 _AUTH_ERROR_MARKERS = (
     "permission denied",
@@ -24,6 +25,16 @@ _NETWORK_ERROR_MARKERS = (
     "network is unreachable",
     "no route to host",
 )
+
+
+def _excerpt(text: str) -> str:
+    """Failures must leave a traceable reason, but never an unbounded blob.
+
+    只留尾部：git 的诊断（``error:`` / ``fatal:``）总在输出末行，而前面可能是整段
+    diff 上下文。
+    """
+    stripped = text.strip()
+    return stripped[-MAX_ERROR_CHARS:] if len(stripped) > MAX_ERROR_CHARS else stripped
 
 
 def _classify_fetch_failure(stderr: str) -> str:
@@ -122,10 +133,24 @@ class GitService:
 
     def _parent_sha(self, sha: str) -> str | None:
         """第一父 SHA（merge commit 取 %P 首个，即主线父）；根 commit 返回 None。"""
+        parents = self._parent_shas(sha)
+        return parents[0] if parents else None
+
+    def _parent_shas(self, sha: str) -> list[str]:
+        """全部父 SHA（%P，顺序即父序）；根 commit / 取不到时返回空列表。"""
         result = self.executor.run(["log", "-1", "--format=%P", sha], cwd=self.repo_path)
         if result.returncode != 0:
-            return None
-        return result.stdout.split()[0] if result.stdout.split() else None
+            return []
+        return result.stdout.split()
+
+    def _is_merge_commit(self, sha: str) -> bool:
+        """多父即 merge commit。非 commit / 未知 ref（含以 ``-`` 开头的选项串）一律 False。"""
+        probe = self.executor.run(
+            ["rev-parse", "--verify", "--quiet", f"{sha}^{{commit}}"], cwd=self.repo_path
+        )
+        if probe.returncode != 0:
+            return False
+        return len(self._parent_shas(sha)) > 1
 
     def _numstat(self, sha: str) -> tuple[int, int] | None:
         """Return (file_count, total_lines) or None when the commit is too large."""
@@ -301,7 +326,18 @@ class GitService:
         return paths
 
     def cherry_pick(self, sha: str) -> CherryPickResult:
-        result = self.executor.run(["cherry-pick", sha], cwd=self.repo_path)
+        """Cherry-pick ``sha``；merge commit 走第一父主线（``-m 1``）。
+
+        缺 ``-m`` 时 git 对 merge commit 直接拒绝（``is a merge but no -m option
+        was given``，exit 128），既非 empty 也无 unmerged 文件，会静默落成 FAILED
+        并丢掉 stderr —— cycle-2026-09-10 整条批次因此停摆且无法归因。取第一父与
+        本模块 ``_parent_sha`` / ``changed_files`` / ``patch_id`` 的 first-parent
+        口径一致。对单父 commit 必须不传 ``-m``（git 同样会拒绝）。
+        """
+        args = ["cherry-pick"]
+        if self._is_merge_commit(sha):
+            args += ["-m", "1"]
+        result = self.executor.run([*args, sha], cwd=self.repo_path)
         if result.returncode == 0:
             return CherryPickResult(status="OK")
         combined = f"{result.stdout}\n{result.stderr}"
@@ -313,8 +349,10 @@ class GitService:
             return CherryPickResult(status="EMPTY", conflict_files=[])
         conflicts = self.unmerged_files()
         if conflicts:
-            return CherryPickResult(status="CONFLICT", conflict_files=conflicts)
-        return CherryPickResult(status="FAILED")
+            return CherryPickResult(
+                status="CONFLICT", conflict_files=conflicts, error=_excerpt(combined)
+            )
+        return CherryPickResult(status="FAILED", error=_excerpt(combined))
 
     def cherry_pick_continue(self) -> None:
         """Finish an in-progress cherry-pick after a resolved conflict.
