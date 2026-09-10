@@ -141,7 +141,9 @@ def resolve_report_recipients(
 
     ``state`` 是周期终态（含 detected_commits / branch_results / errors），
     ``git`` 是 GitService（可取 commit/merge 的 committer 邮箱与改动文件）。返回去重
-    保序的收件人列表，供 ``make_bridge_sender(mail_to=...)`` 使用。
+    保序的收件人列表，供 ``make_smtp_sender(mail_to=...)`` 使用。
+    有失败/报错时，若 ``settings.mail_append_failure_related`` 为 False 则只返回
+    基础名单（不追加合入人/模块负责人）。
     """
     recipients = _base_recipients(settings)
     seen = {r.lower() for r in recipients}
@@ -151,6 +153,11 @@ def resolve_report_recipients(
         for branch in (state.get("branch_results") or {}).values()
     )
     if not has_error:
+        return recipients
+
+    if not settings.mail_append_failure_related:
+        # 定向/测试发信开关：即便失败/报错也不追加合入人与模块负责人，
+        # 收件人锁死基础名单（PM 或回退 mail_recipients）。
         return recipients
 
     owner_map = _load_module_owner_map(settings.module_owner_map_path)

@@ -84,10 +84,29 @@ class Settings(BaseSettings):
     # 会真正到非测试白名单收件人；test 阶段 Cc 也会按 bridge 逻辑放行（不经 test 白名单帽），
     # 故测试期建议留空。
     mail_cc_recipients: list[str] = []
-    # bridge 收件阶段过滤：test/dev 会把 mail_to 硬帽到测试白名单，正式对 PM 发信必须
-    # 配 prod。默认 test 保兼容，升级后若要发非白名单收件人需显式设 MAIL_PHASE=prod。
+    # 发信阶段过滤：test/dev 会把收件人硬帽到 mail_test_allowlist，正式发信必须配
+    # prod。默认 test 保兼容，升级后若要发非白名单收件人需显式设 MAIL_PHASE=prod。
     mail_phase: str = "test"
-    mail_bridge_path: str = ""
+    # test/dev 阶段的收件人白名单（硬帽）：阶段为 test/dev 时，实际收件人取
+    # 「配置收件人 ∩ 白名单」，为空则退回白名单本身。prod 阶段不生效。
+    mail_test_allowlist: list[str] = ["yangfu@raisecom.com"]
+    # 周期报告有失败/报错时是否追加失败 commit 的合入人 + 模块负责人邮箱到收件人。
+    # 默认 True（既有语义）。设为 False 时即便分支失败/报错，收件人仍只含基础名单
+    # （PM 或回退 mail_recipients）——供「收件人锁死」的定向/测试发信使用。
+    mail_append_failure_related: bool = True
+
+    # --- mail: BSA 原生 SMTP（不再依赖外部 bridge / 插件）---
+    # 发信一律用本仓 smtplib 实现（bsa/mail/smtp_sender.py）；凭据只经环境变量注入，
+    # 绝不硬编码。真实值写进 .env（已 gitignore），文档一律占位符。
+    mail_smtp_host: str = "smtp.exmail.qq.com"
+    mail_smtp_port: int = 465
+    # SSL | STARTTLS | PLAIN
+    mail_smtp_security: str = "SSL"
+    mail_smtp_user: str = ""
+    # 优先 MAIL_SMTP_PASS；留空时回退通用 SMTP_PASS 环境变量（兼容既有部署）。
+    mail_smtp_pass: str = ""
+    mail_from_name: str = "RCIOS 分支同步报告"
+    mail_timeout_sec: int = 20
 
     # --- logging ---
     log_dir: str

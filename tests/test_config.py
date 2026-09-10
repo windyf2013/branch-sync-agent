@@ -35,7 +35,16 @@ DEFAULTS = {
     "max_build_context_chars": 50_000,
     "max_conflict_context_chars": 50_000,
     "mail_dry_run": True,
-    "mail_bridge_path": "",
+    "mail_phase": "test",
+    "mail_test_allowlist": ["yangfu@raisecom.com"],
+    "mail_append_failure_related": True,
+    "mail_smtp_host": "smtp.exmail.qq.com",
+    "mail_smtp_port": 465,
+    "mail_smtp_security": "SSL",
+    "mail_smtp_user": "",
+    "mail_smtp_pass": "",
+    "mail_from_name": "RCIOS 分支同步报告",
+    "mail_timeout_sec": 20,
     "scan_since": None,
     "scan_until": None,
     "fetch_retry_count": 3,
@@ -135,11 +144,25 @@ class TestEnvInjection:
         assert s.scan_since == "2026-08-18T22:00:00+08:00"
         assert s.scan_until == "2026-08-19T22:00:00+08:00"
 
-    def test_mail_bridge_path_env(self, monkeypatch):
+    def test_mail_smtp_env(self, monkeypatch):
         env = valid_env()
-        env["MAIL_BRIDGE_PATH"] = "/srv/bsa/bridge-scripts"
+        env["MAIL_SMTP_HOST"] = "smtp.example.com"
+        env["MAIL_SMTP_PORT"] = "587"
+        env["MAIL_SMTP_SECURITY"] = "STARTTLS"
+        env["MAIL_SMTP_USER"] = "bot@example.com"
+        env["MAIL_SMTP_PASS"] = "s3cret"
         s = make(monkeypatch, env)
-        assert s.mail_bridge_path == "/srv/bsa/bridge-scripts"
+        assert s.mail_smtp_host == "smtp.example.com"
+        assert s.mail_smtp_port == 587
+        assert s.mail_smtp_security == "STARTTLS"
+        assert s.mail_smtp_user == "bot@example.com"
+        assert s.mail_smtp_pass == "s3cret"
+
+    def test_mail_test_allowlist_env(self, monkeypatch):
+        env = valid_env()
+        env["MAIL_TEST_ALLOWLIST"] = '["a@example.com", "b@example.com"]'
+        s = make(monkeypatch, env)
+        assert s.mail_test_allowlist == ["a@example.com", "b@example.com"]
 
     def test_claude_cli_env_parsed_from_json_dict(self, monkeypatch):
         env = valid_env()

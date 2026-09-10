@@ -243,9 +243,17 @@ Cc 名单：`mail_cc_recipients`（通常 SSE/管理层），固定抄送，**�
 | `mail_cc_recipients` | `MAIL_CC_RECIPIENTS` | `[]` | 抄送名单（如 SSE，固定抄送，不参与失败追加）；空则不抄送 |
 | `mail_recipients` | `MAIL_RECIPIENTS` | 必填 | 回退名单 / 老部署收件人 |
 | `module_owner_map_path` | `MODULE_OWNER_MAP_PATH` | `""` | 模块负责人映射 JSON 路径；空 = 负责人维度关闭 |
-| `mail_phase` | `MAIL_PHASE` | `"test"` | bridge 收件阶段过滤；正式对 PM 发信须 `prod` |
+| `mail_phase` | `MAIL_PHASE` | `"test"` | 收件阶段过滤；正式对 PM 发信须 `prod` |
+| `mail_test_allowlist` | `MAIL_TEST_ALLOWLIST` | `["yangfu@raisecom.com"]` | test/dev 阶段收件人硬帽白名单 |
+| `mail_append_failure_related` | `MAIL_APPEND_FAILURE_RELATED` | `true` | 失败时是否追加合入人/负责人邮箱 |
 | `mail_dry_run` | `MAIL_DRY_RUN` | `true` | true → 不真发，记 `skipped` |
-| `mail_bridge_path` | `MAIL_BRIDGE_PATH` | `""` | 邮件 bridge 目录（真发必需） |
+| `mail_smtp_host` | `MAIL_SMTP_HOST` | `smtp.exmail.qq.com` | SMTP 主机（BSA 原生发信） |
+| `mail_smtp_port` | `MAIL_SMTP_PORT` | `465` | SMTP 端口 |
+| `mail_smtp_security` | `MAIL_SMTP_SECURITY` | `"SSL"` | `SSL` / `STARTTLS` / `PLAIN` |
+| `mail_smtp_user` | `MAIL_SMTP_USER` | `""` | SMTP 登录账号；空则回退 `mail_sender` |
+| `mail_smtp_pass` | `MAIL_SMTP_PASS` | `""` | SMTP 口令；空则回退通用 `SMTP_PASS` |
+| `mail_from_name` | `MAIL_FROM_NAME` | `RCIOS 分支同步报告` | 发件人显示名 |
+| `mail_timeout_sec` | `MAIL_TIMEOUT_SEC` | `20` | SMTP 超时（秒） |
 
 `module_owner_map_path` 指向的 JSON（本部署样例 `spec/module_owner_map.json`）：
 - `module_owner_map`：**目录前缀 → [负责人邮箱]**（130+ 条），如
@@ -262,15 +270,20 @@ Cc 名单：`mail_cc_recipients`（通常 SSE/管理层），固定抄送，**�
 
 ### 6.4 发送链路
 
-`_execute_locked` 收尾：`report is not None` 时，若 `not mail_dry_run` 构造 bridge sender
-（`make_bridge_sender(mail_phase=settings.mail_phase, mail_to=recipients,
+`_execute_locked` 收尾：`report is not None` 时，若 `not mail_dry_run` 构造 **BSA 原生** sender
+（`make_smtp_sender(settings=settings, output_dir=cycle_dir, mail_to=recipients,
 mail_cc=settings.mail_cc_recipients)`），经 `MailService.send_report` 发出；**失败不抛异常**，
-记 `mail_status`。日志记录最终收件人列表便于核对。
+记 `mail_status`，并把结果落盘 `bsa_mail_send_result.json`（周期目录内）便于审计。日志记录最终
+收件人列表便于核对。
 
-**重要**：`mail_phase` 默认 `test` 时，bridge 的 `recipients_for_phase` 会把 `mail_to` 硬帽
-过滤到测试白名单（`["yangfu@raisecom.com"]`）。因此**正式对非测试收件人（PM / 合入人 /
-负责人）发信必须配 `MAIL_PHASE=prod`**，否则配了也会被滤掉。开发/联调阶段保持 `test` 可只发
-yangfu。
+发信由本仓 `bsa/mail/smtp_sender.py` 用 `smtplib` 直发，**不依赖任何外部 bridge / 插件**
+（历史上曾借道 pon-gw 的 BMA `branch_maintenance` bridge 再转 release-integration 插件，
+导致邮件被改成 BMA 品牌、排障跨仓跨用户目录）。主题/正文由引擎给出，呈现 BSA 自己的品牌。
+
+**重要**：`mail_phase` 默认 `test` 时，收件人会被硬帽过滤到白名单
+（`mail_test_allowlist`，默认 `["yangfu@raisecom.com"]`），cc 同样过滤。因此**正式对非测试
+收件人（PM / 合入人 / 负责人）发信必须配 `MAIL_PHASE=prod`**，否则配了也会被滤掉。开发/联调
+阶段保持 `test` 可只发 yangfu。
 
 ---
 
