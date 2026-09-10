@@ -109,26 +109,26 @@ p { margin: 0.4rem 0; }
 .sidebar-brand {
     display: flex;
     align-items: center;
-    gap: 11px;
+    gap: 12px;
     padding: 2px 8px 18px;
 }
 
 .brand-logo {
-    width: 38px;
-    height: 38px;
-    border-radius: 10px;
+    width: 44px;
+    height: 44px;
+    border-radius: 12px;
     background: var(--brand);
     color: #fff;
     display: grid;
     place-items: center;
     font-weight: 800;
-    font-size: 13.5px;
+    font-size: 15px;
     letter-spacing: 0.03em;
-    flex: 0 0 38px;
+    flex: 0 0 44px;
 }
 
 .brand-copy h1 {
-    font-size: 15px;
+    font-size: 16px;
     font-weight: 700;
     letter-spacing: 0.01em;
     color: var(--ink);
@@ -1361,8 +1361,8 @@ dialog::backdrop { background: rgba(15, 23, 42, 0.42); backdrop-filter: blur(3px
         border-bottom: 1px solid var(--line);
     }
     .sidebar-brand { padding: 0 12px 0 0; }
-    .brand-logo { width: 32px; height: 32px; flex-basis: 32px; font-size: 12px; }
-    .brand-copy h1 { font-size: 14px; }
+    .brand-logo { width: 36px; height: 36px; flex-basis: 36px; font-size: 13px; }
+    .brand-copy h1 { font-size: 15px; }
     .sidebar-nav { flex-direction: row; padding: 0; flex: 1; overflow: visible; }
     .sidebar-footer {
         margin-top: 0;

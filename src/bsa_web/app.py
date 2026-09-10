@@ -44,6 +44,23 @@ from bsa_web.views.workbench import router as workbench_router
 
 templates = Jinja2Templates(directory=str(Path(__file__).resolve().parent / "templates"))
 
+# 静态资源版本号：取 style.css 的 mtime。StaticFiles 只发 ETag、不发
+# Cache-Control，浏览器会按启发式缓存（≈ 距 last-modified 时长的 10%）而
+# 不回源校验——改版后用户长时间看到旧样式（旧 CSS + 新 HTML 会错位，
+# 例如侧栏 logo 白字压白底而"消失"）。把 mtime 拼进 URL，样式一改即换 URL。
+_STYLE_CSS = Path(__file__).resolve().parent / "static" / "style.css"
+
+
+def _asset_version() -> str:
+    try:
+        return str(int(_STYLE_CSS.stat().st_mtime))
+    except OSError:
+        return "0"
+
+
+# 注册的是函数本身，模板里须写成 {{ asset_v() }}；每次渲染重取 mtime，改样式即自动换 URL。
+templates.env.globals["asset_v"] = _asset_version
+
 
 def _localtime(value) -> str:
     """ISO 时间字符串转宿主本地时区显示（统一 YYYY-MM-DD HH:MM:SS）。
