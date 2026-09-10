@@ -183,6 +183,82 @@ def test_manual_scan_passes_window_override_to_run_cycle(monkeypatch, tmp_path):
     )
 
 
+def test_run_cycle_exception_records_failed_with_error(monkeypatch, tmp_path):
+    """run_cycle 抛异常时必须写终态，不能留 running 僵尸行。
+
+    异常逃出 _cmd_run_cycle 后若无人写终态，任务行永久停在 register_start 写的
+    running（finished_at/error 皆 NULL），平台一直显示「运行中」；且 cycle 任务
+    target=NULL，不受 idx_tasks_active_target 约束，会静默累积。
+    """
+    import sqlite3
+
+    env = valid_env()
+    env["LOG_DIR"] = str(tmp_path / "logs")
+    monkeypatch.setattr("bsa.config.settings.os.environ", env)
+
+    def boom(*args, **kwargs):
+        raise RuntimeError("矩阵解析为空")
+
+    monkeypatch.setattr("bsa.cli.run_cycle", boom)
+
+    assert main(["run-cycle", "--date", "2026-08-20"]) == 1
+
+    conn = sqlite3.connect(str(tmp_path / "logs" / "platform.sqlite3"))
+    conn.row_factory = sqlite3.Row
+    row = conn.execute("SELECT * FROM tasks ORDER BY id DESC LIMIT 1").fetchone()
+    assert row["state"] == "failed"
+    assert "矩阵解析为空" in (row["error"] or "")
+    assert row["finished_at"] is not None
+
+
+def test_run_cycle_settings_failure_leaves_no_running_row(monkeypatch, tmp_path):
+    """load_settings 在 register_start 之前就炸时，不许留 running 行。
+
+    settings/log_dir/task_id 都在 try 内赋值，except 里引用会 NameError —— 必须
+    先绑定再守卫，否则「修僵尸行」的收尾自己会把 CLI 变成崩溃。
+    """
+    import sqlite3
+
+    monkeypatch.setattr("bsa.config.settings.os.environ", {})
+    monkeypatch.chdir(tmp_path)  # 隔离 cwd 的 .env，确保配置缺失
+
+    assert main(["run-cycle", "--date", "2026-08-20"]) == 1
+
+    db = tmp_path / "logs" / "platform.sqlite3"
+    if db.exists():
+        conn = sqlite3.connect(str(db))
+        conn.row_factory = sqlite3.Row
+        stuck = conn.execute(
+            "SELECT COUNT(*) c FROM tasks WHERE state='running'"
+        ).fetchone()
+        assert stuck["c"] == 0
+
+
+def test_manual_scan_exception_records_failed_with_error(monkeypatch, tmp_path):
+    """manual-scan 与 run-cycle 同构：异常必须落终态 + 原因。"""
+    import sqlite3
+
+    env = valid_env()
+    env["LOG_DIR"] = str(tmp_path / "logs")
+    monkeypatch.setattr("bsa.config.settings.os.environ", env)
+
+    def boom(*args, **kwargs):
+        raise RuntimeError("扫描窗口非法")
+
+    monkeypatch.setattr("bsa.cli.run_cycle", boom)
+
+    assert main(
+        ["manual-scan", "--since", "2026-08-18T22:00:00+08:00",
+         "--until", "2026-08-19T22:00:00+08:00"]
+    ) == 1
+
+    conn = sqlite3.connect(str(tmp_path / "logs" / "platform.sqlite3"))
+    conn.row_factory = sqlite3.Row
+    row = conn.execute("SELECT * FROM tasks ORDER BY id DESC LIMIT 1").fetchone()
+    assert row["state"] == "failed"
+    assert "扫描窗口非法" in (row["error"] or "")
+
+
 def test_manual_scan_registers_task_source_cli(monkeypatch, tmp_path):
     # P2-7：manual-scan CLI 直启登记 kind=cycle 任务（source=cli）
     import sqlite3
@@ -269,6 +345,50 @@ def test_run_cycle_folds_terminal_status_into_task(
     row = conn.execute("SELECT * FROM tasks").fetchone()
     assert row["state"] == expected_state
     assert row["cycle_id"] == "cycle-2026-08-20"
+    # 非 SUCCESS 时必须留下原因：平台只读 tasks.error，cycle.json 不存原因。
+    if expected_state == "failed":
+        assert (row["error"] or "").strip()
+    else:
+        assert not row["error"]
+
+
+def test_run_cycle_failed_folds_node_reason_into_task_error(monkeypatch, tmp_path):
+    """折叠为 failed 时，tasks.error 要带上节点级失败原文。
+
+    只写状态不写原因，平台就只剩一个无因的「失败」——正是本次复盘的痛点。
+    """
+    import sqlite3
+
+    env = valid_env()
+    env["LOG_DIR"] = str(tmp_path / "logs")
+    monkeypatch.setattr("bsa.config.settings.os.environ", env)
+    monkeypatch.setenv("BSA_CYCLE_ID", "cycle-2026-08-20")
+
+    def fake_run_cycle(date, **kwargs):
+        cid = kwargs.get("cycle_id") or f"cycle-{date}"
+        d = Path(tmp_path / "logs") / cid
+        d.mkdir(parents=True, exist_ok=True)
+        (d / "cycle.json").write_text(
+            json.dumps({"cycle_id": cid, "status": "FAILED", "started_at": "x",
+                        "finished_at": "y", "report_path": None, "mail_status": None}),
+            encoding="utf-8",
+        )
+        return 0
+
+    monkeypatch.setattr("bsa.cli.run_cycle", fake_run_cycle)
+    monkeypatch.setattr(
+        "bsa.cli.cycle_failure_text",
+        lambda settings, cycle_id, **kw: "周期失败：branch_matrix: 矩阵解析为空",
+    )
+
+    assert main(["run-cycle", "--date", "2026-08-20"]) == 0
+
+    conn = sqlite3.connect(str(tmp_path / "logs" / "platform.sqlite3"))
+    conn.row_factory = sqlite3.Row
+    row = conn.execute("SELECT * FROM tasks").fetchone()
+    assert row["state"] == "failed"
+    assert "branch_matrix" in (row["error"] or "")
+    assert "矩阵解析为空" in (row["error"] or "")
 
 
 def test_run_cycle_checkpoint_resume_reuses_state(tmp_path):
@@ -533,3 +653,22 @@ def test_sync_failed_cli_direct_registers_failed(monkeypatch, tmp_path):
     row = conn.execute("SELECT * FROM tasks").fetchone()
     assert row["state"] == "failed"
     assert row["source"] == "cli"
+    # 分支级失败必须写原因：平台任务表只显示 tasks.error。
+    assert "FAILED" in (row["error"] or "")
+
+
+@pytest.mark.parametrize("status", ["PARTIAL", "MANUAL"])
+def test_sync_bad_status_records_error_with_status(
+    monkeypatch, tmp_path, capsys, status
+):
+    import sqlite3
+
+    _sync_env(monkeypatch, tmp_path, status)
+    assert main(["sync", "main", "feat/x"]) == 1
+    capsys.readouterr()
+    conn = sqlite3.connect(str(tmp_path / "logs" / "platform.sqlite3"))
+    conn.row_factory = sqlite3.Row
+    row = conn.execute("SELECT * FROM tasks").fetchone()
+    assert row["state"] == "failed"
+    assert status in (row["error"] or "")
+    assert "feat/x" in (row["error"] or "")

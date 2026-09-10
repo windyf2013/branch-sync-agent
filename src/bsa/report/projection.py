@@ -24,6 +24,35 @@ def read_cycle_state(settings, cycle_id: str) -> dict[str, Any] | None:
         return tup.checkpoint.get("channel_values") or None
 
 
+def cycle_failure_text(settings, cycle_id: str, *, limit: int = 2000) -> str:
+    """周期失败的一句话归因：节点级 errors 摘要，供任务行 tasks.error 落库。
+
+    平台只读 tasks.error 展示任务失败原因（cycle.json 只存状态、不存原因），
+    周期 FAILED/PARTIAL 时不写这里，UI 就只剩一个无因的「失败」。
+
+    刻意不搬 ``bsa_web.failure`` 那套分支感知的散文式归因：分层方向是
+    ``bsa_web → bsa``，反过来 import 会成环；且重复实现会让两处文案各自漂移。
+    这里只给「哪些节点失败 + 去哪看」的诚实指针。
+    """
+    state = read_cycle_state(settings, cycle_id)
+    errors = (state or {}).get("errors") or {}
+    if not errors:
+        # 投影缺失（checkpoint 已清 / 异常早退）时不留空，指向可下钻处。
+        return "周期失败（未留存节点级原因，详见报告页步骤流）"
+    parts = []
+    for node, rec in sorted(errors.items()):
+        # errors 来自 checkpoint 的 channel_values：这里是 ErrorRecord 实例，
+        # 不是 projection_payload 那种已 model_dump 的 dict。两种都要认，
+        # 否则会退化成 str(rec) 的 repr 堆（node='x' error='y' ts='z'）。
+        if isinstance(rec, dict):
+            detail = rec.get("error")
+        else:
+            detail = getattr(rec, "error", None)
+        text = " ".join(str(detail or "").split())
+        parts.append(f"{node}: {text}" if text else node)
+    return f"周期失败：{'；'.join(parts)}"[:limit]
+
+
 def _cycle_status(settings, cycle_id: str) -> str:
     # 惰性 import 避免 bsa.report.projection ↔ bsa.scheduler.cycle 循环依赖
     from bsa.scheduler.cycle import list_cycle_records

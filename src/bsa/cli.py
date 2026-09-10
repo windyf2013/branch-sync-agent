@@ -24,6 +24,7 @@ from bsa.graph.factory import _bundled_rules_dir, build_graph_context
 from bsa.graph.workflow import open_checkpointer
 from bsa.report.projection import (
     _cycle_status,
+    cycle_failure_text,
     read_projection_payload,
     write_state_json,
 )
@@ -145,6 +146,12 @@ def _build_parser() -> argparse.ArgumentParser:
 
 
 def _cmd_run_cycle(args: argparse.Namespace) -> int:
+    # 在 try 外先绑定：load_settings 或 register_start 抛异常时，except 的收尾
+    # 仍要能判断「登记过没有」，否则引用未绑定变量会 NameError，把「补失败归因」
+    # 变成 CLI 崩溃。
+    log_dir: Path | None = None
+    reg_cycle_id: str | None = None
+    task_id: int | None = None
     try:
         # --since/--until = 手动指定窗口，语义等同 manual-scan（独立扫描），
         # 强制新建 checkpoint 避免撞每日周期旧状态（真机测试: 撞旧 checkpoint
@@ -178,16 +185,28 @@ def _cmd_run_cycle(args: argparse.Namespace) -> int:
         )
         # 折叠周期终态到任务状态（P0-2/G10）：以 cycle.json 终态为准，SUCCESS 才记
         # succeeded，PARTIAL/FAILED（含分支失败、节点错误）一律记 failed，供平台醒目标记。
-        terminal = _cycle_terminal_status(log_dir, cycle_id or reg_cycle_id)
+        resolved = cycle_id or reg_cycle_id
+        terminal = _cycle_terminal_status(log_dir, resolved)
         final_state = "succeeded" if terminal == "SUCCESS" else "failed"
         register_finish(
             log_dir, task_id,
             state=final_state,
-            cycle_id=cycle_id or reg_cycle_id,
+            cycle_id=resolved,
+            # 周期 failed 时不留空原因：平台只有 tasks.error 可读（cycle.json
+            # 只存状态、不存原因），不写这里 UI 就只剩一个无因的「失败」。
+            error=None if final_state == "succeeded"
+            else cycle_failure_text(settings, resolved),
         )
         return code
     except Exception as exc:
         print(f"运行失败: {exc}", file=sys.stderr)
+        # 不写终态的话，register_start 建的行会永久停在 running（finished_at/error
+        # 皆 NULL），平台一直显示「运行中」；cycle 任务 target=NULL 不受活跃唯一
+        # 索引约束，会静默累积成僵尸行。
+        if task_id is not None and log_dir is not None and reg_cycle_id is not None:
+            register_finish(
+                log_dir, task_id, state="failed", cycle_id=reg_cycle_id, error=str(exc)
+            )
         return 1
 
 
@@ -201,6 +220,10 @@ def _cycle_terminal_status(log_dir: Path, cycle_id: str) -> str:
 
 
 def _cmd_manual_scan(args: argparse.Namespace) -> int:
+    # 同 _cmd_run_cycle：try 外先绑定，供 except 收尾安全引用。
+    log_dir: Path | None = None
+    cycle_id: str | None = None
+    task_id: int | None = None
     try:
         settings = load_settings()
         log_dir = Path(settings.log_dir)
@@ -223,14 +246,21 @@ def _cmd_manual_scan(args: argparse.Namespace) -> int:
             cycle_id=cycle_id,
         )
         terminal = _cycle_terminal_status(log_dir, cycle_id)
+        final_state = "succeeded" if terminal == "SUCCESS" else "failed"
         register_finish(
             log_dir, task_id,
-            state="succeeded" if terminal == "SUCCESS" else "failed",
+            state=final_state,
             cycle_id=cycle_id,
+            error=None if final_state == "succeeded"
+            else cycle_failure_text(settings, cycle_id),
         )
         return code
     except Exception as exc:
         print(f"运行失败: {exc}", file=sys.stderr)
+        if task_id is not None and log_dir is not None and cycle_id is not None:
+            register_finish(
+                log_dir, task_id, state="failed", cycle_id=cycle_id, error=str(exc)
+            )
         return 1
 
 
@@ -429,7 +459,17 @@ def _cmd_sync(args: argparse.Namespace) -> int:
             f"patch={patch_path}",
             file=sys.stderr,
         )
-        register_finish(log_dir, task_id, state="failed", cycle_id=cycle_id)
+        # 同时落一行原因：平台任务表只透出 tasks.error，不写就只剩无因的「失败」。
+        # 分支内的 commit 级诊断在 state.json，这里给行级结论 + 下钻指针。
+        stop_reason = getattr(branch, "stop_reason", None)
+        detail = (
+            f"目标分支 {args.target} 同步{status}"
+            + (f"：{stop_reason}" if stop_reason else "")
+            + f"（cycle={cycle_id}，详见报告页步骤流）"
+        )
+        register_finish(
+            log_dir, task_id, state="failed", cycle_id=cycle_id, error=detail
+        )
         return 1
     print(
         f"同步完成: cycle={cycle_id} target={args.target} 状态={status} "

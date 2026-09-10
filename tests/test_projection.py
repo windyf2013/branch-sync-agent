@@ -9,11 +9,13 @@ from bsa.domain.models import (
     BranchResult,
     CommitInfo,
     CommitResult,
+    ErrorRecord,
     Report,
 )
 from bsa.graph.state import TaskState
 from bsa.report.projection import (
     _cycle_status,
+    cycle_failure_text,
     projection_payload,
     read_cycle_state,
     read_projection_payload,
@@ -23,6 +25,22 @@ from tests.test_config import valid_env
 from tests.test_graph_nodes import TARGET, base_state, commit
 
 CYCLE = "cycle-2026-08-20"
+
+
+def _patch_cycle_state(monkeypatch, state):
+    class FakeCp:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def get_tuple(self, config):
+            return None if state is None else _fake_tuple(state)
+
+    monkeypatch.setattr(
+        "bsa.report.projection.open_checkpointer", lambda db_path: FakeCp()
+    )
 
 
 def test_taskstate_declares_sources_and_targets():
@@ -269,3 +287,43 @@ def test_report_cli_prints_projection(monkeypatch, tmp_path, capsys):
     out = json.loads(capsys.readouterr().out)
     assert out["status"] == "REPORTED"
     assert out["detected_commits"][0]["sha"] == "a1"
+
+
+def test_cycle_failure_text_lists_nodes_and_text(monkeypatch, tmp_path):
+    """周期失败摘要要带节点名与原文，平台据此才能说清为什么失败。"""
+    state = base_state(
+        errors={
+            "branch_matrix": ErrorRecord(
+                node="branch_matrix", error="矩阵解析为空", ts="t"
+            ),
+            "cherry_pick": ErrorRecord(node="cherry_pick", error="boom", ts="t"),
+        }
+    )
+    _patch_cycle_state(monkeypatch, state)
+
+    text = cycle_failure_text(_settings(tmp_path), CYCLE)
+
+    assert "周期失败" in text
+    assert "branch_matrix: 矩阵解析为空" in text
+    assert "cherry_pick: boom" in text
+
+
+def test_cycle_failure_text_without_projection_still_explains(monkeypatch, tmp_path):
+    """投影缺失时不留空——空原因正是要消灭的「失败说不清」。"""
+    _patch_cycle_state(monkeypatch, None)
+
+    text = cycle_failure_text(_settings(tmp_path), CYCLE)
+
+    assert text.strip()
+    assert "周期失败" in text
+
+
+def test_cycle_failure_text_truncates(monkeypatch, tmp_path):
+    state = base_state(
+        errors={
+            "n": ErrorRecord(node="n", error="x" * 5000, ts="t"),
+        }
+    )
+    _patch_cycle_state(monkeypatch, state)
+
+    assert len(cycle_failure_text(_settings(tmp_path), CYCLE, limit=200)) == 200
