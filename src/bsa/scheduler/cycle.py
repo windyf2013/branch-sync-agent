@@ -182,6 +182,7 @@ def _write_cycle_record(
     mail_status: str | None,
     started_at: str,
     finished_at: str,
+    flow: str | None = None,
 ) -> dict:
     record = {
         "cycle_id": cycle_id,
@@ -191,6 +192,12 @@ def _write_cycle_record(
         "started_at": started_at,
         "finished_at": finished_at,
     }
+    # 流程语义标记：rerun 复刻的是「原任务怎么跑的」，而 cron 与 manual 是两套
+    # 图（cron 已摘除 resolve_conflict/fix_build/fail_fast）。不记这一笔，rerun
+    # 就无从知道自己在复刻什么，只能硬套 single_target，把 cron 有意解耦掉的
+    # 判断修改类 LLM 又接回来。老记录无此键 → 读取方按 None 处理（默认 agent 流程）。
+    if flow is not None:
+        record["flow"] = flow
     (cycle_dir / "cycle.json").write_text(
         json.dumps(record, ensure_ascii=False, indent=2), encoding="utf-8"
     )
@@ -319,6 +326,7 @@ def _execute_locked(
         mail_status=None,
         started_at=started_at,
         finished_at=started_at,
+        flow="cron",
     )
     logger = _setup_run_logger(cycle_dir / "run.log")
 
@@ -352,6 +360,7 @@ def _execute_locked(
                 mail_status=None,
                 started_at=started_at,
                 finished_at=datetime.now().isoformat(timespec="seconds"),
+                flow="cron",
             )
             return 1
 
@@ -423,6 +432,7 @@ def _execute_locked(
         mail_status=mail_status,
         started_at=started_at,
         finished_at=finished_at,
+        flow="cron",
     )
     logger.info("cycle %s finished status=%s", cycle_id, final_status)
     return 0

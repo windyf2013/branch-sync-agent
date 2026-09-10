@@ -74,6 +74,23 @@ def test_cycle_running_marker_written_before_work(monkeypatch, tmp_path):
     assert running["finished_at"] == running["started_at"]
 
 
+def test_cycle_record_stamps_cron_flow_on_every_write(monkeypatch, tmp_path):
+    """cycle.json 必须记下流程语义：rerun 靠它复刻原任务的跑法。
+
+    不记这一笔，rerun 就无从知道来源是 cron（无 LLM 精简图）还是 manual
+    （完整 agent 图），只能硬套 single_target —— 把 cron 有意解耦掉的判断
+    修改类 LLM 又接回来。running / FAILED / 终态三次写入都要带上。
+    """
+    seen, _ = _run_locked(monkeypatch, tmp_path)
+
+    assert seen["running"]["flow"] == "cron"
+    assert seen["final"]["flow"] == "cron"
+
+    failed, _ = _run_locked(monkeypatch, tmp_path, fail=True)
+    assert failed["final"]["status"] == "FAILED"
+    assert failed["final"]["flow"] == "cron"
+
+
 def test_cycle_terminal_status_overwrites_running(monkeypatch, tmp_path):
     seen, _ = _run_locked(monkeypatch, tmp_path)
 

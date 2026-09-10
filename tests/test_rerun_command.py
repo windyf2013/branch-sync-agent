@@ -32,8 +32,17 @@ def make_valid_worktree(ctx, target: str, cycle_id: str) -> Path:
     return wt
 
 
-def cycle_record(cycle_id: str, *, started_at="2026-01-02T00:00:00+00:00", status="REPORTED"):
-    return {"cycle_id": cycle_id, "status": status, "started_at": started_at}
+def cycle_record(
+    cycle_id: str,
+    *,
+    started_at="2026-01-02T00:00:00+00:00",
+    status="REPORTED",
+    flow: str | None = None,
+):
+    record = {"cycle_id": cycle_id, "status": status, "started_at": started_at}
+    if flow is not None:
+        record["flow"] = flow
+    return record
 
 
 def frozen_state(cycle_id: str, target: str, shas: list[str]) -> dict:
@@ -167,6 +176,62 @@ def test_rerun_retained_ignores_build_managed_component_dirt(tmp_path, monkeypat
     assert not result.get("stop")
     assert result["rerun"]["mode"] == "retained"
     assert [args[0] for name, args in wg.calls if name == "cherry_pick"] == ["a1"]
+
+
+def test_rerun_retained_of_cron_cycle_uses_lean_flow(tmp_path, monkeypatch):
+    """rerun 复刻原任务的流程语义：cron 周期的活儿不接回 LLM 冲突解决。
+
+    cron 图（build_workflow）已摘除 resolve_conflict/fix_build/fail_fast，
+    冲突直接停批转人工。若 rerun 无条件走 single_target，就把 cron 有意解耦
+    掉的判断修改类 LLM 又接了回来——cherry-pick 撞冲突时凭空调 LLM，且留下
+    UU 冲突现场（task 42 实测）。
+    """
+    ctx = make_ctx(tmp_path)
+    ctx.git.tips = {TARGET: ("origin/" + TARGET, "tip1")}
+    patch_cycle_lookup(
+        monkeypatch, [cycle_record(RETAINED_CYCLE, flow="cron")]
+    )
+    wt = make_valid_worktree(ctx, TARGET, RETAINED_CYCLE)
+    wg = ok_worktree_git(cherry_pick="CONFLICT", status="")
+    ctx.worktree_gits[str(wt)] = wg
+
+    final = run_rerun_command(ctx, target=TARGET)
+
+    assert not final.get("stop")
+    # 关键断言：LLM 冲突解决绝不能被调用。
+    assert ctx.conflict_agent.calls == []
+
+
+def test_rerun_retained_of_manual_cycle_keeps_agent_flow(tmp_path, monkeypatch):
+    """manual 周期（平台 sync 发起）的 rerun 仍走完整 agent 流程，保留 LLM 解决。"""
+    ctx = make_ctx(tmp_path)
+    ctx.git.tips = {TARGET: ("origin/" + TARGET, "tip1")}
+    patch_cycle_lookup(
+        monkeypatch, [cycle_record(RETAINED_CYCLE, flow="manual")]
+    )
+    wt = make_valid_worktree(ctx, TARGET, RETAINED_CYCLE)
+    wg = ok_worktree_git(cherry_pick="CONFLICT", status="")
+    ctx.worktree_gits[str(wt)] = wg
+
+    run_rerun_command(ctx, target=TARGET)
+
+    assert len(ctx.conflict_agent.calls) == 1
+
+
+def test_rerun_retained_legacy_record_without_flow_defaults_to_agent(
+    tmp_path, monkeypatch
+):
+    """老周期记录没有 flow 字段：默认沿用 single_target，不臆测成 cron。"""
+    ctx = make_ctx(tmp_path)
+    ctx.git.tips = {TARGET: ("origin/" + TARGET, "tip1")}
+    patch_cycle_lookup(monkeypatch, [cycle_record(RETAINED_CYCLE)])
+    wt = make_valid_worktree(ctx, TARGET, RETAINED_CYCLE)
+    wg = ok_worktree_git(cherry_pick="CONFLICT", status="")
+    ctx.worktree_gits[str(wt)] = wg
+
+    run_rerun_command(ctx, target=TARGET)
+
+    assert len(ctx.conflict_agent.calls) == 1
 
 
 def test_rerun_retained_source_change_still_stops(tmp_path, monkeypatch):

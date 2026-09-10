@@ -223,6 +223,24 @@ def _rejudge_batch(
     return remaining, conclusions
 
 
+def _cycle_flow(ctx: GraphContext, cycle_id: str | None) -> str | None:
+    """读来源周期的流程语义标记（cycle.json 的 ``flow``）。
+
+    老周期没有这个键 → 返回 None，调用方沿用 single_target（不臆测成 cron）。
+    """
+    if not cycle_id:
+        return None
+    record = next(
+        (
+            r
+            for r in list_cycle_records(ctx.settings.log_dir)
+            if r.get("cycle_id") == cycle_id
+        ),
+        None,
+    )
+    return (record or {}).get("flow")
+
+
 def _rerun_retained(
     ctx: GraphContext, *, target: str, cycle: str | None, checkpointer,
     thread_id: str | None = None,
@@ -271,6 +289,9 @@ def _rerun_retained(
         batch=batch,
         checkpointer=checkpointer,
         thread_id=thread_id,
+        # 复刻原任务的流程语义：来源是 cron 周期就走精简图，不把 cron 有意解耦掉的
+        # 判断/解决类 LLM 接回来。
+        flow=_cycle_flow(ctx, cycle_id),
     )
     final["rerun"] = {
         "mode": "retained",
@@ -315,7 +336,13 @@ def _rerun_fresh(
             shutil.rmtree(old_path, ignore_errors=True)
     new_cycle_id = thread_id or manual_cycle_id()
     final = run_sync_command(
-        ctx, cycle_id=new_cycle_id, target=target, batch=remaining, checkpointer=checkpointer
+        ctx,
+        cycle_id=new_cycle_id,
+        target=target,
+        batch=remaining,
+        checkpointer=checkpointer,
+        # 同上：复刻来源周期的流程语义（来源是 cron 则走精简图）。
+        flow=_cycle_flow(ctx, cycle_id),
     )
     final["rerun"] = {
         "mode": "fresh",

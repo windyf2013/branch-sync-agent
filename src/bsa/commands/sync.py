@@ -252,6 +252,7 @@ def run_sync_command(
     batch: list[CommitInfo],
     checkpointer,
     thread_id: str | None = None,
+    flow: str | None = None,
 ) -> dict:
     """执行单 target 同步：构造初始 state、持全局 flock、invoke 子图。
 
@@ -260,6 +261,9 @@ def run_sync_command(
     绑定同一周期。retained 重跑传入独立线程 id，使重跑 state 落到独立线程，
     不再覆盖来源周期的 checkpoint 投影。返回最终 state（含
     branch_results[target]、patch 生成）。
+
+    ``flow`` 选择流程语义：``"cron"`` 走无判断/解决类 LLM 的精简图（冲突即停批
+    转人工），None 走完整 agent 图。rerun 据此复刻原任务的跑法。
     """
     if not ctx.safety.check_sync_branch(target):
         raise SafetyViolation(f"目标分支 {target} 命中禁止同步清单，拒绝同步。")
@@ -283,5 +287,10 @@ def run_sync_command(
     )
     checkpoint_thread = thread_id or cycle_id
     with flock_acquire(Path(ctx.settings.log_dir) / "bsa.lock"):
-        graph = build_single_target_workflow(ctx, checkpointer)
+        if flow == "cron":
+            from bsa.graph.single_target import build_lean_single_target_workflow
+
+            graph = build_lean_single_target_workflow(ctx, checkpointer)
+        else:
+            graph = build_single_target_workflow(ctx, checkpointer)
         return graph.invoke(initial, thread_config(checkpoint_thread))
