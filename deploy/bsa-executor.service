@@ -19,9 +19,9 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-WorkingDirectory=%h/projects/branch-sync-agent/.worktrees/feat-v3-web-platform
+WorkingDirectory=%h/projects/branch-sync-agent/.worktrees/feat-v3-eng-custom
 Environment=PYTHONUNBUFFERED=1
-ExecStart=%h/projects/branch-sync-agent/.worktrees/feat-v3-web-platform/.venv/bin/python -m bsa_web.executor
+ExecStart=%h/projects/branch-sync-agent/.worktrees/feat-v3-eng-custom/.venv/bin/python -m bsa_web.executor
 Restart=always
 RestartSec=5
 TimeoutStopSec=30
