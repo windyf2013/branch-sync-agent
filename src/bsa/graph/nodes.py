@@ -683,6 +683,7 @@ def cherry_pick(state: dict, ctx: GraphContext) -> dict:
         build=dict(current.build) if current else {},
         resolution_error=current.resolution_error if current else None,
         reason=result.error,
+        conflict_files=list(result.conflict_files or []),
     )
     commits = list(branch.commits)
     if current is None:
@@ -690,18 +691,26 @@ def cherry_pick(state: dict, ctx: GraphContext) -> dict:
     else:
         commits[index] = commit_result
     update: dict[str, Any] = {"status": f"CHERRY_PICK_{result.status}"}
-    if result.status == "FAILED":
+    # FAILED 与 CONFLICT 都是「停本分支批」的终态：cron 路由对两者都绕过
+    # generate_patch（那正是唯一重算分支状态、写 stop_reason 的地方），所以两者
+    # 都必须在此补收尾，否则分支停在 prepare 初值、原因无处可查。CONFLICT 尤其
+    # 要写：cron 撞冲突是**正常**停批转人工路径，不写就等于最常见的失败说不出原因。
+    if result.status in ("FAILED", "CONFLICT"):
+        stopped = "failed" if result.status == "FAILED" else "conflict"
         results[target] = branch.model_copy(
             update={
                 "commits": commits,
                 "status": _final_branch_status(commits),
-                "stop_reason": f"cherry-pick failed on {sha[:10]}",
+                "stop_reason": f"cherry-pick {stopped} on {sha[:10]}",
             }
         )
+        detail = result.error or "git cherry-pick 未返回诊断信息"
+        if result.status == "CONFLICT" and result.conflict_files:
+            detail = f"{detail}；冲突文件: {', '.join(result.conflict_files)}"
         errors = dict(state.get("errors") or {})
         errors["cherry_pick"] = ErrorRecord(
             node="cherry_pick",
-            error=f"{sha[:10]}: {result.error or 'git cherry-pick 未返回诊断信息'}",
+            error=f"{sha[:10]}: {detail}",
             ts=_now_iso(),
         )
         update["errors"] = errors

@@ -412,6 +412,51 @@ def test_cherry_pick_failed_routes_to_report(tmp_path):
     assert "cherry_pick" in out["errors"]
 
 
+def test_cherry_pick_conflict_routes_to_patch_leaves_reason(tmp_path):
+    """cron 冲突停批也必须留下可归因的终态（与 FAILED 同一条回归）。
+
+    cron 路由 ``CHERRY_PICK_CONFLICT → generate_patch`` 停本分支批转人工。但
+    ``cherry_pick`` 节点只给 ``FAILED`` 写 stop_reason/errors，CONFLICT 只更新
+    commits —— 于是分支被算成 FAILED（全批无成功 commit），errors 空、
+    stop_reason None、平台 failure_summary 也提不出任何原因。
+    `scan-2026-09-08T22:00:00+08:00-2026-09-09T22:00:00+08:00` 实测即此：FAILED
+    但一个字的原因都给不出。
+    """
+    write_branch_md(tmp_path)
+    ctx = batch_ctx(tmp_path, shas=["a1"])
+    inject_worktree_git(
+        ctx,
+        FakeWorktreeGit(
+            results={
+                "a1": CherryPickResult(
+                    status="CONFLICT",
+                    conflict_files=["component/cwmp_dm/msg_telecom/ADI_get_set.c"],
+                    error="Auto-merging component/cwmp_dm/msg_telecom/ADI_get_set.c\n"
+                    "CONFLICT (content): Merge conflict in ADI_get_set.c",
+                )
+            }
+        ),
+        TARGET,
+    )
+
+    out = run(build_workflow(ctx), base_state())
+
+    # cron 绝不调 LLM 解决冲突。
+    assert ctx.conflict_agent.calls == []
+    branch = out["branch_results"][TARGET]
+    commit = branch.commits[0]
+    assert commit.cherry_pick == "CONFLICT"
+    # 冲突文件要能查到（人工按图索骥的入口）。
+    assert commit.conflict_files == [
+        "component/cwmp_dm/msg_telecom/ADI_get_set.c"
+    ]
+    # 分支停批，且留下原因——这正是本次要修的缺口。
+    assert branch.status == "FAILED"
+    assert branch.stop_reason == "cherry-pick conflict on a1"
+    assert "cherry_pick" in out["errors"]
+    assert "ADI_get_set.c" in out["errors"]["cherry_pick"].error
+
+
 def test_checkpoint_resume_reuses_state_not_recomputed(tmp_path):
     write_branch_md(tmp_path)
     ctx = batch_ctx(tmp_path, shas=["a1"])

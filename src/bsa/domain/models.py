@@ -81,6 +81,9 @@ class CommitResult(BaseModel):
     # cherry-pick 本身的失败原因（git 诊断原文）。与 resolution_error 分开：前者是
     # 同步没做成（多为引擎/工具链问题），后者是冲突没解掉（需人工裁决），处置方式不同。
     reason: str | None = None
+    # 冲突文件清单：cron 不加解决冲突，撞 CONFLICT 直接停批转人工，这份清单就是
+    # 人工的入口（去哪个文件动手）。
+    conflict_files: list[str] = []
 
 
 class BranchResult(BaseModel):
